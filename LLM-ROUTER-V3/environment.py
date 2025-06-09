@@ -1,12 +1,13 @@
 import torch
 import numpy as np
-from typing import List, Dict, Tuple, Optional
 import time
 import heapq
+from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from sentence_transformers import SentenceTransformer
 from config import Config
+from queueMonitor import QueueUpdateMonitor
 
 @dataclass
 class Request:
@@ -38,6 +39,11 @@ class LLMServer:
         # Queue management
         self.processing_queue = []  # Currently processing requests
         self.completion_heap = []   # Min-heap for request completion times
+        
+        # Monitoring and statistics
+        self.recent_request_times = []  # Track recent request arrivals
+        self.completed_requests_count = 0
+        self.total_processing_time = 0.0
         
         # Server-specific latency parameters
         self.base_latency_range = self._get_latency_range(model_name)
@@ -72,6 +78,11 @@ class LLMServer:
         request.start_time = current_time
         request.server_id = self.server_id
         
+        # Track request arrival time for monitoring
+        self.recent_request_times.append(current_time)
+        # Keep only requests from last 60 seconds for monitoring
+        self.recent_request_times = [t for t in self.recent_request_times if current_time - t <= 60.0]
+        
         # Calculate processing latency (affected by current load)
         base_min, base_max = self.base_latency_range
         load_factor = 1.0 + (self.get_current_load() / self.capacity) * 0.5
@@ -105,18 +116,42 @@ class LLMServer:
                     completed_request = self.processing_queue.pop(i)
                     completed_request.completion_time = completion_time
                     completed_requests.append(completed_request)
+                    
+                    # Update statistics
+                    self.completed_requests_count += 1
+                    if completed_request.processing_latency:
+                        self.total_processing_time += completed_request.processing_latency
                     break
         
         return completed_requests
     
     def get_queue_info(self) -> Dict:
         """Get information about current queue state"""
+        avg_processing_time = 0.0
+        if self.completed_requests_count > 0:
+            avg_processing_time = self.total_processing_time / self.completed_requests_count
+        
+        # Count recent requests (last 60 seconds)
+        current_time = time.time()  # This should be passed in for consistency
+        recent_requests = len([t for t in self.recent_request_times if current_time - t <= 60.0])
+        
         return {
             'current_load': self.get_current_load(),
             'capacity': self.capacity,
             'utilization': self.get_current_load() / self.capacity,
             'queue_requests': [req.id for req in self.processing_queue],
-            'pending_completions': len(self.completion_heap)
+            'pending_completions': len(self.completion_heap),
+            'avg_processing_time': avg_processing_time,
+            'completed_requests_total': self.completed_requests_count,
+            'recent_requests_per_minute': recent_requests,
+            'processing_request_details': [
+                {
+                    'id': req.id,
+                    'start_time': req.start_time,
+                    'estimated_completion': req.completion_time,
+                    'processing_latency': req.processing_latency
+                } for req in self.processing_queue
+            ]
         }
 
 class QualityScorer:
@@ -156,7 +191,7 @@ class QualityScorer:
         return max(0.1, final_score)  # Ensure positive score
 
 class EnhancedRouterEnvironment:
-    def __init__(self):
+    def __init__(self, enable_monitoring=True):
         self.servers = [
             LLMServer(Config.MODEL_NAMES[i], Config.SERVER_CAPACITIES[i], i)
             for i in range(len(Config.MODEL_NAMES))
@@ -169,6 +204,16 @@ class EnhancedRouterEnvironment:
         self.request_counter = 0
         self.completed_requests = []
         self.pending_rewards = []
+        self.current_episode = 0  # Initialize episode tracking
+        
+        # Queue monitoring
+        self.enable_monitoring = enable_monitoring
+        if enable_monitoring:
+            try:
+                self.queue_monitor = QueueUpdateMonitor(wandb_available=False)  # Will be set by trainer
+            except ImportError:
+                print("Queue update monitor not available - continuing without monitoring")
+                self.enable_monitoring = False
         
         self.reset()
     
@@ -183,6 +228,13 @@ class EnhancedRouterEnvironment:
         for server in self.servers:
             server.processing_queue = []
             server.completion_heap = []
+            server.recent_request_times = []
+            server.completed_requests_count = 0
+            server.total_processing_time = 0.0
+        
+        # Reset queue monitoring
+        if self.enable_monitoring and hasattr(self, 'queue_monitor'):
+            self.queue_monitor.reset()
         
         return self.get_state()
     
@@ -208,20 +260,44 @@ class EnhancedRouterEnvironment:
         # Update current time
         self.current_time += self.time_step
         
-        # Update server completions
+        # Update server completions and monitor them
         step_rewards = 0.0
         total_completed = 0
         
         for server in self.servers:
+            # Get queue state before completion check
+            queue_state_before = server.get_queue_info()
+            
             completed_requests = server.update_completions(self.current_time)
             total_completed += len(completed_requests)
             
-            # Calculate rewards for completed requests
-            for request in completed_requests:
-                if request.quality_score is not None:
-                    reward = self._calculate_reward(request)
-                    step_rewards += reward
-                    self.completed_requests.append(request)
+            # Monitor each completion
+            if self.enable_monitoring and hasattr(self, 'queue_monitor') and completed_requests:
+                queue_state_after = server.get_queue_info()
+                
+                for request in completed_requests:
+                    if request.quality_score is not None:
+                        reward = self._calculate_reward(request)
+                        step_rewards += reward
+                        self.completed_requests.append(request)
+                        
+                        # Monitor request completion
+                        self.queue_monitor.log_request_completed(
+                            server_id=server.server_id,
+                            request_id=request.id,
+                            current_time=self.current_time,
+                            reward=reward,
+                            queue_state_before=queue_state_before,
+                            queue_state_after=queue_state_after,
+                            episode=self.current_episode
+                        )
+            else:
+                # No monitoring - just calculate rewards
+                for request in completed_requests:
+                    if request.quality_score is not None:
+                        reward = self._calculate_reward(request)
+                        step_rewards += reward
+                        self.completed_requests.append(request)
         
         # Process current action (route new request)
         server = self.servers[action]
@@ -234,9 +310,22 @@ class EnhancedRouterEnvironment:
             arrival_time=self.current_time
         )
         
+        # Get queue state before routing attempt
+        queue_state_before = server.get_queue_info()
+        
         # Check if action is valid (server not overloaded)
         if not server.can_accept_request():
-            # Invalid action - assign immediate penalty
+            # Invalid action - monitor the failure
+            if self.enable_monitoring and hasattr(self, 'queue_monitor'):
+                self.queue_monitor.log_request_failed(
+                    server_id=action,
+                    request_id=request_id,
+                    prompt=prompt,
+                    current_time=self.current_time,
+                    reason="Server at capacity",
+                    episode=self.current_episode
+                )
+            
             immediate_reward = -Config.LAMBDA * 2.0  # Heavy penalty for invalid action
             info = {
                 'quality_score': 0.0,
@@ -247,7 +336,8 @@ class EnhancedRouterEnvironment:
                 'immediate_reward': immediate_reward,
                 'step_rewards': step_rewards,
                 'server_loads': [s.get_current_load() for s in self.servers],
-                'server_utilizations': [s.get_current_load()/s.capacity for s in self.servers]
+                'server_utilizations': [s.get_current_load()/s.capacity for s in self.servers],
+                'queue_details': [s.get_queue_info() for s in self.servers]
             }
             
             return self.get_state(), immediate_reward + step_rewards, False, info
@@ -258,6 +348,16 @@ class EnhancedRouterEnvironment:
         
         if not success:
             # This shouldn't happen if our capacity check worked
+            if self.enable_monitoring and hasattr(self, 'queue_monitor'):
+                self.queue_monitor.log_request_failed(
+                    server_id=action,
+                    request_id=request_id,
+                    prompt=prompt,
+                    current_time=self.current_time,
+                    reason="Add request failed",
+                    episode=self.current_episode
+                )
+            
             immediate_reward = -Config.LAMBDA
             info = {
                 'quality_score': 0.0,
@@ -268,12 +368,29 @@ class EnhancedRouterEnvironment:
                 'immediate_reward': immediate_reward,
                 'step_rewards': step_rewards,
                 'server_loads': [s.get_current_load() for s in self.servers],
-                'server_utilizations': [s.get_current_load()/s.capacity for s in self.servers]
+                'server_utilizations': [s.get_current_load()/s.capacity for s in self.servers],
+                'queue_details': [s.get_queue_info() for s in self.servers]
             }
             return self.get_state(), immediate_reward + step_rewards, False, info
         
+        # Request successfully added - monitor it
+        if self.enable_monitoring and hasattr(self, 'queue_monitor'):
+            queue_state_after = server.get_queue_info()
+            
+            # Monitor request addition
+            self.queue_monitor.log_request_added(
+                server_id=action,
+                request_id=request_id,
+                prompt=prompt,
+                current_time=self.current_time,
+                processing_latency=request.processing_latency,
+                quality_score=request.quality_score,
+                queue_state_before=queue_state_before,
+                queue_state_after=queue_state_after,
+                episode=self.current_episode
+            )
+        
         # Calculate immediate reward for accepting the request (partial)
-        # Full reward will be calculated when request completes
         immediate_reward = Config.ALPHA * request.quality_score * 0.5  # Partial quality reward
         
         info = {
@@ -286,8 +403,13 @@ class EnhancedRouterEnvironment:
             'step_rewards': step_rewards,
             'request_id': request_id,
             'server_loads': [s.get_current_load() for s in self.servers],
-            'server_utilizations': [s.get_current_load()/s.capacity for s in self.servers]
+            'server_utilizations': [s.get_current_load()/s.capacity for s in self.servers],
+            'queue_details': [s.get_queue_info() for s in self.servers]
         }
+        
+        # Log periodic summary
+        if self.enable_monitoring and hasattr(self, 'queue_monitor'):
+            self.queue_monitor.log_periodic_summary(self.current_time, self.current_episode)
         
         # Total reward is immediate reward plus rewards from completed requests
         total_reward = immediate_reward + step_rewards
@@ -338,3 +460,9 @@ class EnhancedRouterEnvironment:
                 stats['max_latency'] = np.max(latencies)
         
         return stats
+    
+    def set_episode(self, episode: int):
+        """Set current episode number for monitoring"""
+        self.current_episode = episode
+        if self.enable_monitoring and hasattr(self, 'queue_monitor'):
+            self.queue_monitor.current_episode = episode

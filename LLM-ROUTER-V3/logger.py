@@ -83,6 +83,10 @@ class MetricsLogger:
                 'total_requests_completed': episode_info.get('env_stats', {}).get('total_requests_completed', 0)
             }
             
+            # Add queue monitoring data if available
+            if 'queue_details' in episode_info and episode_info['queue_details']:
+                self._add_queue_metrics_to_log(log_dict, episode_info['queue_details'])
+            
             # Add cumulative metrics
             if len(episode_rewards) >= 1:
                 log_dict['cumulative_reward'] = sum(episode_rewards)
@@ -141,3 +145,66 @@ class MetricsLogger:
         except Exception as e:
             print(f"  Wandb logging failed: {e}")
             self.wandb_available = False
+    
+    def _add_queue_metrics_to_log(self, log_dict, queue_details):
+        """Add detailed queue metrics to wandb log"""
+        try:
+            # Aggregate queue metrics
+            total_queue_length = 0
+            total_capacity = 0
+            total_pending = 0
+            server_utilizations = []
+            
+            for i, server_queue in enumerate(queue_details):
+                if server_queue:
+                    server_id = i
+                    queue_length = server_queue.get('current_load', 0)
+                    capacity = server_queue.get('capacity', 1)
+                    utilization = server_queue.get('utilization', 0)
+                    pending = server_queue.get('pending_completions', 0)
+                    avg_proc_time = server_queue.get('avg_processing_time', 0)
+                    completed_total = server_queue.get('completed_requests_total', 0)
+                    recent_requests = server_queue.get('recent_requests_per_minute', 0)
+                    
+                    # Individual server metrics
+                    log_dict.update({
+                        f'queue_server_{server_id}_length': queue_length,
+                        f'queue_server_{server_id}_utilization': utilization,
+                        f'queue_server_{server_id}_pending': pending,
+                        f'queue_server_{server_id}_avg_proc_time': avg_proc_time,
+                        f'queue_server_{server_id}_completed_total': completed_total,
+                        f'queue_server_{server_id}_recent_requests': recent_requests,
+                    })
+                    
+                    # Detailed request information
+                    processing_details = server_queue.get('processing_request_details', [])
+                    if processing_details:
+                        remaining_times = []
+                        for req_detail in processing_details:
+                            if 'estimated_completion' in req_detail and 'start_time' in req_detail:
+                                remaining_time = req_detail['estimated_completion'] - req_detail.get('current_time', req_detail['start_time'])
+                                remaining_times.append(max(0, remaining_time))
+                        
+                        if remaining_times:
+                            log_dict[f'queue_server_{server_id}_avg_remaining_time'] = np.mean(remaining_times)
+                            log_dict[f'queue_server_{server_id}_max_remaining_time'] = np.max(remaining_times)
+                    
+                    # Aggregate for system-wide metrics
+                    total_queue_length += queue_length
+                    total_capacity += capacity
+                    total_pending += pending
+                    server_utilizations.append(utilization)
+            
+            # System-wide queue metrics
+            if total_capacity > 0:
+                log_dict.update({
+                    'queue_system_total_length': total_queue_length,
+                    'queue_system_total_capacity': total_capacity,
+                    'queue_system_load_factor': total_queue_length / total_capacity,
+                    'queue_system_avg_utilization': np.mean(server_utilizations) if server_utilizations else 0,
+                    'queue_system_max_utilization': np.max(server_utilizations) if server_utilizations else 0,
+                    'queue_system_total_pending': total_pending,
+                })
+                
+        except Exception as e:
+            print(f"Failed to add queue metrics to log: {e}")

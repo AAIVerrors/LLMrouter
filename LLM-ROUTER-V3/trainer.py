@@ -8,15 +8,13 @@ from config import Config
 from environment import EnhancedRouterEnvironment
 from router_network import PPOAgent
 from data_loader import AlpacaDataLoader, EpisodeBuffer
-
-from logger import MetricsLogger
 from plotter import TrainingPlotter
-
+from logger import MetricsLogger
 
 class EnhancedLLMRouterTrainer:
     def __init__(self):
         # Initialize components
-        self.env = EnhancedRouterEnvironment()
+        self.env = EnhancedRouterEnvironment(enable_monitoring=Config.ENABLE_QUEUE_MONITORING)
         self.data_loader = AlpacaDataLoader()
         self.buffer = EpisodeBuffer()
         
@@ -25,23 +23,60 @@ class EnhancedLLMRouterTrainer:
         action_dim = len(Config.SERVER_CAPACITIES)  # Number of servers
         self.agent = PPOAgent(state_dim, action_dim)
         
-        # Initialize wandb
-        self.wandb_available = self.init_wandb()
+        # Initialize wandb based on config
+        self.wandb_available = False
+        if Config.ENABLE_WANDB_LOGGING:
+            self.wandb_available = self.init_wandb()
+        
+        # Set wandb availability for queue monitor
+        if hasattr(self.env, 'queue_monitor') and self.env.queue_monitor:
+            self.env.queue_monitor.wandb_available = self.wandb_available
         
         # Metrics tracking
         self.episode_rewards = []
         self.episode_stats = []
         self.training_metrics = []
         
+        # Print configuration summary
+        if Config.ENABLE_CONSOLE_LOGGING:
+            self.print_config_summary()
+        
+    def print_config_summary(self):
+        """Print current configuration summary"""
+        if not Config.CONSOLE_CONFIG.get('episode_progress', True):
+            return
+            
+        print("\n📋 Training Configuration Summary:")
+        print("=" * 50)
+        summary = Config.get_config_summary()
+        
+        print(f"🔧 Core Settings:")
+        print(f"   Wandb Logging: {'✅' if summary['wandb_logging'] else '❌'}")
+        print(f"   Console Logging: {'✅' if summary['console_logging'] else '❌'}")
+        print(f"   Queue Monitoring: {'✅' if summary['queue_monitoring'] else '❌'}")
+        print(f"   Visualizations: {'✅' if summary['visualizations'] else '❌'}")
+        print(f"   File Exports: {'✅' if summary['file_exports'] else '❌'}")
+        
+        print(f"\n📊 Active Features:")
+        print(f"   Visualizations: {summary['active_visualizations']}/{len(Config.VISUALIZATION_CONFIG)}")
+        print(f"   Logging Types: {summary['active_logging']}/{len(Config.LOGGING_CONFIG)}")
+        print(f"   Console Types: {summary['active_console']}/{len(Config.CONSOLE_CONFIG)}")
+        
+        print("=" * 50)
+    
     def init_wandb(self):
         """Initialize Weights & Biases logging"""
+        if not Config.ENABLE_WANDB_LOGGING:
+            print("Wandb logging disabled by config")
+            return False
+            
         try:
             # Convert Config class to dictionary for wandb
             config_dict = {}
             for attr in dir(Config):
                 if not attr.startswith('_'):
                     value = getattr(Config, attr)
-                    if not callable(value):
+                    if not callable(value) and not isinstance(value, dict):
                         config_dict[attr] = value
             
             wandb.init(
@@ -52,15 +87,18 @@ class EnhancedLLMRouterTrainer:
                 reinit=True
             )
             
-            wandb.watch(self.agent.network, log='all', log_freq=100)
+            if Config.WANDB_CONFIG.get('watch_model', True):
+                wandb.watch(self.agent.network, log='all', log_freq=100)
             
-            print("Wandb initialized successfully!")
-            print(f"Project: {Config.WANDB_PROJECT}")
+            if Config.CONSOLE_CONFIG.get('episode_progress', True):
+                print("✅ Wandb initialized successfully!")
+                print(f"🔗 Project: {Config.WANDB_PROJECT}")
             return True
             
         except Exception as e:
-            print(f"Warning: Could not initialize wandb: {e}")
-            print("Continuing without wandb logging...")
+            if Config.CONSOLE_CONFIG.get('error_messages', True):
+                print(f"❌ Warning: Could not initialize wandb: {e}")
+                print("Continuing without wandb logging...")
             return False
     
     def run_episode(self) -> dict:
@@ -249,18 +287,26 @@ class EnhancedLLMRouterTrainer:
             
             # Log metrics
             if episode % Config.LOG_INTERVAL == 0:
-                
                 logger = MetricsLogger(self.wandb_available)
                 logger.log_metrics(episode, episode_info, self.episode_rewards, 
                                  training_metrics, eval_info)
+                
+                # Log queue trends
+                if hasattr(self.env, 'queue_monitor'):
+                    self.env.queue_monitor.log_queue_trends(episode)
             
-            # Plot progress
+            # Plot progress and queue monitoring
             plot_interval = 25 if episode < 100 else 50
             if episode > 0 and episode % plot_interval == 0:
                 print(f"Creating training progress plots...")
-                
                 plotter = TrainingPlotter(self.wandb_available)
                 plotter.plot_training_progress(self.episode_rewards, self.episode_stats)
+                
+                # Create queue monitoring plots
+                if hasattr(self.env, 'queue_monitor'):
+                    self.env.queue_monitor.create_queue_visualization()
+                    print("Queue state summary:")
+                    self.env.queue_monitor.print_queue_summary()
             
             # Save periodic checkpoints
             if episode > 0 and episode % Config.SAVE_INTERVAL == 0:
@@ -272,7 +318,6 @@ class EnhancedLLMRouterTrainer:
         self.save_checkpoint("final")
         
         # Plot final results
-        
         plotter = TrainingPlotter(self.wandb_available)
         plotter.plot_training_progress(self.episode_rewards, self.episode_stats)
         
