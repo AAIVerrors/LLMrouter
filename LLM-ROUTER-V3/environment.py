@@ -1,3 +1,4 @@
+from vllm import LLM, SamplingParams
 import torch
 import numpy as np
 import time
@@ -27,15 +28,47 @@ class LLMServer:
         self.model_name = model_name
         self.capacity = capacity
         self.server_id = server_id
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModelForCausalLM.from_pretrained(model_name)
         
-        # Add padding token if it doesn't exist
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.sampling_params = SamplingParams(
+                temperature=0.7,
+                max_tokens=200,
+                top_p=0.95,
+                presence_penalty=0.0,
+                frequency_penalty=0.0,
+            )
         
-        self.model.eval()
-        self.model.to(Config.DEVICE)
+        # Initialize vllm engine with more conservative memory settings
+        try:
+            # Option 1: Reduce memory footprint
+            self.llm = LLM(
+                model=model_name,
+                tensor_parallel_size=1,
+                gpu_memory_utilization=0.4,  # Use most available memory
+                max_num_seqs=min(capacity, 8),  # Reduce concurrent sequences
+                max_num_batched_tokens=256,  
+                max_model_len=128,  
+                trust_remote_code=True,
+                enforce_eager=True,
+                disable_custom_all_reduce=True, 
+            )
+            
+            # Log successful initialization
+            print(f"Successfully initialized vLLM for {model_name}")
+            
+        except Exception as e:
+            print(f"Error initializing vLLM for {model_name}: {e}")
+            # Fallback to CPU if GPU initialization fails
+            try:
+                print(f"Attempting CPU fallback for {model_name}...")
+                self.llm = LLM(
+                    model=model_name,
+                    tensor_parallel_size=1,
+                    device="cpu",
+                    trust_remote_code=True,
+                )
+            except Exception as cpu_e:
+                print(f"CPU fallback also failed: {cpu_e}")
+                raise
         
         # Queue management
         self.processing_queue = []  # Currently processing requests
@@ -88,28 +121,18 @@ class LLMServer:
         load_factor = 1.0 + (self.get_current_load() / self.capacity) * 0.5
         base_latency = np.random.uniform(base_min, base_max)
         
-        # Perform real decoding and measure time
+        # Perform real decoding and measure time using vllm
         start_decode_time = time.time()
-        with torch.no_grad():
-            
-            inputs = self.tokenizer(
-                request.prompt,
-                return_tensors="pt",
-                padding=True,
-                return_attention_mask=True
-            ).to(Config.DEVICE)
-            
-            outputs = self.model.generate(
-                inputs["input_ids"],
-                max_new_tokens=200,  # Instead of max_length
-                do_sample=True,      # Enable sampling since you're using temperature
-                temperature=0.7,
-                num_return_sequences=1,
-                pad_token_id=self.tokenizer.pad_token_id,
-                attention_mask=inputs["attention_mask"]  # Add attention mask
+        try:
+            outputs = self.llm.generate(
+                prompts=[request.prompt],
+                sampling_params=self.sampling_params
             )
+            response_text = outputs[0].outputs[0].text
             
-            response_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        except Exception as e:
+            print(f"vLLM generation error: {e}")
+            return False
             
         actual_decode_time = time.time() - start_decode_time
         
@@ -117,7 +140,7 @@ class LLMServer:
         request.response = {
             "response_text": response_text,
             "decode_time": actual_decode_time,
-            "tokens_generated": len(outputs[0])
+            "tokens_generated": len(response_text.split())  # Approximate token count
         }
         
         # Total processing latency combines base latency, load factor and actual decode time
