@@ -1,0 +1,16 @@
+{"time":"2025-06-09T21:24:28.674060259+10:00","level":"INFO","msg":"stream: starting","core version":"0.19.8","symlink path":"/srv/home/hshu3770/LLM-ROUTER-V3/wandb/run-20250609_212428-tcdajv4t/logs/debug-core.log"}
+{"time":"2025-06-09T21:24:28.792423064+10:00","level":"INFO","msg":"created new stream","id":"tcdajv4t"}
+{"time":"2025-06-09T21:24:28.792490324+10:00","level":"INFO","msg":"stream: started","id":"tcdajv4t"}
+{"time":"2025-06-09T21:24:28.792602182+10:00","level":"INFO","msg":"writer: Do: started","stream_id":"tcdajv4t"}
+{"time":"2025-06-09T21:24:28.792802415+10:00","level":"INFO","msg":"sender: started","stream_id":"tcdajv4t"}
+{"time":"2025-06-09T21:24:28.792759681+10:00","level":"INFO","msg":"handler: started","stream_id":"tcdajv4t"}
+{"time":"2025-06-09T21:24:29.122374228+10:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-06-09T21:27:41.537269659+10:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-06-09T21:27:41.538471229+10:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-06-09T21:27:42.540509338+10:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"uploading media/images/training_progress_45_561e07ecfdb01d614a23.png","runtime_seconds":0.726939608,"progress":"343.0KB/343.0KB"},{"desc":"uploading output.log","runtime_seconds":0.480839733,"progress":"37.0KB/37.0KB"},{"desc":"uploading config.yaml","runtime_seconds":0.256268762,"progress":"2.1KB/2.1KB"}],"total_operations":3}}
+{"time":"2025-06-09T21:27:42.926423906+10:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-06-09T21:27:43.24457109+10:00","level":"INFO","msg":"stream: closing","id":"tcdajv4t"}
+{"time":"2025-06-09T21:27:43.244598193+10:00","level":"INFO","msg":"handler: closed","stream_id":"tcdajv4t"}
+{"time":"2025-06-09T21:27:43.244613886+10:00","level":"INFO","msg":"writer: Close: closed","stream_id":"tcdajv4t"}
+{"time":"2025-06-09T21:27:43.244646371+10:00","level":"INFO","msg":"sender: closed","stream_id":"tcdajv4t"}
+{"time":"2025-06-09T21:27:43.244751946+10:00","level":"INFO","msg":"stream: closed","id":"tcdajv4t"}
