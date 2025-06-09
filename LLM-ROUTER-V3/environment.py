@@ -20,6 +20,7 @@ class Request:
     processing_latency: Optional[float] = None
     quality_score: Optional[float] = None
     server_id: Optional[int] = None
+    response: Optional[Dict] = None
 
 class LLMServer:
     def __init__(self, model_name: str, capacity: int, server_id: int):
@@ -80,16 +81,47 @@ class LLMServer:
         
         # Track request arrival time for monitoring
         self.recent_request_times.append(current_time)
-        # Keep only requests from last 60 seconds for monitoring
         self.recent_request_times = [t for t in self.recent_request_times if current_time - t <= 60.0]
         
-        # Calculate processing latency (affected by current load)
+        # Calculate base latency from model range
         base_min, base_max = self.base_latency_range
         load_factor = 1.0 + (self.get_current_load() / self.capacity) * 0.5
-        
-        # Sample latency from range with load factor
         base_latency = np.random.uniform(base_min, base_max)
-        processing_latency = base_latency * load_factor
+        
+        # Perform real decoding and measure time
+        start_decode_time = time.time()
+        with torch.no_grad():
+            
+            inputs = self.tokenizer(
+                request.prompt,
+                return_tensors="pt",
+                padding=True,
+                return_attention_mask=True
+            ).to(Config.DEVICE)
+            
+            outputs = self.model.generate(
+                inputs["input_ids"],
+                max_new_tokens=200,  # Instead of max_length
+                do_sample=True,      # Enable sampling since you're using temperature
+                temperature=0.7,
+                num_return_sequences=1,
+                pad_token_id=self.tokenizer.pad_token_id,
+                attention_mask=inputs["attention_mask"]  # Add attention mask
+            )
+            
+            response_text = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+            
+        actual_decode_time = time.time() - start_decode_time
+        
+        # Store response in request object
+        request.response = {
+            "response_text": response_text,
+            "decode_time": actual_decode_time,
+            "tokens_generated": len(outputs[0])
+        }
+        
+        # Total processing latency combines base latency, load factor and actual decode time
+        processing_latency = (base_latency * load_factor) + actual_decode_time
         
         request.processing_latency = processing_latency
         request.completion_time = current_time + processing_latency
