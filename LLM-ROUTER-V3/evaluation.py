@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-from enhanced_config import Config
+from config import Config
 
 class ModelEvaluator:
     """Utilities for evaluating trained models"""

@@ -1,4 +1,34 @@
-**/LLM-ROUTER-V3/wandb/
-**/LLM-ROUTER-V3/checkpoints/
-**/LLM-ROUTER-V3/pycache/
-**/LLM-ROUTER-V3/*.png
+# Wandb logs
+wandb/
+
+# Model checkpoints
+checkpoints/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Generated images
+*.png
+
+# Other common Python ignores
+*.log
+*.pkl
+*.pt
+*.pth
+.env
+venv/
+env/
+.vscode/
+.idea/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# OS files
+.DS_Store
+Thumbs.db
