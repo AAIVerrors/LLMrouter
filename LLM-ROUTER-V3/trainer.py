@@ -18,6 +18,9 @@ class EnhancedLLMRouterTrainer:
         self.data_loader = AlpacaDataLoader()
         self.buffer = EpisodeBuffer()
         
+        # Initialize episode tracking
+        self.current_episode = 0  
+        
         # Initialize PPO agent
         state_dim = len(Config.SERVER_CAPACITIES) * 2  # load + utilization per server
         action_dim = len(Config.SERVER_CAPACITIES)  # Number of servers
@@ -46,18 +49,18 @@ class EnhancedLLMRouterTrainer:
         if not Config.CONSOLE_CONFIG.get('episode_progress', True):
             return
             
-        print("\n📋 Training Configuration Summary:")
+        print("\n Training Configuration Summary:")
         print("=" * 50)
         summary = Config.get_config_summary()
         
-        print(f"🔧 Core Settings:")
+        print(f" Core Settings:")
         print(f"   Wandb Logging: {'✅' if summary['wandb_logging'] else '❌'}")
         print(f"   Console Logging: {'✅' if summary['console_logging'] else '❌'}")
         print(f"   Queue Monitoring: {'✅' if summary['queue_monitoring'] else '❌'}")
         print(f"   Visualizations: {'✅' if summary['visualizations'] else '❌'}")
         print(f"   File Exports: {'✅' if summary['file_exports'] else '❌'}")
         
-        print(f"\n📊 Active Features:")
+        print(f"\n Active Features:")
         print(f"   Visualizations: {summary['active_visualizations']}/{len(Config.VISUALIZATION_CONFIG)}")
         print(f"   Logging Types: {summary['active_logging']}/{len(Config.LOGGING_CONFIG)}")
         print(f"   Console Types: {summary['active_console']}/{len(Config.CONSOLE_CONFIG)}")
@@ -91,18 +94,20 @@ class EnhancedLLMRouterTrainer:
                 wandb.watch(self.agent.network, log='all', log_freq=100)
             
             if Config.CONSOLE_CONFIG.get('episode_progress', True):
-                print("✅ Wandb initialized successfully!")
-                print(f"🔗 Project: {Config.WANDB_PROJECT}")
+                print(" Wandb initialized successfully!")
+                print(f" Project: {Config.WANDB_PROJECT}")
             return True
             
         except Exception as e:
             if Config.CONSOLE_CONFIG.get('error_messages', True):
-                print(f"❌ Warning: Could not initialize wandb: {e}")
+                print(f" Warning: Could not initialize wandb: {e}")
                 print("Continuing without wandb logging...")
             return False
     
     def run_episode(self) -> dict:
-        """Run a single episode and collect trajectory"""
+        """Run a single episode"""
+        # Reset episode data
+        self.data_loader.reset_episode(self.current_episode)
         state = self.env.reset()
         episode_reward = 0
         episode_info = {
@@ -120,7 +125,7 @@ class EnhancedLLMRouterTrainer:
         }
         
         for step in range(Config.EPISODE_LENGTH):
-            prompt = self.data_loader.get_random_prompt()
+            prompt = self.data_loader.get_next_prompt()  
             action_mask = self.env.get_action_mask()
             action, log_prob, value = self.agent.get_action(state, prompt, action_mask)
             next_state, reward, done, info = self.env.step(action, prompt)
@@ -257,6 +262,9 @@ class EnhancedLLMRouterTrainer:
         best_reward = float('-inf')
         
         for episode in range(Config.MAX_EPISODES):
+            self.current_episode = episode  # Update current episode
+            self.env.set_episode(episode)  # Update environment episode tracking
+            
             print(f"\nRunning Episode {episode}...")
             
             # Run episode

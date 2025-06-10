@@ -6,32 +6,50 @@ from config import Config
 class AlpacaDataLoader:
     def __init__(self):
         self.dataset = None
-        self.current_index = 0
+        self.current_episode = 0
+        self.current_step = 0
+        self.partitioned_data = []
         self.load_dataset()
     
     def load_dataset(self):
-        """Load the Alpaca dataset"""
+        """Load and partition the Alpaca dataset"""
         try:
             # Load the Alpaca dataset
             dataset = load_dataset(Config.DATASET_NAME, split='train')
             
-            # Convert to list and shuffle
+            # Convert to list
             self.dataset = list(dataset)
-            random.shuffle(self.dataset)
             
-            # Limit dataset size for testing
-            if len(self.dataset) > Config.MAX_SAMPLES:
-                self.dataset = self.dataset[:Config.MAX_SAMPLES]
+            # Calculate total samples needed
+            total_samples_needed = Config.EPISODE_LENGTH * Config.MAX_EPISODES
             
-            print(f"Loaded {len(self.dataset)} samples from {Config.DATASET_NAME}")
+            # If dataset is smaller than needed, repeat it
+            if len(self.dataset) < total_samples_needed:
+                repetitions = (total_samples_needed + len(self.dataset) - 1) // len(self.dataset)
+                self.dataset = self.dataset * repetitions
+            
+            # Trim to exact size needed
+            self.dataset = self.dataset[:total_samples_needed]
+            
+            # Partition the dataset
+            self.partitioned_data = []
+            for i in range(Config.MAX_EPISODES):
+                start_idx = i * Config.EPISODE_LENGTH
+                end_idx = start_idx + Config.EPISODE_LENGTH
+                episode_data = self.dataset[start_idx:end_idx]
+                self.partitioned_data.append(episode_data)
+            
+            print(f"Loaded and partitioned {len(self.dataset)} samples into "
+                  f"{len(self.partitioned_data)} episodes of {Config.EPISODE_LENGTH} steps each")
             
         except Exception as e:
             print(f"Error loading dataset: {e}")
             # Fallback to dummy data
-            self.dataset = self._create_dummy_dataset()
+            self._create_dummy_dataset()
     
-    def _create_dummy_dataset(self) -> List[Dict]:
-        """Create dummy dataset for testing"""
+    def _create_dummy_dataset(self):
+        """Create partitioned dummy dataset"""
+        total_samples = Config.EPISODE_LENGTH * Config.MAX_EPISODES
         dummy_data = []
         templates = [
             "Explain the concept of {topic}",
@@ -39,9 +57,6 @@ class AlpacaDataLoader:
             "What are the benefits of {topic}?",
             "How does {topic} work?",
             "Compare and contrast {topic1} and {topic2}",
-            "Provide step-by-step instructions for {topic}",
-            "What are the challenges related to {topic}?",
-            "Describe the history of {topic}",
         ]
         
         topics = [
@@ -51,22 +66,52 @@ class AlpacaDataLoader:
             "robotics", "cybersecurity", "nanotechnology"
         ]
         
-        for i in range(Config.MAX_SAMPLES):
-            template = random.choice(templates)
-            if "{topic1}" in template and "{topic2}" in template:
-                topic1, topic2 = random.sample(topics, 2)
-                instruction = template.format(topic1=topic1, topic2=topic2)
-            else:
-                topic = random.choice(topics)
-                instruction = template.format(topic=topic)
+        # Generate deterministic dummy data
+        for i in range(total_samples):
+            template = templates[i % len(templates)]
+            topic = topics[i % len(topics)]
+            instruction = template.format(topic=topic, topic1=topics[i % len(topics)], 
+                                       topic2=topics[(i + 1) % len(topics)])
             
             dummy_data.append({
                 'instruction': instruction,
                 'input': '',
-                'output': f'This is a sample response for: {instruction}'
+                'output': f'Sample response {i}: {instruction}'
             })
         
-        return dummy_data
+        # Partition dummy data
+        self.dataset = dummy_data
+        self.partitioned_data = []
+        for i in range(Config.MAX_EPISODES):
+            start_idx = i * Config.EPISODE_LENGTH
+            end_idx = start_idx + Config.EPISODE_LENGTH
+            self.partitioned_data.append(dummy_data[start_idx:end_idx])
+    
+    def get_next_prompt(self) -> str:
+        """Get next prompt in sequence"""
+        if not self.partitioned_data:
+            raise RuntimeError("Dataset not properly initialized")
+        
+        # Get current episode's data
+        episode_data = self.partitioned_data[self.current_episode]
+        sample = episode_data[self.current_step]
+        prompt = self.get_prompt(sample)
+        
+        # Update step counter
+        self.current_step += 1
+        if self.current_step >= Config.EPISODE_LENGTH:
+            self.current_step = 0
+            self.current_episode = (self.current_episode + 1) % Config.MAX_EPISODES
+        
+        return prompt
+    
+    def reset_episode(self, episode_num: int):
+        """Reset to start of specified episode"""
+        if episode_num < 0 or episode_num >= Config.MAX_EPISODES:
+            raise ValueError(f"Invalid episode number: {episode_num}")
+        
+        self.current_episode = episode_num
+        self.current_step = 0
     
     def get_prompt(self, sample: Dict) -> str:
         """Convert dataset sample to prompt string"""
@@ -80,49 +125,11 @@ class AlpacaDataLoader:
         
         return prompt
     
-    def get_next_batch(self, batch_size: int) -> List[str]:
-        """Get next batch of prompts"""
-        batch = []
-        for _ in range(batch_size):
-            if self.current_index >= len(self.dataset):
-                # Reset and shuffle when we reach the end
-                self.current_index = 0
-                random.shuffle(self.dataset)
-            
-            sample = self.dataset[self.current_index]
-            prompt = self.get_prompt(sample)
-            batch.append(prompt)
-            self.current_index += 1
-        
-        return batch
-    
-    def get_random_prompt(self) -> str:
-        """Get a single random prompt"""
-        sample = random.choice(self.dataset)
-        return self.get_prompt(sample)
-    
-    def reset(self):
-        """Reset the data loader"""
-        self.current_index = 0
-        random.shuffle(self.dataset)
-    
-    def __len__(self):
-        return len(self.dataset) if self.dataset else 0
-    
-    def get_stats(self) -> Dict:
-        """Get dataset statistics"""
-        if not self.dataset:
-            return {}
-        
-        total_samples = len(self.dataset)
-        avg_instruction_length = sum(len(sample['instruction'].split()) 
-                                   for sample in self.dataset) / total_samples
-        
-        return {
-            'total_samples': total_samples,
-            'avg_instruction_length': avg_instruction_length,
-            'current_index': self.current_index
-        }
+    def get_episode_data(self, episode_num: int) -> List[Dict]:
+        """Get all samples for a specific episode"""
+        if episode_num < 0 or episode_num >= Config.MAX_EPISODES:
+            raise ValueError(f"Invalid episode number: {episode_num}")
+        return self.partitioned_data[episode_num]
 
 class EpisodeBuffer:
     """Buffer to store episode trajectories"""
