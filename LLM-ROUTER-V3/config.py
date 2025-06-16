@@ -8,7 +8,7 @@ class Config:
     ]
     
     # Server capabilities (max concurrent requests)
-    SERVER_CAPACITIES = [8, 10]  # Capacity for each model
+    SERVER_CAPACITIES = [40, 50]  # Capacity for each model
     
     # Dataset settings
     DATASET_NAME = "tatsu-lab/alpaca"
@@ -104,7 +104,7 @@ class Config:
     # Detailed logging control
     LOGGING_CONFIG = {
         'episode_metrics': False,            # Basic episode metrics (rewards, actions)
-        'queue_events': False,               # Individual queue events (add/complete/fail)
+        'queue_events': True,               # Individual queue events (add/complete/fail)
         'queue_trends': False,               # Queue trend analysis
         'server_statistics': False,          # Server performance statistics
         'training_metrics': True,           # PPO training loss metrics
