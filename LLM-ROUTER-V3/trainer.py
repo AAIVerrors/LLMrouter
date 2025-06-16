@@ -169,13 +169,13 @@ class EnhancedLLMRouterTrainer:
             if done:
                 break
         
-        # Let remaining requests complete
-        for _ in range(20):
-            next_state, completion_reward, _, info = self.env.step(0, "")
-            if info.get('completed_requests', 0) > 0:
-                episode_reward += completion_reward
-                episode_info['step_rewards'].append(info.get('step_rewards', 0))
-                episode_info['completed_requests'] += info.get('completed_requests', 0)
+        # # Let remaining requests complete
+        # for _ in range(20):
+        #     next_state, completion_reward, _, info = self.env.step(0, "")
+        #     if info.get('completed_requests', 0) > 0:
+        #         episode_reward += completion_reward
+        #         episode_info['step_rewards'].append(info.get('step_rewards', 0))
+        #         episode_info['completed_requests'] += info.get('completed_requests', 0)
         
         self.buffer.finish_episode()
         episode_info['total_reward'] = episode_reward

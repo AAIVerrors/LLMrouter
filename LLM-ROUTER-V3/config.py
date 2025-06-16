@@ -1,4 +1,5 @@
 import torch
+import time
 
 class Config:
     # Model settings
@@ -13,6 +14,9 @@ class Config:
     # Dataset settings
     DATASET_NAME = "tatsu-lab/alpaca"
     MAX_SAMPLES = 10000  # Limit for testing
+    
+    # Start time for frequent requests
+    START_TIME = time.time()  # Start time for the first request
     
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)

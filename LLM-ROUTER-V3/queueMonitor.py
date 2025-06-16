@@ -14,10 +14,10 @@ class QueueUpdateEvent:
     server_id: int
     request_id: str
     prompt_preview: str  # First 100 chars of prompt
-    queue_length_before: int
-    queue_length_after: int
-    utilization_before: float
-    utilization_after: float
+    queue_length_before: int = 0
+    queue_length_after: int = 0
+    utilization_before: float = 0
+    utilization_after: float = 0
     processing_latency: Optional[float] = None
     quality_score: Optional[float] = None
     reward: Optional[float] = None
@@ -165,7 +165,6 @@ class QueueUpdateMonitor:
         state.pending_completions = queue_info['pending_completions']
         state.avg_processing_time = queue_info['avg_processing_time']
         state.recent_requests = queue_info.get('recent_requests_per_minute', 0)
-        state.active_request_ids = queue_info['queue_requests']
     
     def _print_event_update(self, event: QueueUpdateEvent):
         """Print real-time event update to console"""

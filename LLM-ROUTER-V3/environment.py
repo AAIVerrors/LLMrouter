@@ -31,15 +31,16 @@ class Request:
     server_id: Optional[int] = None
     response: Optional[Dict] = None
     status: str = "pending"
+    episode: Optional[int] = None  # Track episode for monitoring
 
 def server_worker_process(model_name: str,
                          capacity: int,
                          server_id: int,
                          request_queue,
                          response_queue,
-                         stats_dict,
                          running,
-                         gpu_id: Optional[int] = None):
+                         gpu_id: Optional[int] = None,
+                         queue_monitor: Optional[QueueUpdateMonitor] = None):
     """Worker function for server process"""
     try:
         # Set GPU
@@ -89,49 +90,51 @@ def server_worker_process(model_name: str,
         print(f"Server {server_id} ({model_name}) initialized on GPU {gpu_id}")
         
         # Maintain local processing queue
-        processing_queue = []
+        avg_processing_time = 0.0
         
         # Process requests
         while running.value:
             try:
-                request = request_queue.get(timeout=0.1)
-                if request is None:
-                    continue
-
                 # Get current state with proper queue length
-                current_queue_length = stats_dict['queue_length']
-
+                current_queue_length = request_queue.qsize()    
+                
                 # Get queue state before processing
                 queue_state_before = {
                     'current_load': current_queue_length,
                     'utilization': current_queue_length / capacity,
                     'pending_completions': 0,
-                    'avg_processing_time': stats_dict.get('avg_processing_time', 0.0),
-                    'queue_requests': list(stats_dict.get('processing_requests', []))
+                    'avg_processing_time': avg_processing_time,
                 }
+
+                # Get queue state after adding
+                queue_state_added = {
+                    'current_load': current_queue_length + 1,
+                    'utilization': (current_queue_length + 1) / capacity,
+                    'pending_completions': 0,
+                    'avg_processing_time': avg_processing_time,
+                }
+                
+                #  Get request from queue
+                request = request_queue.get(timeout=0.1)
+                if request is None:
+                    continue
 
                 # Start processing
                 request.status = 'processing'
                 request.start_time = time.time()
                 
-                # Update local queue and shared stats
-                processing_queue.append(request)
-                new_load = len(processing_queue)
-                
-                # Update shared stats atomically
-                stats_dict.update({
-                    'processing_requests': [r.id for r in processing_queue],
-                    'current_load': new_load
-                })
-
-                # Calculate queue state after adding
-                queue_state_after = {
-                    'current_load': new_load,
-                    'utilization': new_load / capacity,
-                    'pending_completions': 0,
-                    'avg_processing_time': stats_dict.get('avg_processing_time', 0.0),
-                    'queue_requests': [r.id for r in processing_queue]
-                }
+                #  Update monitoring queue, added
+                queue_monitor.log_request_added(
+                    server_id=request.server_id,    
+                    request_id=request.id,
+                    prompt=request.prompt,
+                    current_time=request.start_time,
+                    processing_latency=None,
+                    quality_score=request.quality_score,
+                    queue_state_before= queue_state_before,
+                    queue_state_after= queue_state_added,
+                    episode=request.episode 
+                )
 
                 try:
                     # Generate response
@@ -143,11 +146,16 @@ def server_worker_process(model_name: str,
                         max_length=128
                     ).to(model.device)
                     
-                    # Process request
+                    # Validate input tensors
+                    if inputs['input_ids'].size(0) == 0 or inputs['input_ids'].size(1) == 0:
+                        raise ValueError("Empty input tensor")
+                    
+                    # Process request with proper validation
                     with torch.no_grad():
                         with torch.cuda.amp.autocast(dtype=torch.float16):
                             outputs = model.generate(
-                                **inputs,
+                                input_ids=inputs['input_ids'],
+                                attention_mask=inputs['attention_mask'],
                                 max_new_tokens=200,
                                 temperature=0.7,
                                 top_p=0.95,
@@ -155,19 +163,32 @@ def server_worker_process(model_name: str,
                                 pad_token_id=tokenizer.pad_token_id,
                                 eos_token_id=tokenizer.eos_token_id,
                                 min_length=10,
-                                use_cache=True
+                                use_cache=True,
+                                num_return_sequences=1
                             )
-                            
-                    # Decode response
+                    
+                    # Validate output and extract new tokens
+                    if outputs is None or outputs.size(0) == 0:
+                        raise ValueError("Model returned empty output")
+                        
                     input_length = inputs['input_ids'].size(1)
                     if outputs.size(1) <= input_length:
                         raise ValueError("No new tokens generated")
+                        
+                    # Get only the new tokens
+                    new_tokens = outputs[0, input_length:]
+                    if len(new_tokens) == 0:
+                        raise ValueError("No tokens generated after input")
 
+                    # Decode response
                     response_text = tokenizer.decode(
-                        outputs[0][input_length:],
+                        new_tokens,
                         skip_special_tokens=True,
                         clean_up_tokenization_spaces=True
                     )
+                    
+                    if not response_text.strip():
+                        raise ValueError("Empty response after decoding")
 
                     # Update request with completion info
                     request.completion_time = time.time()
@@ -176,51 +197,35 @@ def server_worker_process(model_name: str,
                     request.response = {
                         "response_text": response_text,
                         "decode_time": request.processing_latency,
-                        "tokens_generated": len(outputs[0]) - inputs['input_ids'].size(1)
+                        "tokens_generated": len(new_tokens)
                     }
-
-                    # Update queue state atomically after completion
-                    processing_requests = list(stats_dict.get('processing_requests', []))
-                    if request.id in processing_requests:
-                        processing_requests.remove(request.id)
                         
-                    stats_dict.update({
-                        'processing_requests': processing_requests,
-                        'queue_length': max(0, len(processing_requests)),
-                        'current_load': max(0, len(processing_requests)),
-                        'completed_count': stats_dict.get('completed_count', 0) + 1,
-                        'total_processing_time': stats_dict.get('total_processing_time', 0.0) + request.processing_latency
-                    })
-
+                    # Calculate average processing time
+                    if request.processing_latency:
+                        avg_processing_time = (
+                            (avg_processing_time * (current_queue_length + 1)) + 
+                            request.processing_latency
+                        ) / (current_queue_length + 1)
+        
                     # Get final queue state
                     queue_state_final = {
-                        'current_load': len(processing_requests),
-                        'utilization': len(processing_requests) / capacity,
+                        'current_load': current_queue_length,
+                        'utilization': (current_queue_length) / capacity,
                         'pending_completions': 0,
-                        'avg_processing_time': stats_dict.get('avg_processing_time', 0.0),
-                        'queue_requests': processing_requests.copy()
+                        'avg_processing_time': avg_processing_time,
                     }
-
-                    response_queue.put((request, queue_state_before, queue_state_final))
+                    
+                    response_queue.put([request, queue_state_added, queue_state_final])
                     print(f"Server {server_id}: Request {request.id} completed. "
-                          f"Queue: {queue_state_before['current_load']}->{queue_state_final['current_load']}")
+                        f"Queue: {queue_state_before['current_load']}->{queue_state_final['current_load']}")
 
                 except Exception as e:
-                    print(f"Error processing request {request.id}: {e}")
-                    # Update queue state on failure
-                    processing_requests = list(stats_dict.get('processing_requests', []))
-                    if request.id in processing_requests:
-                        processing_requests.remove(request.id)
-                    
-                    stats_dict.update({
-                        'processing_requests': processing_requests,
-                        'queue_length': max(0, len(processing_requests)),
-                        'current_load': max(0, len(processing_requests))
-                    })
-                    
+                    print(f"Error processing request {request.id}: {str(e)}")
                     request.status = 'failed'
                     request.completion_time = time.time()
-                    response_queue.put((request, queue_state_before, None))
+                    request.processing_latency = request.completion_time - request.start_time
+                    response_queue.put([request, queue_state_before, None])
+                    continue
 
             except Empty:
                 continue
@@ -240,45 +245,38 @@ class LLMServerWrapper:
                  server_id: int,
                  manager: mp.Manager,
                  response_queue,
-                 gpu_id: Optional[int] = None):
+                 gpu_id: Optional[int] = None,
+                 queue_monitor: Optional[QueueUpdateMonitor] = None):
         self.model_name = model_name
         self.capacity = capacity
         self.server_id = server_id
         self.gpu_id = gpu_id
         self.running = mp.Value('b', True)
         
-        # Add lock for queue operations
-        self.queue_lock = manager.Lock()
-        
         # Create queues and shared data
         self.request_queue = manager.Queue()
         self.response_queue = response_queue
-        self.stats = manager.dict({
-            'current_load': 0,
-            'completed_count': 0,
-            'total_processing_time': 0.0,
-            'avg_processing_time': 0.0,
-            'processing_requests': [],
-            'queue_length': 0  # Add explicit queue length tracking
-        })
+        
+        # Create shared stats with explicit locks
+        self.current_queue_length = manager.Value('i', 0)
         
         # Start process
         self.process = mp.Process(
             target=server_worker_process,
             args=(model_name, capacity, server_id, 
                   self.request_queue, self.response_queue,
-                  self.stats, self.running, gpu_id)
+                  self.running, gpu_id, queue_monitor)
         )
         self.process.start()
+        
     
     def put_request(self, request: Request):
         """Add request to this server's queue"""
-        with self.queue_lock:
-            # Update queue length before adding request
-            current_length = self.stats['queue_length']
-            self.stats['queue_length'] = current_length + 1
-            self.stats['current_load'] = current_length + 1
-            self.request_queue.put(request)
+        # Atomic update of queue length
+        current_length = self.current_queue_length.value
+        self.current_queue_length.value = current_length + 1
+        
+        self.request_queue.put(request)
     
     def stop(self):
         """Stop the server process"""
@@ -289,15 +287,16 @@ class LLMServerWrapper:
     
     def can_accept_request(self) -> bool:
         """Check if server can accept new requests"""
-        return self.stats.get('current_load', 0) < self.capacity
+        return self.request_queue.qsize() < self.capacity
     
     def get_current_load(self) -> int:
         """Get current number of requests being processed"""
-        return self.stats.get('current_load', 0)
+        return self.request_queue.qsize()
     
-    def get_stats(self) -> Dict:
-        """Get server statistics"""
-        return dict(self.stats)
+    def get_server_id(self) -> int:
+        """Get server ID"""
+        return self.server_id
+    
 
 class QualityScorer:
     """Quality scoring for prompt-model pairs"""
@@ -341,19 +340,15 @@ def response_collector_worker(response_queue,
             if data is None:
                 continue
             
-            request, queue_state_before, queue_state_after = data
-            current_time = time.time()
+            request = data[0]
+            queue_state_before = data[1]
+            queue_state_after = data[2] 
             
             if request.status == 'completed':
                 # Calculate reward
-                if (request.completion_time is not None and 
-                    request.arrival_time is not None and 
-                    request.quality_score is not None):
+                if (request.processing_latency is not None):
                     
-                    latency = min(
-                        request.completion_time - request.arrival_time,
-                        10.0  
-                    )
+                    latency = request.processing_latency
                     
                     # Scale latency penalty
                     normalized_latency = latency / 10.0
@@ -365,19 +360,20 @@ def response_collector_worker(response_queue,
                           f"Quality: {request.quality_score:.3f}, "
                           f"Latency: {latency:.3f}s, "
                           f"Reward: {reward:.3f}")
-                    
-                    # Log to queue monitor
-                    if queue_monitor:
-                        queue_monitor.log_request_completed(
-                            server_id=request.server_id,
-                            request_id=request.id,
-                            current_time=current_time,
-                            reward=reward,
-                            queue_state_before=queue_state_before,
-                            queue_state_after=queue_state_after
-                        )
-                    
+
                     collected_rewards.append(reward)
+                    
+                    #  Update monitoring queue, completed
+                    queue_monitor.log_request_completed(
+                        current_time=request.completion_time,
+                        server_id=request.server_id,
+                        request_id=request.id,
+                        queue_state_before=queue_state_before,
+                        queue_state_after=queue_state_after,
+                        reward=reward,
+                        episode=request.episode,
+                    )
+                    
                     with total_completed.get_lock():
                         total_completed.value += 1
                     
@@ -387,15 +383,6 @@ def response_collector_worker(response_queue,
             elif request.status == 'failed':
                 collected_rewards.append(-config_lambda)
                 print(f"Response failed - ID: {request.id}, Penalty: {-config_lambda}")
-                
-                if queue_monitor:
-                    queue_monitor.log_request_failed(
-                        server_id=request.server_id,
-                        request_id=request.id,
-                        prompt=request.prompt,
-                        current_time=current_time,
-                        reason="Processing failed"
-                    )
                 
         except Empty:
             continue
@@ -428,7 +415,7 @@ class EnhancedRouterEnvironment:
         self.quality_scorer = QualityScorer()
         
         # Create shared response queue
-        self.response_queue = self.manager.Queue()
+        self.response_queue = mp.Queue()
         
         # Response collection
         self.response_collector_running = mp.Value('b', True)
@@ -464,13 +451,12 @@ class EnhancedRouterEnvironment:
                 server_id=i,
                 manager=self.manager,
                 response_queue=self.response_queue,
-                gpu_id=gpu_id
+                gpu_id=gpu_id,
+                queue_monitor=self.queue_monitor
             )
             self.servers.append(server)
         
         # Environment state
-        self.current_time = 0.0
-        self.time_step = 0.1
         self.request_counter = 0
         self.current_episode = 0
         
@@ -483,7 +469,6 @@ class EnhancedRouterEnvironment:
     
     def reset(self) -> np.ndarray:
         """Reset environment"""
-        self.current_time = 0.0
         self.request_counter = 0
         self.collected_rewards[:] = []
         with self.total_completed.get_lock():
@@ -509,8 +494,6 @@ class EnhancedRouterEnvironment:
     
     def step(self, action: int, prompt: str) -> Tuple[np.ndarray, float, bool, Dict]:
         """Execute routing action"""
-        # Update current time
-        self.current_time += self.time_step
         
         # Collect accumulated rewards
         step_rewards = sum(self.collected_rewards)
@@ -526,8 +509,9 @@ class EnhancedRouterEnvironment:
         request = Request(
             id=request_id,
             prompt=prompt,
-            arrival_time=self.current_time,
+            arrival_time=time.time(),
             server_id=action,
+            episode=self.current_episode
         )
         
         # Check server availability
@@ -541,7 +525,7 @@ class EnhancedRouterEnvironment:
                     server_id=action,
                     request_id=request_id,
                     prompt=prompt,
-                    current_time=self.current_time,
+                    current_time=time.time(),
                     reason="Server at capacity",
                     episode=self.current_episode
                 )
@@ -549,45 +533,15 @@ class EnhancedRouterEnvironment:
             info = self._create_info(
                 request, immediate_reward, step_rewards, completed_count, False
             )
+            time.sleep(1)  # Add small delay to prevent too fast execution
+            
             return self.get_state(), immediate_reward + step_rewards, False, info
         
         # Valid action - compute quality and log request
         request.quality_score = self.quality_scorer.compute_quality_score(prompt, action)
-        
-        # Get queue state before adding request
-        queue_state_before = {
-            'current_load': server.get_current_load(),
-            'utilization': server.get_current_load() / server.capacity,
-            'pending_completions': 0,
-            'avg_processing_time': server.get_stats().get('avg_processing_time', 0.0),
-            'queue_requests': server.get_stats().get('processing_requests', [])
-        }
-        
+
         # Send request to server
         server.put_request(request)
-        
-        # Get queue state after adding request
-        queue_state_after = {
-            'current_load': server.get_current_load(),
-            'utilization': server.get_current_load() / server.capacity,
-            'pending_completions': 0,
-            'avg_processing_time': server.get_stats().get('avg_processing_time', 0.0),
-            'queue_requests': server.get_stats().get('processing_requests', [])
-        }
-        
-        # Log request added event
-        if self.enable_monitoring and hasattr(self, 'queue_monitor'):
-            self.queue_monitor.log_request_added(
-                server_id=action,
-                request_id=request_id,
-                prompt=prompt,
-                current_time=self.current_time,
-                processing_latency=None,  # Will be set when completed
-                quality_score=request.quality_score,
-                queue_state_before=queue_state_before,
-                queue_state_after=queue_state_after,
-                episode=self.current_episode
-            )
         
         immediate_reward = Config.ALPHA * request.quality_score * 0.5
         info = self._create_info(
@@ -595,8 +549,13 @@ class EnhancedRouterEnvironment:
         )
         
         # Add small delay to prevent too fast execution
-        time.sleep(1)  
-
+        import math
+        input = time.time() - Config.START_TIME 
+        def f(x):  
+            return math.sin(x/2) + 1
+        output = f(input)
+        time.sleep( min(0.5 * output , 1.0) )
+            
         return self.get_state(), immediate_reward + step_rewards, False, info
 
     def _create_info(self, request: Request, immediate_reward: float, 
@@ -605,14 +564,10 @@ class EnhancedRouterEnvironment:
         """Create info dictionary with detailed queue states"""
         server_stats = []
         for s in self.servers:
-            stats = s.get_stats()
             server_stats.append({
-                'current_load': stats.get('current_load', 0),
+                'current_load': s.get_current_load(),
                 'capacity': s.capacity,
-                'utilization': stats.get('current_load', 0) / s.capacity,
-                'completed_count': stats.get('completed_count', 0),
-                'avg_processing_time': stats.get('avg_processing_time', 0.0),
-                'processing_requests': stats.get('processing_requests', [])
+                'utilization': s.get_current_load() / s.capacity,
             })
         
         return {
@@ -626,16 +581,16 @@ class EnhancedRouterEnvironment:
             'server_loads': [s.get_current_load() for s in self.servers],
             'server_utilizations': [s.get_current_load()/s.capacity for s in self.servers],
             'queue_details': server_stats,
-            'current_time': self.current_time,
+            'current_time': time.time(),
             'episode': self.current_episode
         }
     
     def get_environment_stats(self) -> Dict:
         """Get comprehensive environment statistics"""
         return {
-            'current_time': self.current_time,
+            'current_time': time.time(),
             'total_requests': self.request_counter,
-            'servers': {f'server_{i}': s.get_stats() for i, s in enumerate(self.servers)}
+            'servers': {f'server_{i}': s.get_server_id() for i, s in enumerate(self.servers)}
         }
     
     def set_episode(self, episode: int):
