@@ -5,6 +5,7 @@ from torch.distributions import Categorical
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from config import Config
+import torch.multiprocessing as mp
 
 class RouterNetwork(nn.Module):
     def __init__(self, state_dim: int, action_dim: int):
@@ -19,9 +20,9 @@ class RouterNetwork(nn.Module):
             param.requires_grad = False
         
         # Input dimensions
-        prompt_dim = 384  # MiniLM embedding dimension
+        prompt_dim = 384 
         total_input_dim = prompt_dim + state_dim
-        
+    
         # Shared layers
         self.shared_layers = nn.Sequential(
             nn.Linear(total_input_dim, Config.HIDDEN_DIM),
@@ -113,6 +114,7 @@ class PPOAgent:
         
         self.state_dim = state_dim
         self.action_dim = action_dim
+
         
     def get_action(self, state, prompt, action_mask=None):
         """Get action for given state and prompt"""

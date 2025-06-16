@@ -137,7 +137,7 @@ class Config:
     # Console output control
     CONSOLE_CONFIG = {
         'episode_progress': True,           # Episode progress messages
-        'queue_events': False,               # Real-time queue event messages
+        'queue_events': True,               # Real-time queue event messages
         'training_updates': True,           # Training progress updates
         'evaluation_results': True,        # Evaluation results
         'periodic_summaries': False,        # Periodic queue summaries
