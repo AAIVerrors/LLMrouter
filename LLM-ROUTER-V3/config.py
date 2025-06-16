@@ -8,7 +8,7 @@ class Config:
     ]
     
     # Server capabilities (max concurrent requests)
-    SERVER_CAPACITIES = [40, 50]  # Capacity for each model
+    SERVER_CAPACITIES = [7, 10]  # Capacity for each model
     
     # Dataset settings
     DATASET_NAME = "tatsu-lab/alpaca"

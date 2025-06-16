@@ -154,58 +154,73 @@ def server_worker_process(model_name: str,
                                 do_sample=True,
                                 pad_token_id=tokenizer.pad_token_id,
                                 eos_token_id=tokenizer.eos_token_id,
+                                min_length=10,
                                 use_cache=True
                             )
+                            
+                    # Decode response
+                    input_length = inputs['input_ids'].size(1)
+                    if outputs.size(1) <= input_length:
+                        raise ValueError("No new tokens generated")
+
+                    response_text = tokenizer.decode(
+                        outputs[0][input_length:],
+                        skip_special_tokens=True,
+                        clean_up_tokenization_spaces=True
+                    )
 
                     # Update request with completion info
                     request.completion_time = time.time()
                     request.processing_latency = request.completion_time - request.start_time
                     request.status = 'completed'
-                    
-                    # Update queue length and stats atomically
-                    new_queue_length = max(0, stats_dict['queue_length'] - 1)
+                    request.response = {
+                        "response_text": response_text,
+                        "decode_time": request.processing_latency,
+                        "tokens_generated": len(outputs[0]) - inputs['input_ids'].size(1)
+                    }
+
+                    # Update queue state atomically after completion
+                    processing_requests = list(stats_dict.get('processing_requests', []))
+                    if request.id in processing_requests:
+                        processing_requests.remove(request.id)
+                        
                     stats_dict.update({
-                        'queue_length': new_queue_length,
-                        'current_load': new_queue_length,
+                        'processing_requests': processing_requests,
+                        'queue_length': max(0, len(processing_requests)),
+                        'current_load': max(0, len(processing_requests)),
                         'completed_count': stats_dict.get('completed_count', 0) + 1,
                         'total_processing_time': stats_dict.get('total_processing_time', 0.0) + request.processing_latency
                     })
 
                     # Get final queue state
                     queue_state_final = {
-                        'current_load': new_queue_length,
-                        'utilization': new_queue_length / capacity,
+                        'current_load': len(processing_requests),
+                        'utilization': len(processing_requests) / capacity,
                         'pending_completions': 0,
                         'avg_processing_time': stats_dict.get('avg_processing_time', 0.0),
-                        'queue_requests': list(stats_dict.get('processing_requests', []))
+                        'queue_requests': processing_requests.copy()
                     }
 
-                    # Send response
                     response_queue.put((request, queue_state_before, queue_state_final))
                     print(f"Server {server_id}: Request {request.id} completed. "
                           f"Queue: {queue_state_before['current_load']}->{queue_state_final['current_load']}")
 
                 except Exception as e:
                     print(f"Error processing request {request.id}: {e}")
-                    request.status = 'failed'
-                    request.completion_time = time.time()
+                    # Update queue state on failure
+                    processing_requests = list(stats_dict.get('processing_requests', []))
+                    if request.id in processing_requests:
+                        processing_requests.remove(request.id)
                     
-                    # Update queue length on failure
-                    new_queue_length = max(0, stats_dict['queue_length'] - 1)
                     stats_dict.update({
-                        'queue_length': new_queue_length,
-                        'current_load': new_queue_length
+                        'processing_requests': processing_requests,
+                        'queue_length': max(0, len(processing_requests)),
+                        'current_load': max(0, len(processing_requests))
                     })
                     
-                    queue_state_final = {
-                        'current_load': new_queue_length,
-                        'utilization': new_queue_length / capacity,
-                        'pending_completions': 0,
-                        'avg_processing_time': stats_dict.get('avg_processing_time', 0.0),
-                        'queue_requests': list(stats_dict.get('processing_requests', []))
-                    }
-                    
-                    response_queue.put((request, queue_state_before, queue_state_final))
+                    request.status = 'failed'
+                    request.completion_time = time.time()
+                    response_queue.put((request, queue_state_before, None))
 
             except Empty:
                 continue
@@ -580,7 +595,7 @@ class EnhancedRouterEnvironment:
         )
         
         # Add small delay to prevent too fast execution
-        time.sleep(1)  # 1 second delay
+        time.sleep(1)  
 
         return self.get_state(), immediate_reward + step_rewards, False, info
 
