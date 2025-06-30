@@ -89,6 +89,10 @@ class Config:
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the
     EPISODE_TIME_INTERVAL = 60  # Time interval for each episode in seconds
     
+    # Queue score settings
+    QUEUE_SCORE_FACTOR = 0.5  # Factor to adjust queue score impact
+    QUEUE_EPSLONG = 0.1  # Epsilon for queue score stability
+    
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL
     # =================================================================

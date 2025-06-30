@@ -328,6 +328,7 @@ class QualityScorer:
         return max(0.1, final_score)
 
 def response_collector_worker(response_queue,
+                              episode_completed,
                             total_completed,
                             running,
                             config_alpha: float,
@@ -345,8 +346,10 @@ def response_collector_worker(response_queue,
             
             request = data[0]
             queue_state_before = data[1]
-            queue_state_after = data[2] 
-            
+            queue_state_after = data[2]
+
+            episode_completed.put(request)
+
             if request.status == 'completed':
                 # Calculate reward
                 if (request.processing_latency is not None):
@@ -421,6 +424,9 @@ class EnhancedRouterEnvironment:
         # Create shared response queue
         self.response_queue = mp.Queue()
         
+        # Episode completion tracking
+        self.episode_completed = mp.Queue()
+        
         # Create prompt queue
         self.prompt_queue = self.manager.Queue()
         self.dataloader = AlpacaDataLoader()
@@ -438,7 +444,8 @@ class EnhancedRouterEnvironment:
         # Start response collector
         self.response_collector = mp.Process(
             target=response_collector_worker,
-            args=(self.response_queue, 
+            args=(self.response_queue,
+                  self.episode_completed,
                   self.total_completed,
                   self.response_collector_running, 
                   Config.ALPHA, 
@@ -495,8 +502,9 @@ class EnhancedRouterEnvironment:
         state = []
         for server in self.servers:
             load = server.get_current_load()
-            utilization = load / server.capacity if server.capacity > 0 else 0
-            state.extend([load, utilization])
+            # utilization = load / server.capacity if server.capacity > 0 else 0
+            # capacity = server.capacity
+            state.extend([load])
         return np.array(state, dtype=np.float32)
     
     def get_action_mask(self) -> np.ndarray:
@@ -506,8 +514,11 @@ class EnhancedRouterEnvironment:
 
     def get_episode_data(self) -> List[Dict[str, Any]]:
         episode = []
-        while self.response_queue.qsize() > 0:
-            episode.append(self.response_queue.get_nowait())
+        while self.episode_completed.qsize() > 0:
+            data = self.episode_completed.get_nowait()
+            episode.append(data.__dict__.copy())  # Use __dict__ to get a dict of fields
+            
+        print(episode[:5]) 
         return episode
 
     

@@ -107,6 +107,26 @@ class RouterNetwork(nn.Module):
         
         return action, log_prob, entropy, value
 
+    def get_queue_scores(self, state, service_rate, factor=Config.QUEUE_SCORE_FACTOR, epslon=Config.QUEUE_EPSLONG):
+        """
+        Get queue scores for each action based on current state.
+        This is used to compute the log probabilities of actions.
+        """
+        scores = []
+        
+        for i,element in enumerate(state):
+            load = element  
+            capacity = Config.SERVER_CAPACITIES[i]
+            utilization = load / capacity
+            
+            # Compute score based on load and service rate
+            score = (1-factor)*(1-utilization)*(service_rate[i]/(load+epslon))\
+                    + (1-factor)*utilization*(1-(load/capacity)) \
+                    + factor*(service_rate[i]/max(service_rate)) 
+            scores.append(score)
+
+        return torch.FloatTensor(scores).to(Config.DEVICE)
+
 class PPOAgent:
     def __init__(self, state_dim: int, action_dim: int):
         self.network = RouterNetwork(state_dim, action_dim).to(Config.DEVICE)
@@ -115,8 +135,8 @@ class PPOAgent:
         self.state_dim = state_dim
         self.action_dim = action_dim
 
-        
-    def get_action(self, state, prompt, action_mask=None):
+
+    def get_action(self, state, prompt, action_mask=None, alpha=0.5, service_rate=[1]*len(Config.SERVER_CAPACITIES)):
         """Get action for given state and prompt"""
         state_tensor = torch.FloatTensor(state).to(Config.DEVICE)
         
@@ -129,9 +149,24 @@ class PPOAgent:
             action, log_prob, entropy, value = self.network.get_action_and_value(
                 state_tensor, prompt, action_mask_tensor
             )
-        
-        return action.cpu().item(), log_prob.cpu().item(), value.cpu().item()
-    
+            
+        # Get queue scores and convert to log-probabilities
+        queue_scores = self.network.get_queue_scores(state, service_rate=service_rate)
+        queue_probs = torch.softmax(queue_scores, dim=0)
+        queue_log_probs = torch.log(queue_probs + 1e-8)
+
+        # Merge log-probs for all actions
+        merged_log_probs = alpha * queue_log_probs + (1 - alpha) * log_prob
+        merged_probs = torch.softmax(merged_log_probs, dim=-1)
+
+        # Sample action from merged distribution
+        dist = torch.distributions.Categorical(merged_probs)
+        action = dist.sample()
+        merged_log_prob = dist.log_prob(action)
+        print(f"Action: {action}, Merged Log Prob: {merged_log_prob}")
+
+        return action.cpu().item(), merged_log_prob.cpu().item(), value.cpu().item()
+
     def update(self, trajectories):
         """Update network using PPO algorithm"""
         # Prepare batch data (convert to numpy first to avoid warning)
@@ -148,6 +183,7 @@ class PPOAgent:
         values = torch.FloatTensor(values_np).to(Config.DEVICE)
         prompts = [t['prompt'] for t in trajectories]
         action_masks = None
+        
         if 'action_mask' in trajectories[0] and trajectories[0]['action_mask'] is not None:
             action_masks_np = np.array([t['action_mask'] for t in trajectories])
             action_masks = torch.FloatTensor(action_masks_np).to(Config.DEVICE)

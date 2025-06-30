@@ -22,7 +22,7 @@ class EnhancedLLMRouterTrainer:
         self.current_episode = 0  
         
         # Initialize PPO agent
-        state_dim = len(Config.SERVER_CAPACITIES) * 2  # load + utilization per server
+        state_dim = len(Config.SERVER_CAPACITIES)  # load + utilization per server
         action_dim = len(Config.SERVER_CAPACITIES)  # Number of servers
         self.agent = PPOAgent(state_dim, action_dim)
         
@@ -39,6 +39,7 @@ class EnhancedLLMRouterTrainer:
         self.episode_rewards = []
         self.episode_stats = []
         self.training_metrics = []
+        self.last_service_rate = [1] * len(Config.SERVER_CAPACITIES)  # Default service rate
         
         # Print configuration summary
         if Config.ENABLE_CONSOLE_LOGGING:
@@ -105,52 +106,59 @@ class EnhancedLLMRouterTrainer:
             return False
         
     def get_episode_data(self):
-        record = self.run_episode()
+        record = self.run_episode()  # record is now a list of Request objects
         episode_info = {
             'rewards': [],
-            'immediate_rewards': [],
-            'step_rewards': [],
             'quality_scores': [],
             'latencies': [],
             'capacity_penalties': [],
-            'action_distribution': np.zeros(len(Config.SERVER_CAPACITIES)),
             'invalid_actions': 0,
             'completed_requests': 0,
-            'server_utilizations': [],
-            'valid_actions': 0
+            'valid_actions': 0,
+            'service_rate': [],
         }
-        episode_reward = 0
         
-        for step in record:
-            episode_info['rewards'].append(step['reward'])
-            episode_info['immediate_rewards'].append(step.get('immediate_reward', 0))
-            episode_info['step_rewards'].append(step.get('step_rewards', 0))
-            episode_info['quality_scores'].append(step.get('quality_score', 0))
-            episode_info['latencies'].append(step.get('estimated_latency', 0))
-            episode_info['capacity_penalties'].append(step.get('capacity_penalty', 0))
-            episode_info['action_distribution'][step['action']] += 1
-            
-            if not step.get('valid_action', True):
+        # Count processed prompts per server
+        num_servers = len(Config.SERVER_CAPACITIES)
+        num_processed = [0] * num_servers
+        for req in record:
+            server_id = req['server_id']
+            if server_id is not None and req['status'] == 'completed':
+                num_processed[server_id] += 1
+
+        # Compute per-server service rate
+        duration = Config.EPISODE_TIME_INTERVAL
+        service_rate = [n / duration for n in num_processed]
+        
+        print(service_rate)
+
+        # Store service_rate for use in agent
+        self.last_service_rate = service_rate
+
+        episode_reward = 0
+
+        for req in record:
+            episode_info['rewards'].append(getattr(req, 'reward', 0))
+            episode_info['quality_scores'].append(getattr(req, 'quality_score', 0))
+            episode_info['latencies'].append(getattr(req, 'processing_latency', 0))
+            # If you have capacity_penalty, add logic here
+
+            if not getattr(req, 'status', '') == 'completed':
                 episode_info['invalid_actions'] += 1
             else:
                 episode_info['valid_actions'] += 1
-            
-            episode_reward += step['reward']
-            
-            # Handle server utilizations
-            server_utils = step.get('server_utilizations', [])
-            if isinstance(server_utils, list) and len(server_utils) == len(Config.SERVER_CAPACITIES):
-                episode_info['server_utilizations'].append(server_utils)
-            elif isinstance(server_utils, np.ndarray) and len(server_utils) == len(Config.SERVER_CAPACITIES):
-                episode_info['server_utilizations'].append(server_utils.tolist())
-        
+
+            episode_reward += getattr(req, 'reward', 0)
+
+
         episode_info['total_reward'] = episode_reward
         episode_info['episode_length'] = len(record)
-        
+        episode_info['service_rate'] = service_rate
+
         # Clean up queues
         self.env.clean_prompt_queue()
         self.env.clean_response_queue()
-        
+
         return episode_info
 
     
@@ -170,7 +178,7 @@ class EnhancedLLMRouterTrainer:
             
             prompt = self.data_loader.get_next_prompt()  
             action_mask = self.env.get_action_mask()
-            action, log_prob, value = self.agent.get_action(state, prompt, action_mask)
+            action, log_prob, value = self.agent.get_action(state, prompt, action_mask, service_rate=self.last_service_rate)
             next_state, done = self.env.step(action, prompt)
             
             state = next_state
@@ -264,7 +272,7 @@ class EnhancedLLMRouterTrainer:
             
             # Run episode
             episode_info = self.get_episode_data()
-            self.episode_rewards.append(episode_info['total_reward'])
+            self.episode_rewards.append(episode_info['rewards'])
             self.episode_stats.append(episode_info)
             
             # Train every 1 episodes
