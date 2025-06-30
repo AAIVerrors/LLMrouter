@@ -9,7 +9,7 @@ class Config:
     ]
     
     # Server capabilities (max concurrent requests)
-    SERVER_CAPACITIES = [7, 10]  # Capacity for each model
+    SERVER_CAPACITIES = [10, 20]  # Capacity for each model
     
     # Dataset settings
     DATASET_NAME = "tatsu-lab/alpaca"
@@ -83,6 +83,11 @@ class Config:
     # Final evaluation settings
     EVAL_EPISODES = 5         # Number of episodes for evaluation
     FINAL_EVAL_EPISODES = 10  # Number of episodes for final evaluation
+    
+    # Poisson prompt generation settings
+    POISSON_ARRIVAL_RATE = 5  # Average arrival rate of prompts per second
+    MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the
+    EPISODE_TIME_INTERVAL = 60  # Time interval for each episode in seconds
     
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL

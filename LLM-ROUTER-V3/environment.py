@@ -11,6 +11,8 @@ import torch.multiprocessing as mp
 import os
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from queue import Empty
+from PoissonPromptGenerator import PoissonPromptGenerator
+from data_loader import AlpacaDataLoader
 
 # Set multiprocessing start method
 try:
@@ -31,7 +33,9 @@ class Request:
     server_id: Optional[int] = None
     response: Optional[Dict] = None
     status: str = "pending"
+    reward: Optional[float] = 0  # Reward for this request
     episode: Optional[int] = None  # Track episode for monitoring
+    
 
 def server_worker_process(model_name: str,
                          capacity: int,
@@ -324,7 +328,6 @@ class QualityScorer:
         return max(0.1, final_score)
 
 def response_collector_worker(response_queue,
-                            collected_rewards,
                             total_completed,
                             running,
                             config_alpha: float,
@@ -360,8 +363,8 @@ def response_collector_worker(response_queue,
                           f"Quality: {request.quality_score:.3f}, "
                           f"Latency: {latency:.3f}s, "
                           f"Reward: {reward:.3f}")
-
-                    collected_rewards.append(reward)
+                    
+                    request.reward = reward 
                     
                     #  Update monitoring queue, completed
                     queue_monitor.log_request_completed(
@@ -381,7 +384,7 @@ def response_collector_worker(response_queue,
                     print(f"Warning: Incomplete response data for request {request.id}")
                 
             elif request.status == 'failed':
-                collected_rewards.append(-config_lambda)
+                request.reward = -config_lambda
                 print(f"Response failed - ID: {request.id}, Penalty: {-config_lambda}")
                 
         except Empty:
@@ -393,6 +396,7 @@ def response_collector_worker(response_queue,
         except Exception as e:
             print(f"Error in response collector: {e}")
             continue
+        
 
 class EnhancedRouterEnvironment:
     """Environment for LLM request routing with parallel processing"""
@@ -417,16 +421,24 @@ class EnhancedRouterEnvironment:
         # Create shared response queue
         self.response_queue = mp.Queue()
         
+        # Create prompt queue
+        self.prompt_queue = self.manager.Queue()
+        self.dataloader = AlpacaDataLoader()
+        PoissonPromptGenerator(
+            arrival_rate=Config.POISSON_ARRIVAL_RATE,
+            data_loader=self.dataloader,
+            prompt_queue=self.prompt_queue,
+            max_queue_size=Config.MAX_PROMPT_QUEUE_SIZE
+        ).start()
+        
         # Response collection
         self.response_collector_running = mp.Value('b', True)
-        self.collected_rewards = self.manager.list()
         self.total_completed = mp.Value('i', 0)
         
         # Start response collector
         self.response_collector = mp.Process(
             target=response_collector_worker,
             args=(self.response_queue, 
-                  self.collected_rewards, 
                   self.total_completed,
                   self.response_collector_running, 
                   Config.ALPHA, 
@@ -470,7 +482,6 @@ class EnhancedRouterEnvironment:
     def reset(self) -> np.ndarray:
         """Reset environment"""
         self.request_counter = 0
-        self.collected_rewards[:] = []
         with self.total_completed.get_lock():
             self.total_completed.value = 0
         
@@ -491,20 +502,33 @@ class EnhancedRouterEnvironment:
     def get_action_mask(self) -> np.ndarray:
         """Get valid actions mask"""
         return np.array([server.can_accept_request() for server in self.servers], dtype=np.float32)
+
+
+    def get_episode_data(self) -> List[Dict[str, Any]]:
+        episode = []
+        while self.response_queue.qsize() > 0:
+            episode.append(self.response_queue.get_nowait())
+        return episode
+
     
     def step(self, action: int, prompt: str) -> Tuple[np.ndarray, float, bool, Dict]:
         """Execute routing action"""
         
+        time.sleep(0.5)  # Simulate processing delay
+        
         # Collect accumulated rewards
-        step_rewards = sum(self.collected_rewards)
-        self.collected_rewards[:] = []
-        completed_count = self.total_completed.value
+        # completed_count = self.total_completed.value
         with self.total_completed.get_lock():
             self.total_completed.value = 0
         
         # Create request
         request_id = f"req_{self.request_counter}"
         self.request_counter += 1
+        
+        prompt = self.prompt_queue.get(timeout=0.1)['prompt']
+        if not prompt:
+            print("Warning: No prompt available in queue now")
+            pass
         
         request = Request(
             id=request_id,
@@ -517,7 +541,7 @@ class EnhancedRouterEnvironment:
         # Check server availability
         server = self.servers[action]
         if not server.can_accept_request():
-            immediate_reward = -Config.LAMBDA * 2.0
+            # immediate_reward = -Config.LAMBDA * 2.0
             
             # Log failed request
             if self.enable_monitoring and hasattr(self, 'queue_monitor'):
@@ -530,33 +554,16 @@ class EnhancedRouterEnvironment:
                     episode=self.current_episode
                 )
             
-            info = self._create_info(
-                request, immediate_reward, step_rewards, completed_count, False
-            )
-            time.sleep(1)  # Add small delay to prevent too fast execution
             
-            return self.get_state(), immediate_reward + step_rewards, False, info
+            return self.get_state(), False
         
         # Valid action - compute quality and log request
         request.quality_score = self.quality_scorer.compute_quality_score(prompt, action)
 
         # Send request to server
         server.put_request(request)
-        
-        immediate_reward = Config.ALPHA * request.quality_score * 0.5
-        info = self._create_info(
-            request, immediate_reward, step_rewards, completed_count, True
-        )
-        
-        # Add small delay to prevent too fast execution
-        import math
-        input = time.time() - Config.START_TIME 
-        def f(x):  
-            return math.sin(x/2) + 1
-        output = f(input)
-        time.sleep( min(0.5 * output , 1.0) )
             
-        return self.get_state(), immediate_reward + step_rewards, False, info
+        return self.get_state(), False
 
     def _create_info(self, request: Request, immediate_reward: float, 
                      step_rewards: float, completed_count: int, 
@@ -596,6 +603,22 @@ class EnhancedRouterEnvironment:
     def set_episode(self, episode: int):
         """Set current episode"""
         self.current_episode = episode
+        
+    def clean_response_queue(self):
+        """Clean up response queue"""
+        while not self.response_queue.empty():
+            try:
+                self.response_queue.get_nowait()
+            except Empty:
+                break
+    
+    def clean_prompt_queue(self):
+        """Clean up prompt queue"""
+        while not self.prompt_queue.empty():
+            try:
+                self.prompt_queue.get_nowait()
+            except Empty:
+                break
     
     def __del__(self):
         """Cleanup processes"""
