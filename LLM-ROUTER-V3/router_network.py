@@ -157,7 +157,7 @@ class PPOAgent:
 
         # Merge log-probs for all actions
         merged_log_probs =  (queue_probs * alpha) +  (dist_policy * (1 - alpha))
-        print(f"queue_log_probs: {queue_log_probs}, log_prob: {log_prob}")
+        # print(f"queue_log_probs: {queue_log_probs}, log_prob: {log_prob}")
         
         merged_probs = torch.softmax(merged_log_probs, dim=-1)
         
@@ -169,7 +169,7 @@ class PPOAgent:
         dist = torch.distributions.Categorical(merged_probs)
         action = dist.sample()
         merged_log_prob = dist.log_prob(action)
-        print(f"Action: {action}, Merged Log Prob: {merged_log_prob}, dist: {dist.__dict__}")
+        # print(f"Action: {action}, Merged Log Prob: {merged_log_prob}, dist: {dist.__dict__}")
 
 
         return action.cpu().item(), merged_log_prob.cpu().item(), value.cpu().item()

@@ -9,13 +9,21 @@ class Config:
         "openai-community/gpt2",
         "openai-community/gpt2",
         "openai-community/gpt2",
+        "openai-community/gpt2",
+        "openai-community/gpt2",
+        "openai-community/gpt2",
+        "openai-community/gpt2",
+        "openai-community/gpt2",
+        "Qwen/Qwen2.5-0.5B",
+        "Qwen/Qwen2.5-0.5B",
+        "Qwen/Qwen2.5-0.5B",
         "Qwen/Qwen2.5-0.5B",
         "Qwen/Qwen2.5-0.5B",
         "Qwen/Qwen2.5-0.5B"
     ]
     
     # Server capabilities (max concurrent requests)
-    SERVER_CAPACITIES = [13,15,30, 23, 22,55, 23,10]  # Capacity for each model
+    SERVER_CAPACITIES = [13,15,30, 23, 22,55, 23,10, 13,15,30, 23, 22,55, 23,10]  # Capacity for each model
     
     # Dataset settings
     DATASET_NAME = "tatsu-lab/alpaca"
@@ -93,12 +101,12 @@ class Config:
     # Poisson prompt generation settings
     POISSON_ARRIVAL_RATE = 20  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the
-    EPISODE_TIME_INTERVAL = 60  # Time interval for each episode in seconds
+    EPISODE_TIME_INTERVAL = 10  # Time interval for each episode in seconds
     
     # Queue score settings
     QUEUE_SCORE_FACTOR = 0.2  # Factor to adjust queue score impact
     QUEUE_EPSLONG = 0.1  # Epsilon for queue score stability
-    MERGE_ALPHA = 0 # Alpha for merging action probabilities (0.5 for equal weighting)
+    MERGE_ALPHA = 0.3 # Alpha for merging action probabilities (0.5 for equal weighting)
     
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL

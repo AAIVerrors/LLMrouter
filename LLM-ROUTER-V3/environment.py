@@ -44,7 +44,8 @@ def server_worker_process(model_name: str,
                          response_queue,
                          running,
                          gpu_id: Optional[int] = None,
-                         queue_monitor: Optional[QueueUpdateMonitor] = None):
+                         queue_monitor: Optional[QueueUpdateMonitor] = None,
+                         pause_event=None):
     """Worker function for server process"""
     try:
         # Set GPU
@@ -98,6 +99,9 @@ def server_worker_process(model_name: str,
         
         # Process requests
         while running.value:
+            if pause_event is not None and pause_event.is_set():
+                time.sleep(0.1)
+                continue
             try:
                 # Get current state with proper queue length
                 current_queue_length = request_queue.qsize()    
@@ -119,7 +123,7 @@ def server_worker_process(model_name: str,
                 }
                 
                 #  Get request from queue
-                request = request_queue.get(timeout=0.1)
+                request = request_queue.get_nowait()
                 if request is None:
                     continue
 
@@ -257,6 +261,9 @@ class LLMServerWrapper:
         self.gpu_id = gpu_id
         self.running = mp.Value('b', True)
         
+        self.pause_event = mp.Event()
+        self.pause_event.clear()
+        
         # Create queues and shared data
         self.request_queue = manager.Queue()
         self.response_queue = response_queue
@@ -269,10 +276,15 @@ class LLMServerWrapper:
             target=server_worker_process,
             args=(model_name, capacity, server_id, 
                   self.request_queue, self.response_queue,
-                  self.running, gpu_id, queue_monitor)
+                  self.running, gpu_id, queue_monitor, self.pause_event)
         )
         self.process.start()
-        
+    
+    def pause(self):
+        self.pause_event.set()
+
+    def resume(self):
+        self.pause_event.clear()   
     
     def put_request(self, request: Request):
         """Add request to this server's queue"""
@@ -630,6 +642,30 @@ class EnhancedRouterEnvironment:
                 self.prompt_queue.get_nowait()
             except Empty:
                 break
+            
+    def pause_all_servers(self):
+        print("Pausing all servers...")
+        for server in self.servers:
+            server.pause()
+        print("All servers paused.")
+
+    def resume_all_servers(self):
+        print("Resuming all servers...")
+        for server in self.servers:
+            server.resume()
+        print("All servers resumed.")
+
+    def clean_all_queues(self):
+        print("Cleaning all server queues...")
+        for server in self.servers:
+            while not server.request_queue.empty():
+                try:
+                    server.request_queue.get_nowait()
+                except Exception:
+                    break
+        self.clean_prompt_queue()
+        self.clean_response_queue()
+        print("All queues cleaned.")
     
     def __del__(self):
         """Cleanup processes"""

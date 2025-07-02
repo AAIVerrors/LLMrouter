@@ -41,6 +41,8 @@ class EnhancedLLMRouterTrainer:
         self.training_metrics = []
         self.last_service_rate = [1] * len(Config.SERVER_CAPACITIES)  # Default service rate
         
+        self.training_in_progress = False
+
         # Print configuration summary
         if Config.ENABLE_CONSOLE_LOGGING:
             self.print_config_summary()
@@ -285,13 +287,17 @@ class EnhancedLLMRouterTrainer:
             self.env.set_episode(episode)  # Update environment episode tracking
             
             print(f"\nRunning Episode {episode}...")
-            
+ 
             # Run episode
             episode_info = self.get_episode_data()
             self.episode_rewards.append(episode_info['rewards'])
             self.episode_stats.append(episode_info)
             
             print(episode_info)
+            
+            # --- Pause and clean servers before training ---
+            self.env.pause_all_servers()
+            self.env.clean_all_queues()
             
             # Train every 1 episodes
             training_metrics = None
@@ -311,11 +317,14 @@ class EnhancedLLMRouterTrainer:
                     "policy_loss": training_metrics['policy_loss'] if training_metrics else None,
                     "value_loss": training_metrics['value_loss'] if training_metrics else None,
                     "entropy_loss": training_metrics['entropy_loss'] if training_metrics else None,
-                    "throughput/requests_completed": episode_info['valid_actions'],
+                    "throughput_per_episode/requests_completed": episode_info['valid_actions'],
                 })
             
             if self.wandb_available and hasattr(self.env, 'queue_monitor'):
                 self.env.queue_monitor.log_throughput_to_wandb(episode)
+                
+            # --- Resume servers after training ---
+            self.env.resume_all_servers()
             
             # Evaluate periodically
             # eval_info = None
