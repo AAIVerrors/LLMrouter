@@ -105,7 +105,7 @@ class RouterNetwork(nn.Module):
         log_prob = dist.log_prob(action)
         entropy = dist.entropy()
         
-        return action, log_prob, entropy, value
+        return action, log_prob, entropy, value, probs
 
     def get_queue_scores(self, state, service_rate, factor=Config.QUEUE_SCORE_FACTOR, epslon=Config.QUEUE_EPSLONG):
         """
@@ -136,7 +136,7 @@ class PPOAgent:
         self.action_dim = action_dim
 
 
-    def get_action(self, state, prompt, action_mask=None, alpha=0.5, service_rate=[1]*len(Config.SERVER_CAPACITIES)):
+    def get_action(self, state, prompt, action_mask=None, alpha=Config.MERGE_ALPHA, service_rate=[1]*len(Config.SERVER_CAPACITIES)):
         """Get action for given state and prompt"""
         state_tensor = torch.FloatTensor(state).to(Config.DEVICE)
         
@@ -146,7 +146,7 @@ class PPOAgent:
             action_mask_tensor = None
         
         with torch.no_grad():
-            action, log_prob, entropy, value = self.network.get_action_and_value(
+            action, log_prob, entropy, value, dist_policy = self.network.get_action_and_value(
                 state_tensor, prompt, action_mask_tensor
             )
             
@@ -156,14 +156,21 @@ class PPOAgent:
         queue_log_probs = torch.log(queue_probs + 1e-8)
 
         # Merge log-probs for all actions
-        merged_log_probs = alpha * queue_log_probs + (1 - alpha) * log_prob
+        merged_log_probs =  (queue_probs * alpha) +  (dist_policy * (1 - alpha))
+        print(f"queue_log_probs: {queue_log_probs}, log_prob: {log_prob}")
+        
         merged_probs = torch.softmax(merged_log_probs, dim=-1)
+        
+        # If all probs are zero or NaN, set uniform distribution
+        # if torch.any(torch.isnan(merged_probs)) or torch.sum(merged_probs) == 0:
+        #     merged_probs = torch.ones_like(merged_probs) / merged_probs.numel()
 
         # Sample action from merged distribution
         dist = torch.distributions.Categorical(merged_probs)
         action = dist.sample()
         merged_log_prob = dist.log_prob(action)
-        print(f"Action: {action}, Merged Log Prob: {merged_log_prob}")
+        print(f"Action: {action}, Merged Log Prob: {merged_log_prob}, dist: {dist.__dict__}")
+
 
         return action.cpu().item(), merged_log_prob.cpu().item(), value.cpu().item()
 
@@ -202,7 +209,7 @@ class PPOAgent:
         
         for _ in range(Config.PPO_EPOCHS):
             # Get current policy outputs
-            _, new_log_probs, entropy, new_values = self.network.get_action_and_value(
+            _, new_log_probs, entropy, new_values, dist = self.network.get_action_and_value(
                 states, prompts, action_masks, actions
             )
             

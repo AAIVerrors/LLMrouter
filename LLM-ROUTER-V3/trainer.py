@@ -113,7 +113,6 @@ class EnhancedLLMRouterTrainer:
             'latencies': [],
             'capacity_penalties': [],
             'invalid_actions': 0,
-            'completed_requests': 0,
             'valid_actions': 0,
             'service_rate': [],
         }
@@ -138,17 +137,17 @@ class EnhancedLLMRouterTrainer:
         episode_reward = 0
 
         for req in record:
-            episode_info['rewards'].append(getattr(req, 'reward', 0))
-            episode_info['quality_scores'].append(getattr(req, 'quality_score', 0))
-            episode_info['latencies'].append(getattr(req, 'processing_latency', 0))
+            episode_info['rewards'].append(req['reward'])
+            episode_info['quality_scores'].append(req['quality_score'])
+            episode_info['latencies'].append(req['processing_latency'])
             # If you have capacity_penalty, add logic here
 
-            if not getattr(req, 'status', '') == 'completed':
-                episode_info['invalid_actions'] += 1
-            else:
+            if req['status'] == 'completed':
                 episode_info['valid_actions'] += 1
+            else:
+                episode_info['invalid_actions'] += 1
 
-            episode_reward += getattr(req, 'reward', 0)
+            episode_reward += req['reward']
 
 
         episode_info['total_reward'] = episode_reward
@@ -185,19 +184,36 @@ class EnhancedLLMRouterTrainer:
             
             if done:
                 break
+            
+            # Add step to buffer (reward will be filled in later)
+            self.buffer.add_step(
+                state=state,
+                prompt=prompt,
+                action=action,
+                log_prob=log_prob,
+                value=value,
+                reward=0,  # Placeholder, will be updated after episode
+                action_mask=action_mask
+            )
         
         episode_record = self.env.get_episode_data()
         
+        for i, req in enumerate(episode_record):
+            if i < len(self.buffer.current_episode):
+                self.buffer.current_episode[i]['reward'] = req['reward']
+        
         return episode_record
+    
     
     def train_step(self):
         """Perform one training step with collected trajectories"""
-        trajectories = self.buffer.get_trajectories()
+        trajectories = self.buffer.get_current_episode()
         
         if len(trajectories) == 0:
             return {}
         
         training_metrics = self.agent.update(trajectories)
+        self.buffer.finish_episode()
         return training_metrics
     
     # def evaluate_agent(self, num_episodes=5):
@@ -275,6 +291,8 @@ class EnhancedLLMRouterTrainer:
             self.episode_rewards.append(episode_info['rewards'])
             self.episode_stats.append(episode_info)
             
+            print(episode_info)
+            
             # Train every 1 episodes
             training_metrics = None
             # if episode > 0 and episode % 1 == 0:
@@ -283,6 +301,21 @@ class EnhancedLLMRouterTrainer:
             if training_metrics:
                 print(f"   Policy Loss: {training_metrics['policy_loss']:.6f}")
                 print(f"   Value Loss: {training_metrics['value_loss']:.6f}")
+            
+            if self.wandb_available:
+                wandb.log({
+                    "episode": episode,
+                    "total_reward": episode_info['total_reward'],
+                    "mean_reward": np.mean(episode_info['rewards']),
+                    "std_reward": np.std(episode_info['rewards']),
+                    "policy_loss": training_metrics['policy_loss'] if training_metrics else None,
+                    "value_loss": training_metrics['value_loss'] if training_metrics else None,
+                    "entropy_loss": training_metrics['entropy_loss'] if training_metrics else None,
+                    "throughput/requests_completed": episode_info['valid_actions'],
+                })
+            
+            if self.wandb_available and hasattr(self.env, 'queue_monitor'):
+                self.env.queue_monitor.log_throughput_to_wandb(episode)
             
             # Evaluate periodically
             # eval_info = None

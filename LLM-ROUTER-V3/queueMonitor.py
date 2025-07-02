@@ -71,6 +71,28 @@ class QueueUpdateMonitor:
                 active_request_ids=[]
             )
     
+    def log_throughput_to_wandb(self, episode: int):
+        if not self.wandb_available:
+            return
+        try:
+            # Calculate throughput: requests completed per second in this episode
+            completed_events = [e for e in self.queue_events if e.event_type == 'request_completed' and e.episode == episode]
+            if completed_events:
+                start_time = completed_events[0].timestamp
+                end_time = completed_events[-1].timestamp
+                duration = max(end_time - start_time, 1e-6)
+                throughput = len(completed_events) / duration
+            else:
+                throughput = 0.0
+
+            wandb.log({
+                "throughput/requests_completed_episode": len(completed_events),
+                "throughput/requests_per_sec_episode": throughput,
+                "episode": episode
+            })
+        except Exception as e:
+            print(f"Failed to log throughput to wandb: {e}")
+        
     def log_request_added(self, server_id: int, request_id: str, prompt: str, 
                          current_time: float, processing_latency: float, 
                          quality_score: float, queue_state_before: Dict, 

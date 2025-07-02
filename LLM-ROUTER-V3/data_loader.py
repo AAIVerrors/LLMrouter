@@ -155,6 +155,10 @@ class EpisodeBuffer:
         if self.current_episode:
             self.trajectories.extend(self.current_episode)
             self.current_episode = []
+            
+    def get_current_episode(self) -> List[Dict]:
+        """Get current episode data without clearing it"""
+        return self.current_episode.copy()
     
     def get_trajectories(self):
         """Get all trajectories and clear buffer"""

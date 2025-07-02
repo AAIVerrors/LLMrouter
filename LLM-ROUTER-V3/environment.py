@@ -340,15 +340,13 @@ def response_collector_worker(response_queue,
     
     while running.value:
         try:
-            data = response_queue.get(timeout=0.1)
+            data = response_queue.get(timeout=0.05)
             if data is None:
                 continue
             
             request = data[0]
             queue_state_before = data[1]
             queue_state_after = data[2]
-
-            episode_completed.put(request)
 
             if request.status == 'completed':
                 # Calculate reward
@@ -383,6 +381,7 @@ def response_collector_worker(response_queue,
                     with total_completed.get_lock():
                         total_completed.value += 1
                     
+                    episode_completed.put(request)
                 else:
                     print(f"Warning: Incomplete response data for request {request.id}")
                 
@@ -514,18 +513,18 @@ class EnhancedRouterEnvironment:
 
     def get_episode_data(self) -> List[Dict[str, Any]]:
         episode = []
-        while self.episode_completed.qsize() > 0:
-            data = self.episode_completed.get_nowait()
-            episode.append(data.__dict__.copy())  # Use __dict__ to get a dict of fields
-            
+        while True:
+            try:
+                data = self.episode_completed.get_nowait()
+                episode.append(data.__dict__.copy())  # Use __dict__ to get a dict of fields
+            except Empty:
+                break  # No more completed requests in the queue
         print(episode[:5]) 
         return episode
 
     
     def step(self, action: int, prompt: str) -> Tuple[np.ndarray, float, bool, Dict]:
         """Execute routing action"""
-        
-        time.sleep(0.5)  # Simulate processing delay
         
         # Collect accumulated rewards
         # completed_count = self.total_completed.value
@@ -536,10 +535,12 @@ class EnhancedRouterEnvironment:
         request_id = f"req_{self.request_counter}"
         self.request_counter += 1
         
-        prompt = self.prompt_queue.get(timeout=0.1)['prompt']
-        if not prompt:
-            print("Warning: No prompt available in queue now")
-            pass
+        while True:
+            try:
+                prompt = self.prompt_queue.get_nowait()['prompt']
+                break  # Exit loop if prompt is successfully retrieved
+            except Empty:
+                print("Warning: Prompt queue is empty")
         
         request = Request(
             id=request_id,
@@ -552,8 +553,7 @@ class EnhancedRouterEnvironment:
         # Check server availability
         server = self.servers[action]
         if not server.can_accept_request():
-            # immediate_reward = -Config.LAMBDA * 2.0
-            
+
             # Log failed request
             if self.enable_monitoring and hasattr(self, 'queue_monitor'):
                 self.queue_monitor.log_request_failed(
