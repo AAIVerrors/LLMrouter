@@ -217,13 +217,13 @@ class PPOAgent:
             ratio = torch.exp(new_log_probs - old_log_probs)
             surr1 = ratio * advantages
             surr2 = torch.clamp(ratio, 1 - Config.CLIP_EPSILON, 1 + Config.CLIP_EPSILON) * advantages
-            policy_loss = -torch.min(surr1, surr2).mean()
+            policy_loss = -torch.min(surr1, surr2).sum()
             
             # Value loss
-            value_loss = F.mse_loss(new_values.squeeze(), returns)
+            value_loss = F.mse_loss(new_values.squeeze(), returns, reduction='sum')
             
             # Entropy loss
-            entropy_loss = -entropy.mean()
+            entropy_loss = -entropy.sum()
             
             # Total loss
             loss = policy_loss + Config.VALUE_COEF * value_loss + Config.ENTROPY_COEF * entropy_loss

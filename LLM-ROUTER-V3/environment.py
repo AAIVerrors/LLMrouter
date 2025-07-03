@@ -279,6 +279,13 @@ class LLMServerWrapper:
                   self.running, gpu_id, queue_monitor, self.pause_event)
         )
         self.process.start()
+        
+    def clean_queue(self):
+        while not self.request_queue.empty():
+            try:
+                self.request_queue.get_nowait()
+            except Empty:
+                break
     
     def pause(self):
         self.pause_event.set()
@@ -297,7 +304,7 @@ class LLMServerWrapper:
     def stop(self):
         """Stop the server process"""
         self.running.value = False
-        self.process.join(timeout=5)
+        self.process.join(timeout=2)
         if self.process.is_alive():
             self.process.terminate()
     
@@ -441,12 +448,13 @@ class EnhancedRouterEnvironment:
         # Create prompt queue
         self.prompt_queue = self.manager.Queue()
         self.dataloader = AlpacaDataLoader()
-        PoissonPromptGenerator(
+        self.prompt_generator = PoissonPromptGenerator(
             arrival_rate=Config.POISSON_ARRIVAL_RATE,
             data_loader=self.dataloader,
             prompt_queue=self.prompt_queue,
             max_queue_size=Config.MAX_PROMPT_QUEUE_SIZE
-        ).start()
+        )
+        self.prompt_generator.start()
         
         # Response collection
         self.response_collector_running = mp.Value('b', True)
@@ -508,6 +516,9 @@ class EnhancedRouterEnvironment:
         
         return self.get_state()
     
+    def get_prompt_generator(self):
+        return self.prompt_generator
+    
     def get_state(self) -> np.ndarray:
         """Get current state"""
         state = []
@@ -533,6 +544,14 @@ class EnhancedRouterEnvironment:
                 break  # No more completed requests in the queue
         print(episode[:5]) 
         return episode
+    
+    def clean_episode_completed(self):
+        while True:
+            try:
+                self.episode_completed.get_nowait()
+                cleared_count += 1
+            except:
+                break
 
     
     def step(self, action: int, prompt: str) -> Tuple[np.ndarray, float, bool, Dict]:
@@ -647,24 +666,23 @@ class EnhancedRouterEnvironment:
         print("Pausing all servers...")
         for server in self.servers:
             server.pause()
+        self.prompt_generator.stop()
         print("All servers paused.")
 
     def resume_all_servers(self):
         print("Resuming all servers...")
         for server in self.servers:
             server.resume()
+        self.prompt_generator.start()
         print("All servers resumed.")
 
     def clean_all_queues(self):
         print("Cleaning all server queues...")
         for server in self.servers:
-            while not server.request_queue.empty():
-                try:
-                    server.request_queue.get_nowait()
-                except Exception:
-                    break
+            server.clean_queue()
         self.clean_prompt_queue()
         self.clean_response_queue()
+        self.clean_episode_completed()
         print("All queues cleaned.")
     
     def __del__(self):

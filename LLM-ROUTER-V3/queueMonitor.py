@@ -89,7 +89,7 @@ class QueueUpdateMonitor:
                 "throughput/requests_completed_episode": len(completed_events),
                 "throughput/requests_per_sec_episode": throughput,
                 "episode": episode
-            })
+            }, step=episode)
         except Exception as e:
             print(f"Failed to log throughput to wandb: {e}")
         
@@ -258,7 +258,10 @@ class QueueUpdateMonitor:
                 'queue_events_failed_total': self.event_counts['request_failed'],
             })
             
-            wandb.log(log_dict)
+            if event.episode is not None:
+                wandb.log(log_dict, step=event.episode)
+            else:
+                wandb.log(log_dict, commit=False)
             
         except Exception as e:
             print(f"Failed to log queue event to wandb: {e}")
@@ -337,7 +340,7 @@ class QueueUpdateMonitor:
                     'queue_summary_total_events': total_events,
                 })
             
-            wandb.log(summary_dict)
+            wandb.log(summary_dict, step=episode)
             
         except Exception as e:
             print(f"Failed to log queue summary to wandb: {e}")
@@ -409,7 +412,7 @@ class QueueUpdateMonitor:
                     'system_recent_success_rate': completed_count / max(1, added_count),
                 })
             
-            wandb.log(trend_dict)
+            wandb.log(trend_dict, step=episode)
             
         except Exception as e:
             print(f"Failed to log queue trends to wandb: {e}")

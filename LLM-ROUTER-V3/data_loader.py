@@ -153,7 +153,7 @@ class EpisodeBuffer:
     def finish_episode(self):
         """Finish current episode and add to trajectories"""
         if self.current_episode:
-            self.trajectories.extend(self.current_episode)
+            self.trajectories.append(self.current_episode)
             self.current_episode = []
             
     def get_current_episode(self) -> List[Dict]:

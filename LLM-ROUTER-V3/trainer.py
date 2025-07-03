@@ -318,7 +318,7 @@ class EnhancedLLMRouterTrainer:
                     "value_loss": training_metrics['value_loss'] if training_metrics else None,
                     "entropy_loss": training_metrics['entropy_loss'] if training_metrics else None,
                     "throughput_per_episode/requests_completed": episode_info['valid_actions'],
-                })
+                }, step=episode)
             
             if self.wandb_available and hasattr(self.env, 'queue_monitor'):
                 self.env.queue_monitor.log_throughput_to_wandb(episode)

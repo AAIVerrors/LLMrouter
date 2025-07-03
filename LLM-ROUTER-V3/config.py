@@ -45,9 +45,9 @@ class Config:
     LEARNING_RATE = 1e-4  # Reduced for more stable learning
     GAMMA = 0.95          # Slightly reduced discount factor
     GAE_LAMBDA = 0.9      # Reduced for less variance in advantage estimation
-    CLIP_EPSILON = 0.15   # Slightly reduced for more conservative updates
+    CLIP_EPSILON = 0.1   # Slightly reduced for more conservative updates
     VALUE_COEF = 0.25     # Reduced value function weight
-    ENTROPY_COEF = 0.02   # Increased entropy for more exploration
+    ENTROPY_COEF = 0   # Increased entropy for more exploration
     MAX_GRAD_NORM = 0.5
     PPO_EPOCHS = 6        # Increased for more thorough updates
     BATCH_SIZE = 128      # Increased batch size
@@ -79,14 +79,14 @@ class Config:
     
     # Quality scoring settings
     MODEL_ELO_SCORES = {
-        0: 1200,  # GPT-2 base ELO
+        0: 700,  # GPT-2 base ELO
         1: 1100,  # Qwen base ELO
     }
     
     # Latency simulation settings
     MODEL_LATENCY_RANGES = {
         "gpt2": (0.5, 1.0),      # GPT-2 latency range in seconds
-        "qwen": (0.7, 1.2),      # Qwen latency range in seconds
+        "qwen": (1, 2),      # Qwen latency range in seconds
         "default": (0.6, 1.1)    # Default latency range
     }
     
@@ -101,12 +101,12 @@ class Config:
     # Poisson prompt generation settings
     POISSON_ARRIVAL_RATE = 20  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the
-    EPISODE_TIME_INTERVAL = 10  # Time interval for each episode in seconds
+    EPISODE_TIME_INTERVAL = 60  # Time interval for each episode in seconds
     
     # Queue score settings
     QUEUE_SCORE_FACTOR = 0.2  # Factor to adjust queue score impact
-    QUEUE_EPSLONG = 0.1  # Epsilon for queue score stability
-    MERGE_ALPHA = 0.3 # Alpha for merging action probabilities (0.5 for equal weighting)
+    QUEUE_EPSLONG = 0.5  # Epsilon for queue score stability
+    MERGE_ALPHA = 1 # Alpha for merging action probabilities (0.5 for equal weighting)
     
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL
