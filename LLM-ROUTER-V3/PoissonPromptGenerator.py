@@ -4,32 +4,111 @@ import threading
 from queue import Queue, Empty as QueueEmpty
 from typing import Optional, Tuple, Dict
 import torch.multiprocessing as mp
+from datasets import load_dataset
+import random
 
 class PoissonPromptGenerator:
     """Generates prompts according to a Poisson arrival process"""
     
     def __init__(self, 
                  arrival_rate: float,
-                 data_loader,
                  prompt_queue,
-                 max_queue_size: int = 1000):
+                 max_queue_size: int = 1000,
+                 dataset_name: str = "tatsu-lab/alpaca"):
         """
         Initialize Poisson prompt generator
         
         Args:
             arrival_rate: Average number of arrivals per second (lambda parameter)
-            data_loader: Data loader instance (e.g., AlpacaDataLoader)
             prompt_queue: Shared queue to push prompts
             max_queue_size: Maximum queue size to prevent memory issues
+            dataset_name: Name of the dataset to load prompts from
         """
         self.arrival_rate = arrival_rate
-        self.data_loader = data_loader
         self.prompt_queue = prompt_queue
         self.max_queue_size = max_queue_size
         self.running = False
         self.thread = None
         self.total_generated = 0
         self.start_time = None
+        
+        # Load dataset internally
+        self.dataset = None
+        self.dataset_index = 0
+        self.load_dataset(dataset_name)
+        
+    def load_dataset(self, dataset_name: str):
+        """Load and prepare the dataset"""
+        try:
+            # Load the Alpaca dataset
+            dataset = load_dataset(dataset_name, split='train')
+            self.dataset = list(dataset)
+            print(f"Loaded {len(self.dataset)} samples from {dataset_name}")
+            
+        except Exception as e:
+            print(f"Error loading dataset: {e}")
+            # Fallback to dummy data
+            self._create_dummy_dataset()
+    
+    def _create_dummy_dataset(self):
+        """Create dummy dataset as fallback"""
+        templates = [
+            "Explain the concept of {topic}",
+            "Write a short story about {topic}",
+            "What are the benefits of {topic}?",
+            "How does {topic} work?",
+            "Compare and contrast {topic1} and {topic2}",
+            "Describe the history of {topic}",
+            "What are the challenges in {topic}?",
+            "How can {topic} be improved?",
+            "What is the future of {topic}?",
+            "Analyze the impact of {topic}",
+        ]
+        
+        topics = [
+            "machine learning", "artificial intelligence", "quantum computing",
+            "renewable energy", "space exploration", "biotechnology",
+            "climate change", "cryptocurrency", "virtual reality",
+            "robotics", "cybersecurity", "nanotechnology", "blockchain",
+            "neural networks", "data science", "cloud computing"
+        ]
+        
+        dummy_data = []
+        for i in range(1000):  # Generate 1000 dummy samples
+            template = templates[i % len(templates)]
+            topic = topics[i % len(topics)]
+            topic2 = topics[(i + 1) % len(topics)]
+            
+            instruction = template.format(topic=topic, topic1=topic, topic2=topic2)
+            
+            dummy_data.append({
+                'instruction': instruction,
+                'input': '',
+                'output': f'Sample response for: {instruction}'
+            })
+        
+        self.dataset = dummy_data
+        print(f"Created {len(self.dataset)} dummy samples")
+    
+    def get_next_prompt(self) -> str:
+        """Get next prompt from dataset"""
+        if not self.dataset:
+            return "Default prompt: Explain artificial intelligence."
+        
+        # Get current sample and advance index
+        sample = self.dataset[self.dataset_index]
+        self.dataset_index = (self.dataset_index + 1) % len(self.dataset)
+        
+        # Convert to prompt format
+        instruction = sample.get('instruction', '')
+        input_text = sample.get('input', '')
+        
+        if input_text:
+            prompt = f"Instruction: {instruction}\nInput: {input_text}\nResponse:"
+        else:
+            prompt = f"Instruction: {instruction}\nResponse:"
+        
+        return prompt
         
     def _generate_prompts(self):
         """Background thread that generates prompts according to Poisson process"""
@@ -38,6 +117,7 @@ class PoissonPromptGenerator:
         while self.running:
             # Generate inter-arrival time from exponential distribution
             inter_arrival_time = np.random.exponential(1.0 / self.arrival_rate)
+            # inter_arrival_time = 0.01
             
             # Sleep for the inter-arrival time
             time.sleep(inter_arrival_time)
@@ -48,8 +128,8 @@ class PoissonPromptGenerator:
             # Check queue size to prevent overflow
             if self.prompt_queue.qsize() < self.max_queue_size:
                 try:
-                    # Get next prompt from data loader
-                    prompt = self.data_loader.get_next_prompt()
+                    # Get next prompt from dataset
+                    prompt = self.get_next_prompt()
                     
                     # Create prompt entry with metadata
                     prompt_entry = {

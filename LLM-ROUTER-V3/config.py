@@ -6,24 +6,20 @@ class Config:
     MODEL_NAMES = [
         "openai-community/gpt2",
         "openai-community/gpt2",
-        "openai-community/gpt2",
-        "openai-community/gpt2",
-        "openai-community/gpt2",
-        "openai-community/gpt2",
-        "openai-community/gpt2",
-        "openai-community/gpt2",
-        "openai-community/gpt2",
-        "openai-community/gpt2",
         "Qwen/Qwen2.5-0.5B",
         "Qwen/Qwen2.5-0.5B",
         "Qwen/Qwen2.5-0.5B",
+        "openai-community/gpt2",
+        "openai-community/gpt2",
+        "openai-community/gpt2",
+        "openai-community/gpt2",
         "Qwen/Qwen2.5-0.5B",
         "Qwen/Qwen2.5-0.5B",
         "Qwen/Qwen2.5-0.5B"
     ]
     
     # Server capabilities (max concurrent requests)
-    SERVER_CAPACITIES = [13,15,30, 23, 22,55, 23,10, 13,15,30, 23, 22,55, 23,10]  # Capacity for each model
+    SERVER_CAPACITIES = [13,15,30, 23, 22,55,30, 23, 22,55, 23,10]  # Capacity for each model
     
     # Dataset settings
     DATASET_NAME = "tatsu-lab/alpaca"
@@ -34,15 +30,15 @@ class Config:
     
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)
-    MAX_EPISODES = 100   # Increased for more training
+    MAX_EPISODES = 1000   # Increased for more training
     
     # Reward function weights - adjusted for better balance
-    ALPHA = 2.0   # Quality weight (increased importance)
-    BETA = 1.0    # Latency weight
-    LAMBDA = 5.0  # Capacity penalty weight (increased to strongly discourage invalid actions)
+    ALPHA = 0.2   # Quality weight (increased importance)
+    BETA = 0.3    # Latency weight
+    LAMBDA = 0.5  # Capacity penalty weight (increased to strongly discourage invalid actions)
     
     # PPO hyperparameters - tuned for the routing problem
-    LEARNING_RATE = 1e-4  # Reduced for more stable learning
+    LEARNING_RATE = 1e-5  # Reduced for more stable learning
     GAMMA = 0.95          # Slightly reduced discount factor
     GAE_LAMBDA = 0.9      # Reduced for less variance in advantage estimation
     CLIP_EPSILON = 0.1   # Slightly reduced for more conservative updates
@@ -81,6 +77,16 @@ class Config:
     MODEL_ELO_SCORES = {
         0: 700,  # GPT-2 base ELO
         1: 1100,  # Qwen base ELO
+        2: 700,  # GPT-2 base ELO
+        3: 1500,
+        4: 700,  # GPT-2 base ELO
+        5: 1100,
+        6: 700,  # GPT-2 base ELO
+        7: 1100,
+        8: 700,  # GPT-2 base ELO
+        9: 1100,
+        10: 700, 
+        11: 1000,
     }
     
     # Latency simulation settings
@@ -99,14 +105,14 @@ class Config:
     FINAL_EVAL_EPISODES = 10  # Number of episodes for final evaluation
     
     # Poisson prompt generation settings
-    POISSON_ARRIVAL_RATE = 20  # Average arrival rate of prompts per second
+    POISSON_ARRIVAL_RATE = 5  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the
     EPISODE_TIME_INTERVAL = 60  # Time interval for each episode in seconds
     
     # Queue score settings
     QUEUE_SCORE_FACTOR = 0.2  # Factor to adjust queue score impact
     QUEUE_EPSLONG = 0.5  # Epsilon for queue score stability
-    MERGE_ALPHA = 1 # Alpha for merging action probabilities (0.5 for equal weighting)
+    MERGE_ALPHA = 0 # Alpha for merging action probabilities (0.5 for equal weighting)
     
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL

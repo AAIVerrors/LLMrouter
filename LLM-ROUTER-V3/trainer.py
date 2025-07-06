@@ -7,22 +7,22 @@ from datetime import datetime
 from config import Config
 from environment import EnhancedRouterEnvironment
 from router_network import PPOAgent
-from data_loader import AlpacaDataLoader, EpisodeBuffer
+from data_loader import EpisodeBuffer  # Only import EpisodeBuffer
 from plotter import TrainingPlotter
 from logger import MetricsLogger
+from PoissonPromptGenerator import PoissonPromptGenerator
 
 class EnhancedLLMRouterTrainer:
     def __init__(self):
         # Initialize components
         self.env = EnhancedRouterEnvironment(enable_monitoring=Config.ENABLE_QUEUE_MONITORING)
-        self.data_loader = AlpacaDataLoader()
         self.buffer = EpisodeBuffer()
         
         # Initialize episode tracking
         self.current_episode = 0  
         
         # Initialize PPO agent
-        state_dim = len(Config.SERVER_CAPACITIES)  # load + utilization per server
+        state_dim = len(Config.SERVER_CAPACITIES)  # load per server
         action_dim = len(Config.SERVER_CAPACITIES)  # Number of servers
         self.agent = PPOAgent(state_dim, action_dim)
         
@@ -109,6 +109,9 @@ class EnhancedLLMRouterTrainer:
         
     def get_episode_data(self):
         record = self.run_episode()  # record is now a list of Request objects
+        
+        
+
         episode_info = {
             'rewards': [],
             'quality_scores': [],
@@ -124,7 +127,7 @@ class EnhancedLLMRouterTrainer:
         num_processed = [0] * num_servers
         for req in record:
             server_id = req['server_id']
-            if server_id is not None and req['status'] == 'completed':
+            if server_id is not None and req['status'] == 'completed' and req['episode'] == self.current_episode:
                 num_processed[server_id] += 1
 
         # Compute per-server service rate
@@ -144,29 +147,22 @@ class EnhancedLLMRouterTrainer:
             episode_info['latencies'].append(req['processing_latency'])
             # If you have capacity_penalty, add logic here
 
-            if req['status'] == 'completed':
+            if req['status'] == 'completed' and req['episode'] == self.current_episode:
                 episode_info['valid_actions'] += 1
             else:
                 episode_info['invalid_actions'] += 1
 
             episode_reward += req['reward']
 
-
         episode_info['total_reward'] = episode_reward
         episode_info['episode_length'] = len(record)
         episode_info['service_rate'] = service_rate
 
-        # Clean up queues
-        self.env.clean_prompt_queue()
-        self.env.clean_response_queue()
-
         return episode_info
 
-    
     def run_episode(self) -> dict:
-        """Run a single episode"""
-        # Reset episode data
-        self.data_loader.reset_episode(self.current_episode)
+        """Run a single episode using Poisson prompt generator"""
+        
         state = self.env.reset()
         
         import time
@@ -177,10 +173,14 @@ class EnhancedLLMRouterTrainer:
                 print(f"Episode {self.current_episode} timed out after {Config.EPISODE_TIME_INTERVAL} seconds")
                 break
             
-            prompt = self.data_loader.get_next_prompt()  
+            # Get prompt from Poisson generator (environment handles this)
             action_mask = self.env.get_action_mask()
-            action, log_prob, value = self.agent.get_action(state, prompt, action_mask, service_rate=self.last_service_rate)
-            next_state, done = self.env.step(action, prompt)
+            
+            # Use a dummy prompt for action selection (actual prompt comes from environment)
+            dummy_prompt = "Generate response for incoming request"
+            action, log_prob, value = self.agent.get_action(state, dummy_prompt, action_mask, service_rate=self.last_service_rate)
+            
+            next_state, done = self.env.step(action, dummy_prompt)
             
             state = next_state
             
@@ -190,22 +190,30 @@ class EnhancedLLMRouterTrainer:
             # Add step to buffer (reward will be filled in later)
             self.buffer.add_step(
                 state=state,
-                prompt=prompt,
+                prompt=dummy_prompt,
                 action=action,
                 log_prob=log_prob,
                 value=value,
                 reward=0,  # Placeholder, will be updated after episode
                 action_mask=action_mask
             )
+            
+        # --- Pause and clean servers before training ---
+        self.env.pause_all_servers()
+        time.sleep(1)
         
         episode_record = self.env.get_episode_data()
         
+        time.sleep(2)
+        self.env.clean_all_queues()
+        time.sleep(2)
+        
+        # Update buffer rewards with actual episode rewards
         for i, req in enumerate(episode_record):
             if i < len(self.buffer.current_episode):
                 self.buffer.current_episode[i]['reward'] = req['reward']
         
         return episode_record
-    
     
     def train_step(self):
         """Perform one training step with collected trajectories"""
@@ -217,50 +225,6 @@ class EnhancedLLMRouterTrainer:
         training_metrics = self.agent.update(trajectories)
         self.buffer.finish_episode()
         return training_metrics
-    
-    # def evaluate_agent(self, num_episodes=5):
-    #     """Evaluate the current agent performance"""
-    #     eval_rewards = []
-    #     eval_info = {
-    #         'avg_quality_score': 0,
-    #         'avg_latency': 0,
-    #         'avg_capacity_penalty': 0,
-    #         'action_distribution': np.zeros(len(Config.SERVER_CAPACITIES)),
-    #         'invalid_action_rate': 0,
-    #         'total_completed_requests': 0,
-    #         'avg_server_utilization': np.zeros(len(Config.SERVER_CAPACITIES))
-    #     }
-        
-    #     for i in range(num_episodes):
-    #         episode_info = self.episode_stats[-i]
-    #         eval_rewards.append(episode_info['total_reward'])
-            
-    #         eval_info['avg_quality_score'] += np.mean(episode_info['quality_scores'])
-    #         eval_info['avg_latency'] += np.mean([l for l in episode_info['latencies'] if l > 0])
-    #         eval_info['avg_capacity_penalty'] += np.mean(episode_info['capacity_penalties'])
-    #         eval_info['action_distribution'] += episode_info['action_distribution']
-    #         eval_info['invalid_action_rate'] += episode_info['invalid_actions'] / Config.EPISODE_LENGTH
-    #         eval_info['total_completed_requests'] += episode_info['completed_requests']
-            
-    #         # Handle server utilizations
-    #         if episode_info['server_utilizations']:
-    #             valid_utilizations = [util for util in episode_info['server_utilizations'] 
-    #                                 if util is not None and len(util) == len(Config.SERVER_CAPACITIES)]
-    #             if valid_utilizations:
-    #                 avg_util = np.mean(valid_utilizations, axis=0)
-    #                 eval_info['avg_server_utilization'] += avg_util
-        
-    #     # Average the metrics
-    #     for key in ['avg_quality_score', 'avg_latency', 'avg_capacity_penalty', 'invalid_action_rate']:
-    #         if key in eval_info:
-    #             eval_info[key] /= num_episodes
-        
-    #     eval_info['action_distribution'] /= (num_episodes * Config.EPISODE_LENGTH)
-    #     eval_info['avg_server_utilization'] /= max(1, num_episodes)
-    #     eval_info['mean_reward'] = np.mean(eval_rewards)
-    #     eval_info['std_reward'] = np.std(eval_rewards)
-        
-    #     return eval_info
     
     def save_checkpoint(self, episode):
         """Save model checkpoint"""
@@ -280,8 +244,6 @@ class EnhancedLLMRouterTrainer:
         print(f"Wandb Available: {self.wandb_available}")
         print("=" * 60)
         
-        # best_reward = float('-inf')
-        
         for episode in range(Config.MAX_EPISODES):
             self.current_episode = episode  # Update current episode
             self.env.set_episode(episode)  # Update environment episode tracking
@@ -295,13 +257,8 @@ class EnhancedLLMRouterTrainer:
             
             print(episode_info)
             
-            # --- Pause and clean servers before training ---
-            self.env.pause_all_servers()
-            self.env.clean_all_queues()
-            
-            # Train every 1 episodes
+            # Train every episode
             training_metrics = None
-            # if episode > 0 and episode % 1 == 0:
             print(f"Training agent (episode {episode})...")
             training_metrics = self.train_step()
             if training_metrics:
@@ -322,31 +279,6 @@ class EnhancedLLMRouterTrainer:
             
             if self.wandb_available and hasattr(self.env, 'queue_monitor'):
                 self.env.queue_monitor.log_throughput_to_wandb(episode)
-                
-            # --- Resume servers after training ---
-            self.env.resume_all_servers()
-            
-            # Evaluate periodically
-            # eval_info = None
-            # if episode > 0 and episode % 20 == 0:
-            #     print(f"\nEvaluating at episode {episode}...")
-            #     eval_info = self.evaluate_agent(num_episodes=3)
-                
-            #     # Save best model
-            #     if eval_info['mean_reward'] > best_reward:
-            #         best_reward = eval_info['mean_reward']
-            #         self.save_checkpoint(f"best_{episode}")
-            #         print(f"New best model saved! Reward: {best_reward:.3f}")
-            
-            # Log metrics
-            # if episode % Config.LOG_INTERVAL == 0:
-            #     logger = MetricsLogger(self.wandb_available)
-            #     logger.log_metrics(episode, episode_info, self.episode_rewards, 
-            #                      training_metrics, eval_info)
-                
-            #     # Log queue trends
-            #     if hasattr(self.env, 'queue_monitor'):
-            #         self.env.queue_monitor.log_queue_trends(episode)
             
             # Plot progress and queue monitoring
             plot_interval = 25 if episode < 100 else 50
@@ -364,38 +296,17 @@ class EnhancedLLMRouterTrainer:
             # Save periodic checkpoints
             if episode > 0 and episode % Config.SAVE_INTERVAL == 0:
                 self.save_checkpoint(episode)
+                
+            # --- Resume servers after training ---
+            self.env.resume_all_servers()
         
-        # Final evaluation
-        # print(f"\nFinal evaluation...")
-        # final_eval = self.evaluate_agent(num_episodes=10)
-        # self.save_checkpoint("final")
+        print(f"\nTraining completed!")
         
-        # # Plot final results
-        # plotter = TrainingPlotter(self.wandb_available)
-        # plotter.plot_training_progress(self.episode_rewards, self.episode_stats)
-        
-        # print(f"\nTraining completed!")
-        # print(f"Best reward: {best_reward:.3f}")
-        # print(f"Final reward: {final_eval['mean_reward']:.3f}")
-        # print(f"Final invalid action rate: {final_eval['invalid_action_rate']:.3f}")
-        # print(f"Total completed requests in final eval: {final_eval['total_completed_requests']}")
-        
-        # # Log final summary
-        # summary_stats = {
-        #     'final_mean_reward': final_eval['mean_reward'],
-        #     'final_std_reward': final_eval['std_reward'],
-        #     'best_reward': best_reward,
-        #     'final_invalid_rate': final_eval['invalid_action_rate'],
-        #     'final_avg_quality': final_eval['avg_quality_score'],
-        #     'final_avg_latency': final_eval['avg_latency'],
-        #     'total_episodes': Config.MAX_EPISODES,
-        #     'training_completed': True
-        # }
-        
-        # try:
-        #     if self.wandb_available:
-        #         wandb.log(summary_stats)
-        #         wandb.finish()
-        #         print(f"Final summary logged to wandb")
-        # except Exception as e:
-        #     print(f"Final wandb logging failed: {e}")
+        try:
+            self.env.pause_all_servers()
+            self.env.clean_all_queues()
+            if self.wandb_available:
+                wandb.finish()
+            print("Training cleanup completed successfully")
+        except Exception as e:
+            print(f"Cleanup failed: {e}")

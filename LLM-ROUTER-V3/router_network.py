@@ -23,30 +23,53 @@ class RouterNetwork(nn.Module):
         prompt_dim = 384 
         total_input_dim = prompt_dim + state_dim
     
-        # Shared layers
+        # Shared layers with improved initialization
         self.shared_layers = nn.Sequential(
             nn.Linear(total_input_dim, Config.HIDDEN_DIM),
+            nn.LayerNorm(Config.HIDDEN_DIM),  # Add layer normalization
             nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(Config.HIDDEN_DIM, Config.HIDDEN_DIM),
+            nn.LayerNorm(Config.HIDDEN_DIM),  # Add layer normalization
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(Config.HIDDEN_DIM, Config.HIDDEN_DIM),
+            nn.LayerNorm(Config.HIDDEN_DIM),  # Add layer normalization
             nn.ReLU(),
             nn.Dropout(0.1)
         )
         
-        # Actor head (policy)
+        # Actor head (policy) with better initialization
         self.actor = nn.Sequential(
             nn.Linear(Config.HIDDEN_DIM, Config.HIDDEN_DIM // 2),
+            nn.LayerNorm(Config.HIDDEN_DIM // 2),
             nn.ReLU(),
+            nn.Dropout(0.05),
             nn.Linear(Config.HIDDEN_DIM // 2, action_dim)
         )
         
-        # Critic head (value function)
+        # Critic head (value function) with better initialization
         self.critic = nn.Sequential(
             nn.Linear(Config.HIDDEN_DIM, Config.HIDDEN_DIM // 2),
+            nn.LayerNorm(Config.HIDDEN_DIM // 2),
             nn.ReLU(),
+            nn.Dropout(0.05),
             nn.Linear(Config.HIDDEN_DIM // 2, 1)
         )
         
         self.action_dim = action_dim
+        
+        # Initialize weights properly
+        self._initialize_weights()
+        
+    def _initialize_weights(self):
+        """Initialize network weights to prevent gradient explosions"""
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                # Xavier initialization for linear layers
+                nn.init.xavier_uniform_(module.weight, gain=0.5)
+                if module.bias is not None:
+                    nn.init.constant_(module.bias, 0)
         
     def encode_prompt(self, prompts):
         """Encode prompts using sentence transformer"""
@@ -82,21 +105,25 @@ class RouterNetwork(nn.Module):
         shared_output = self.shared_layers(combined_input)
         
         # Actor output (logits)
-        logits = self.actor(shared_output)
+        logits =  self.actor(shared_output)
         
         # Apply action mask if provided
-        if action_mask is not None:
-            logits = logits + (action_mask - 1) * 1e8  # Mask invalid actions
+      
+        logits = logits * action_mask  # Mask invalid actions
+        
+        logits = F.softmax(logits, dim=-1)
         
         # Value output
         value = self.critic(shared_output)
+        print(action_mask)
+        print(logits)
         
         return logits, value
     
     def get_action_and_value(self, state, prompt, action_mask=None, action=None):
         """Get action and value for given state and prompt"""
         logits, value = self.forward(state, prompt, action_mask)
-        probs = F.softmax(logits, dim=-1)
+        probs = logits
         dist = Categorical(probs)
         
         if action is None:

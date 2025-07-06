@@ -12,7 +12,6 @@ import os
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from queue import Empty
 from PoissonPromptGenerator import PoissonPromptGenerator
-from data_loader import AlpacaDataLoader
 
 # Set multiprocessing start method
 try:
@@ -53,24 +52,6 @@ def server_worker_process(model_name: str,
             os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
             torch.cuda.set_device(0)
         
-        # Initialize vLLM inside the process
-        # llm = LLM(
-        #     model=model_name,
-        #     tensor_parallel_size=1,
-        #     gpu_memory_utilization=0.4,
-        #     max_num_batched_tokens=256,  
-        #     max_model_len=128,  
-        #     trust_remote_code=True,
-        #     enforce_eager=True,
-        #     disable_custom_all_reduce=True,
-        # )
-        
-        # sampling_params = SamplingParams(
-        #     temperature=0.7,
-        #     max_tokens=128,
-        #     top_p=0.95,
-        # )
-        
         # Initialize tokenizer
         tokenizer = AutoTokenizer.from_pretrained(
             model_name,
@@ -99,7 +80,7 @@ def server_worker_process(model_name: str,
         
         # Process requests
         while running.value:
-            if pause_event is not None and pause_event.is_set():
+            while pause_event is not None and pause_event.is_set():
                 time.sleep(0.1)
                 continue
             try:
@@ -324,10 +305,7 @@ class LLMServerWrapper:
 class QualityScorer:
     """Quality scoring for prompt-model pairs"""
     def __init__(self):
-        self.model_elo_scores = {
-            0: 1200,  # GPT-2
-            1: 1100,  # Qwen
-        }
+        self.model_elo_scores = Config.MODEL_ELO_SCORES
     
     def compute_quality_score(self, prompt: str, server_id: int) -> float:
         """Compute quality score for prompt-server pair"""
@@ -359,7 +337,7 @@ def response_collector_worker(response_queue,
     
     while running.value:
         try:
-            data = response_queue.get(timeout=0.05)
+            data = response_queue.get_nowait()
             if data is None:
                 continue
             
@@ -445,14 +423,13 @@ class EnhancedRouterEnvironment:
         # Episode completion tracking
         self.episode_completed = mp.Queue()
         
-        # Create prompt queue
+        # Create prompt queue and generator
         self.prompt_queue = self.manager.Queue()
-        self.dataloader = AlpacaDataLoader()
         self.prompt_generator = PoissonPromptGenerator(
             arrival_rate=Config.POISSON_ARRIVAL_RATE,
-            data_loader=self.dataloader,
             prompt_queue=self.prompt_queue,
-            max_queue_size=Config.MAX_PROMPT_QUEUE_SIZE
+            max_queue_size=Config.MAX_PROMPT_QUEUE_SIZE,
+            dataset_name=Config.DATASET_NAME
         )
         self.prompt_generator.start()
         
@@ -524,15 +501,12 @@ class EnhancedRouterEnvironment:
         state = []
         for server in self.servers:
             load = server.get_current_load()
-            # utilization = load / server.capacity if server.capacity > 0 else 0
-            # capacity = server.capacity
             state.extend([load])
         return np.array(state, dtype=np.float32)
     
     def get_action_mask(self) -> np.ndarray:
         """Get valid actions mask"""
         return np.array([server.can_accept_request() for server in self.servers], dtype=np.float32)
-
 
     def get_episode_data(self) -> List[Dict[str, Any]]:
         episode = []
@@ -546,19 +520,18 @@ class EnhancedRouterEnvironment:
         return episode
     
     def clean_episode_completed(self):
+        cleared_count = 0
         while True:
             try:
                 self.episode_completed.get_nowait()
                 cleared_count += 1
-            except:
+            except Empty:
                 break
-
     
-    def step(self, action: int, prompt: str) -> Tuple[np.ndarray, float, bool, Dict]:
+    def step(self, action: int, prompt: str) -> Tuple[np.ndarray, bool]:
         """Execute routing action"""
         
         # Collect accumulated rewards
-        # completed_count = self.total_completed.value
         with self.total_completed.get_lock():
             self.total_completed.value = 0
         
@@ -566,12 +539,17 @@ class EnhancedRouterEnvironment:
         request_id = f"req_{self.request_counter}"
         self.request_counter += 1
         
+        # Get prompt from Poisson generator
         while True:
             try:
-                prompt = self.prompt_queue.get_nowait()['prompt']
+                prompt_data = self.prompt_queue.get_nowait()
+                prompt = prompt_data['prompt']
                 break  # Exit loop if prompt is successfully retrieved
             except Empty:
                 print("Warning: Prompt queue is empty")
+                # Use a default prompt if queue is empty
+                prompt = "Instruction: Explain the concept of artificial intelligence.\nResponse:"
+                break
         
         request = Request(
             id=request_id,
@@ -584,7 +562,6 @@ class EnhancedRouterEnvironment:
         # Check server availability
         server = self.servers[action]
         if not server.can_accept_request():
-
             # Log failed request
             if self.enable_monitoring and hasattr(self, 'queue_monitor'):
                 self.queue_monitor.log_request_failed(
@@ -595,7 +572,6 @@ class EnhancedRouterEnvironment:
                     reason="Server at capacity",
                     episode=self.current_episode
                 )
-            
             
             return self.get_state(), False
         
@@ -698,3 +674,6 @@ class EnhancedRouterEnvironment:
         if hasattr(self, 'servers'):
             for server in self.servers:
                 server.stop()
+        
+        if hasattr(self, 'prompt_generator'):
+            self.prompt_generator.stop()
