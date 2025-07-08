@@ -1,0 +1,11 @@
+model_name,value,classification
+fastchat-t5-3b: lmsys/fastchat-t5-3b-v1.0
+gemma-1.1-2b-it: google/gemma-1.1-2b-it
+gemma-2-2b-it: google/gemma-2-2b-it
+gemma-2b-it: google/gemma-2b-it
+granite-3.0-2b-instruct: ibm-granite/granite-3.0-2b-instruct
+granite-3.1-2b-instruct: ibm-granite/granite-3.1-2b-instruct
+llama-3.2-1b-instruct: meta-llama/Llama-3.2-1B-Instruct
+llama-3.2-3b-instruct: meta-llama/Llama-3.2-3B-Instruct
+phi-3-mini-128k-instruct: microsoft/Phi-3-mini-128k-instruct
+phi-3-mini-4k-instruct: microsoft/Phi-3-mini-4k-instruct

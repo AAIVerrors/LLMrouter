@@ -107,23 +107,32 @@ class RouterNetwork(nn.Module):
         # Actor output (logits)
         logits =  self.actor(shared_output)
         
+        print(state)
+        print(action_mask)
+        
         # Apply action mask if provided
       
-        logits = logits * action_mask  # Mask invalid actions
-        
+        # Apply action mask BEFORE softmax if provided
+        if action_mask is not None:
+            # FIXED: Use action_mask directly (not 1 - action_mask)
+            # Where mask=0 (invalid), add large negative value
+            # Where mask=1 (valid), add 0 (no change)
+            mask_value = -1e9
+            logits = logits + (action_mask == 0).float() * mask_value
+            
         logits = F.softmax(logits, dim=-1)
         
         # Value output
         value = self.critic(shared_output)
-        print(action_mask)
-        print(logits)
+        # print(action_mask)
+        # print(logits)
         
         return logits, value
     
     def get_action_and_value(self, state, prompt, action_mask=None, action=None):
         """Get action and value for given state and prompt"""
         logits, value = self.forward(state, prompt, action_mask)
-        probs = logits
+        probs = logits.clone()
         dist = Categorical(probs)
         
         if action is None:
@@ -132,7 +141,7 @@ class RouterNetwork(nn.Module):
         log_prob = dist.log_prob(action)
         entropy = dist.entropy()
         
-        return action, log_prob, entropy, value, probs
+        return action, log_prob, entropy, value, logits
 
     def get_queue_scores(self, state, service_rate, factor=Config.QUEUE_SCORE_FACTOR, epslon=Config.QUEUE_EPSLONG):
         """
@@ -165,6 +174,7 @@ class PPOAgent:
 
     def get_action(self, state, prompt, action_mask=None, alpha=Config.MERGE_ALPHA, service_rate=[1]*len(Config.SERVER_CAPACITIES)):
         """Get action for given state and prompt"""
+        alpha=Config.MERGE_ALPHA
         state_tensor = torch.FloatTensor(state).to(Config.DEVICE)
         
         if action_mask is not None:
@@ -176,6 +186,8 @@ class PPOAgent:
             action, log_prob, entropy, value, dist_policy = self.network.get_action_and_value(
                 state_tensor, prompt, action_mask_tensor
             )
+        print(dist_policy)
+        print(action)
             
         # Get queue scores and convert to log-probabilities
         queue_scores = self.network.get_queue_scores(state, service_rate=service_rate)
@@ -188,17 +200,13 @@ class PPOAgent:
         
         merged_probs = torch.softmax(merged_log_probs, dim=-1)
         
-        # If all probs are zero or NaN, set uniform distribution
-        # if torch.any(torch.isnan(merged_probs)) or torch.sum(merged_probs) == 0:
-        #     merged_probs = torch.ones_like(merged_probs) / merged_probs.numel()
-
         # Sample action from merged distribution
-        dist = torch.distributions.Categorical(merged_probs)
+        dist = Categorical(merged_log_probs)
         action = dist.sample()
         merged_log_prob = dist.log_prob(action)
         # print(f"Action: {action}, Merged Log Prob: {merged_log_prob}, dist: {dist.__dict__}")
-
-
+        print(merged_log_probs)
+        print(action)
         return action.cpu().item(), merged_log_prob.cpu().item(), value.cpu().item()
 
     def update(self, trajectories):

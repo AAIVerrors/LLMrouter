@@ -176,11 +176,17 @@ class EnhancedLLMRouterTrainer:
             # Get prompt from Poisson generator (environment handles this)
             action_mask = self.env.get_action_mask()
             
+            prompt = self.env.get_next_prompt()
+            if not prompt:
+                # print("No more prompts available")
+                time.sleep(0.1)
+                continue
+            prompt = prompt['prompt']  # Extract the actual prompt text
+            print(prompt)
             # Use a dummy prompt for action selection (actual prompt comes from environment)
-            dummy_prompt = "Generate response for incoming request"
-            action, log_prob, value = self.agent.get_action(state, dummy_prompt, action_mask, service_rate=self.last_service_rate)
+            action, log_prob, value = self.agent.get_action(state, prompt, action_mask, service_rate=self.last_service_rate)
             
-            next_state, done = self.env.step(action, dummy_prompt)
+            next_state, done = self.env.step(action, prompt)
             
             state = next_state
             
@@ -190,7 +196,7 @@ class EnhancedLLMRouterTrainer:
             # Add step to buffer (reward will be filled in later)
             self.buffer.add_step(
                 state=state,
-                prompt=dummy_prompt,
+                prompt=prompt,
                 action=action,
                 log_prob=log_prob,
                 value=value,
@@ -255,7 +261,7 @@ class EnhancedLLMRouterTrainer:
             self.episode_rewards.append(episode_info['rewards'])
             self.episode_stats.append(episode_info)
             
-            print(episode_info)
+            # print(episode_info)
             
             # Train every episode
             training_metrics = None

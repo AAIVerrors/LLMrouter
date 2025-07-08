@@ -4,22 +4,20 @@ import time
 class Config:
     # Model settings
     MODEL_NAMES = [
-        "openai-community/gpt2",
-        "openai-community/gpt2",
-        "Qwen/Qwen2.5-0.5B",
-        "Qwen/Qwen2.5-0.5B",
-        "Qwen/Qwen2.5-0.5B",
-        "openai-community/gpt2",
-        "openai-community/gpt2",
-        "openai-community/gpt2",
-        "openai-community/gpt2",
-        "Qwen/Qwen2.5-0.5B",
-        "Qwen/Qwen2.5-0.5B",
-        "Qwen/Qwen2.5-0.5B"
+        # "lmsys/fastchat-t5-3b-v1.0",
+        "google/gemma-1.1-2b-it",
+        "google/gemma-2-2b-it",
+        "google/gemma-2b-it",
+        "ibm-granite/granite-3.0-2b-instruct",
+        "ibm-granite/granite-3.1-2b-instruct",
+        "meta-llama/Llama-3.2-1B-Instruct",
+        # "meta-llama/Llama-3.2-3B-Instruct",
+        # "microsoft/Phi-3-mini-128k-instruct",
+        # "microsoft/Phi-3-mini-4k-instruct",
     ]
     
     # Server capabilities (max concurrent requests)
-    SERVER_CAPACITIES = [13,15,30, 23, 22,55,30, 23, 22,55, 23,10]  # Capacity for each model
+    SERVER_CAPACITIES = [15,30, 23, 22,55,30]  # Capacity for each model
     
     # Dataset settings
     DATASET_NAME = "tatsu-lab/alpaca"
@@ -82,11 +80,6 @@ class Config:
         4: 700,  # GPT-2 base ELO
         5: 1100,
         6: 700,  # GPT-2 base ELO
-        7: 1100,
-        8: 700,  # GPT-2 base ELO
-        9: 1100,
-        10: 700, 
-        11: 1000,
     }
     
     # Latency simulation settings
@@ -105,9 +98,9 @@ class Config:
     FINAL_EVAL_EPISODES = 10  # Number of episodes for final evaluation
     
     # Poisson prompt generation settings
-    POISSON_ARRIVAL_RATE = 5  # Average arrival rate of prompts per second
+    POISSON_ARRIVAL_RATE = 1  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the
-    EPISODE_TIME_INTERVAL = 60  # Time interval for each episode in seconds
+    EPISODE_TIME_INTERVAL = 300  # Time interval for each episode in seconds
     
     # Queue score settings
     QUEUE_SCORE_FACTOR = 0.2  # Factor to adjust queue score impact

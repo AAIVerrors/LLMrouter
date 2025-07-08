@@ -9,7 +9,7 @@ from config import Config
 from queueMonitor import QueueUpdateMonitor
 import torch.multiprocessing as mp
 import os
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, AutoModelForSeq2SeqLM
 from queue import Empty
 from PoissonPromptGenerator import PoissonPromptGenerator
 
@@ -64,13 +64,23 @@ def server_worker_process(model_name: str,
             tokenizer.pad_token = tokenizer.eos_token
         
         # Load model with FlashAttention 2
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.float16, 
-            device_map="auto",
-            trust_remote_code=True,
-            attn_implementation="flash_attention_2",
-        )
+        
+        if "t5" in model_name:
+            model = AutoModelForSeq2SeqLM.from_pretrained(
+                model_name,
+                torch_dtype=torch.float16, 
+                device_map="auto",
+                trust_remote_code=True,
+                # attn_implementation="flash_attention_2",
+            )
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                torch_dtype=torch.float16, 
+                device_map="auto",
+                trust_remote_code=True,
+                # attn_implementation="flash_attention_2",
+            )
         
         model.eval()
         print(f"Server {server_id} ({model_name}) initialized on GPU {gpu_id}")
@@ -141,7 +151,7 @@ def server_worker_process(model_name: str,
                     
                     # Process request with proper validation
                     with torch.no_grad():
-                        with torch.cuda.amp.autocast(dtype=torch.float16):
+                        with torch.amp.autocast('cuda', dtype=torch.float16):
                             outputs = model.generate(
                                 input_ids=inputs['input_ids'],
                                 attention_mask=inputs['attention_mask'],
@@ -246,7 +256,7 @@ class LLMServerWrapper:
         self.pause_event.clear()
         
         # Create queues and shared data
-        self.request_queue = manager.Queue()
+        self.request_queue = mp.Queue()
         self.response_queue = response_queue
         
         # Create shared stats with explicit locks
@@ -477,7 +487,7 @@ class EnhancedRouterEnvironment:
         
         # Wait for initialization
         print("Waiting for servers to initialize...")
-        time.sleep(5)
+        time.sleep(10)
         
         self.reset()
         print("Environment initialization complete!")
@@ -506,7 +516,7 @@ class EnhancedRouterEnvironment:
     
     def get_action_mask(self) -> np.ndarray:
         """Get valid actions mask"""
-        return np.array([server.can_accept_request() for server in self.servers], dtype=np.float32)
+        return torch.tensor([server.can_accept_request() for server in self.servers], dtype=torch.float32)
 
     def get_episode_data(self) -> List[Dict[str, Any]]:
         episode = []
@@ -528,6 +538,17 @@ class EnhancedRouterEnvironment:
             except Empty:
                 break
     
+    def get_next_prompt(self) -> str:
+        prompt = None
+        try:
+            prompt = self.prompt_queue.get_nowait()
+        except Empty:
+            # print("Warning: Prompt queue is empty")
+            pass
+        
+        return prompt
+         
+    
     def step(self, action: int, prompt: str) -> Tuple[np.ndarray, bool]:
         """Execute routing action"""
         
@@ -538,18 +559,6 @@ class EnhancedRouterEnvironment:
         # Create request
         request_id = f"req_{self.request_counter}"
         self.request_counter += 1
-        
-        # Get prompt from Poisson generator
-        while True:
-            try:
-                prompt_data = self.prompt_queue.get_nowait()
-                prompt = prompt_data['prompt']
-                break  # Exit loop if prompt is successfully retrieved
-            except Empty:
-                print("Warning: Prompt queue is empty")
-                # Use a default prompt if queue is empty
-                prompt = "Instruction: Explain the concept of artificial intelligence.\nResponse:"
-                break
         
         request = Request(
             id=request_id,
