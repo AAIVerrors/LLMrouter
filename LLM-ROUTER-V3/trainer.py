@@ -261,7 +261,7 @@ class EnhancedLLMRouterTrainer:
             self.episode_rewards.append(episode_info['rewards'])
             self.episode_stats.append(episode_info)
             
-            # print(episode_info)
+            print(episode_info)
             
             # Train every episode
             training_metrics = None

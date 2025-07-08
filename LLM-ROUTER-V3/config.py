@@ -6,7 +6,7 @@ class Config:
     MODEL_NAMES = [
         # "lmsys/fastchat-t5-3b-v1.0",
         "google/gemma-1.1-2b-it",
-        "google/gemma-2-2b-it",
+        # "google/gemma-2-2b-it",
         "google/gemma-2b-it",
         "ibm-granite/granite-3.0-2b-instruct",
         "ibm-granite/granite-3.1-2b-instruct",
@@ -17,7 +17,7 @@ class Config:
     ]
     
     # Server capabilities (max concurrent requests)
-    SERVER_CAPACITIES = [15,30, 23, 22,55,30]  # Capacity for each model
+    SERVER_CAPACITIES = [15,30, 23, 22,55]  # Capacity for each model
     
     # Dataset settings
     DATASET_NAME = "tatsu-lab/alpaca"
