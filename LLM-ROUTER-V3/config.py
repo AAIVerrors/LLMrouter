@@ -3,11 +3,28 @@ import time
 
 class Config:
     # Model settings
+    # MODEL_NAMES = [
+    #     # "lmsys/fastchat-t5-3b-v1.0",
+    #     "google/gemma-1.1-2b-it",
+    #     # "google/gemma-2-2b-it",
+    #     "google/gemma-2b-it",
+    #     "ibm-granite/granite-3.0-2b-instruct",
+    #     "ibm-granite/granite-3.1-2b-instruct",
+    #     "meta-llama/Llama-3.2-1B-Instruct",
+    #     # "meta-llama/Llama-3.2-3B-Instruct",
+    #     # "microsoft/Phi-3-mini-128k-instruct",
+    #     # "microsoft/Phi-3-mini-4k-instruct",
+    # ]
+    
+    # Model settings
     MODEL_NAMES = [
         # "lmsys/fastchat-t5-3b-v1.0",
         "google/gemma-1.1-2b-it",
         # "google/gemma-2-2b-it",
         "google/gemma-2b-it",
+        "ibm-granite/granite-3.0-2b-instruct",
+        "ibm-granite/granite-3.1-2b-instruct",
+        "meta-llama/Llama-3.2-1B-Instruct",
         "ibm-granite/granite-3.0-2b-instruct",
         "ibm-granite/granite-3.1-2b-instruct",
         "meta-llama/Llama-3.2-1B-Instruct",
@@ -17,7 +34,7 @@ class Config:
     ]
     
     # Server capabilities (max concurrent requests)
-    SERVER_CAPACITIES = [15,30, 23, 22,55]  # Capacity for each model
+    SERVER_CAPACITIES = [15,30, 23, 22,55, 22, 10, 45]  # Capacity for each model
     
     # Dataset settings
     DATASET_NAME = "tatsu-lab/alpaca"
@@ -80,6 +97,9 @@ class Config:
         4: 700,  # GPT-2 base ELO
         5: 1100,
         6: 700,  # GPT-2 base ELO
+        7: 1500,
+        8: 700,  # GPT-2 base ELO
+        9: 1100,
     }
     
     # Latency simulation settings
@@ -98,14 +118,14 @@ class Config:
     FINAL_EVAL_EPISODES = 10  # Number of episodes for final evaluation
     
     # Poisson prompt generation settings
-    POISSON_ARRIVAL_RATE = 1  # Average arrival rate of prompts per second
+    POISSON_ARRIVAL_RATE = 5  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the
-    EPISODE_TIME_INTERVAL = 300  # Time interval for each episode in seconds
+    EPISODE_TIME_INTERVAL = 60  # Time interval for each episode in seconds
     
     # Queue score settings
     QUEUE_SCORE_FACTOR = 0.2  # Factor to adjust queue score impact
     QUEUE_EPSLONG = 0.5  # Epsilon for queue score stability
-    MERGE_ALPHA = 0 # Alpha for merging action probabilities (0.5 for equal weighting)
+    MERGE_ALPHA = 1 # Alpha for merging action probabilities (0.5 for equal weighting)
     
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL

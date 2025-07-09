@@ -155,6 +155,10 @@ class RouterNetwork(nn.Module):
             capacity = Config.SERVER_CAPACITIES[i]
             utilization = load / capacity
             
+            for index, ele in enumerate(service_rate):
+                if i <= 0:
+                    service_rate[i] = 0.0001
+            
             # Compute score based on load and service rate
             score = (1-factor)*(1-utilization)*(service_rate[i]/(load+epslon))\
                     + (1-factor)*utilization*(1-(load/capacity)) \

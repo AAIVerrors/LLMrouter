@@ -12,6 +12,9 @@ import os
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, AutoModelForSeq2SeqLM
 from queue import Empty
 from PoissonPromptGenerator import PoissonPromptGenerator
+from quality_model import P2LPredictor
+
+
 
 # Set multiprocessing start method
 try:
@@ -163,7 +166,7 @@ def server_worker_process(model_name: str,
                                 eos_token_id=tokenizer.eos_token_id,
                                 min_length=10,
                                 use_cache=True,
-                                num_return_sequences=1
+                                num_return_sequences=1,
                             )
                     
                     # Validate output and extract new tokens
@@ -311,11 +314,21 @@ class LLMServerWrapper:
         """Get server ID"""
         return self.server_id
     
+    def get_model_name(self) -> str:
+        """Get model name"""
+        return self.model_name
+    
 
 class QualityScorer:
     """Quality scoring for prompt-model pairs"""
     def __init__(self):
         self.model_elo_scores = Config.MODEL_ELO_SCORES
+        self.quality_model = P2LPredictor()
+        
+    def compute_quality_score(self, prompt: str, model_name: str) -> float:
+        coefs = self.quality_model.get_coefficients(prompt)
+        score = coefs.get(model_name.split('/')[1], 0.0)
+        return score
     
     def compute_quality_score(self, prompt: str, server_id: int) -> float:
         """Compute quality score for prompt-server pair"""
@@ -585,7 +598,7 @@ class EnhancedRouterEnvironment:
             return self.get_state(), False
         
         # Valid action - compute quality and log request
-        request.quality_score = self.quality_scorer.compute_quality_score(prompt, action)
+        request.quality_score = self.quality_scorer.compute_quality_score(prompt, server.get_model_name())
 
         # Send request to server
         server.put_request(request)

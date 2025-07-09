@@ -109,8 +109,6 @@ class EnhancedLLMRouterTrainer:
         
     def get_episode_data(self):
         record = self.run_episode()  # record is now a list of Request objects
-        
-        
 
         episode_info = {
             'rewards': [],

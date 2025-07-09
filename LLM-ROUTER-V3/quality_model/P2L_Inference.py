@@ -229,26 +229,27 @@ def run_p2l_inference_on_arena_data(model, tokenizer, model_list, max_samples=10
     
     return results
 
+def get_quality_score(prompt):
+    
+
 if __name__ == "__main__":
     # Set up Hugging Face authentication
     setup_hf_authentication("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")
 
     # Load model and tokenizer
     fname = hf_hub_download(
-            repo_id="lmarena-ai/p2l-7b-grk-02222025", filename="model_list.json", repo_type="model"
+            repo_id="lmarena-ai/p2l-135m-bt-01132025", filename="model_list.json", repo_type="model"
         )
 
     with open(fname) as fin:
         model_list = json.load(fin)
        
-
-
     print(f"Model list: {model_list}")
 
 
-    tokenizer = AutoTokenizer.from_pretrained("lmarena-ai/p2l-7b-grk-02222025")
+    tokenizer = AutoTokenizer.from_pretrained("lmarena-ai/p2l-135m-bt-01132025")
     model = P2LModel.from_pretrained(
-        "lmarena-ai/p2l-7b-grk-02222025",
+        "lmarena-ai/p2l-135m-bt-01132025",
         CLS_id=tokenizer.cls_token_id,
         num_models=len(model_list),
         torch_dtype=torch.bfloat16,
