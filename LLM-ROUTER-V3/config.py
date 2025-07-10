@@ -28,13 +28,22 @@ class Config:
         "ibm-granite/granite-3.0-2b-instruct",
         "ibm-granite/granite-3.1-2b-instruct",
         "meta-llama/Llama-3.2-1B-Instruct",
-        # "meta-llama/Llama-3.2-3B-Instruct",
-        # "microsoft/Phi-3-mini-128k-instruct",
-        # "microsoft/Phi-3-mini-4k-instruct",
+        # # "meta-llama/Llama-3.2-3B-Instruct",
+        # # "microsoft/Phi-3-mini-128k-instruct",
+        # # "microsoft/Phi-3-mini-4k-instruct",
+        # 'gpt-3.5-turbo-0125',
+        # 'gpt-4o-2024-08-06',
+        # 'gpt-4o-mini-2024-07-18',
+        # # 'o1-mini',
+        # 'gemini-2.0-flash-001',
+        # 'gemini-1.5-flash-001',
+        # 'claude-3-5-haiku-20241022',
+        # 'claude-3-haiku-20240307',
+        # # 'claude-3-5-sonnet-20240620',
     ]
     
     # Server capabilities (max concurrent requests)
-    SERVER_CAPACITIES = [15,30, 23, 22,55, 22, 10, 45]  # Capacity for each model
+    SERVER_CAPACITIES = [15,30, 12, 12,30, 22, 10, 22]  # Capacity for each model
     
     # Dataset settings
     DATASET_NAME = "tatsu-lab/alpaca"
@@ -48,9 +57,9 @@ class Config:
     MAX_EPISODES = 1000   # Increased for more training
     
     # Reward function weights - adjusted for better balance
-    ALPHA = 0.2   # Quality weight (increased importance)
-    BETA = 0.3    # Latency weight
-    LAMBDA = 0.5  # Capacity penalty weight (increased to strongly discourage invalid actions)
+    ALPHA = 0.5   # Quality weight (increased importance)
+    BETA = 0.5    # Latency weight
+    LAMBDA = 0  # Capacity penalty weight (increased to strongly discourage invalid actions)
     
     # PPO hyperparameters - tuned for the routing problem
     LEARNING_RATE = 1e-5  # Reduced for more stable learning
@@ -124,8 +133,10 @@ class Config:
     
     # Queue score settings
     QUEUE_SCORE_FACTOR = 0.2  # Factor to adjust queue score impact
-    QUEUE_EPSLONG = 0.5  # Epsilon for queue score stability
-    MERGE_ALPHA = 1 # Alpha for merging action probabilities (0.5 for equal weighting)
+    QUEUE_EPSLONG = 0.0001  # Epsilon for queue score stability
+    MERGE_ALPHA = 0 # Alpha for merging action probabilities (0.5 for equal weighting)
+    
+    ROUND_ROBIN = True
     
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL

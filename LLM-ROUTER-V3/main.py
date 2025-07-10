@@ -14,6 +14,9 @@ from config import Config
 from trainer import EnhancedLLMRouterTrainer
 
 import torch.multiprocessing as mp
+from dotenv import load_dotenv
+import os
+
 
 def setup_environment():
     """Setup training environment with reproducible seeds"""
@@ -52,6 +55,8 @@ def main():
     print("Enhanced LLM Router Training")
     print("=" * 50)
     print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    load_dotenv()
     
     # Setup environment
     setup_environment()

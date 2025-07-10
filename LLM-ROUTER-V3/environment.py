@@ -13,8 +13,9 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from queue import Empty
 from PoissonPromptGenerator import PoissonPromptGenerator
 from quality_model import P2LPredictor
-
-
+import anthropic
+from google import genai
+from openai import OpenAI
 
 # Set multiprocessing start method
 try:
@@ -54,19 +55,7 @@ def server_worker_process(model_name: str,
         if gpu_id is not None:
             os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
             torch.cuda.set_device(0)
-        
-        # Initialize tokenizer
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_name,
-            trust_remote_code=True,
-            padding_side='left'  # Important for batch generation
-        )
-        
-        # Set pad token if not set
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-        
-        # Load model with FlashAttention 2
+
         
         if "t5" in model_name:
             model = AutoModelForSeq2SeqLM.from_pretrained(
@@ -76,7 +65,24 @@ def server_worker_process(model_name: str,
                 trust_remote_code=True,
                 # attn_implementation="flash_attention_2",
             )
+        elif "gpt" in model_name or "o1" in model_name:
+            model = OpenAI()
+        elif "gemini" in model_name:
+            model = genai.Client(api_key='AIzaSyCVkz9FRUPwBkvOGKEEAQP5llI1y1p8FFo')
+        elif "claude" in model_name:
+            model = anthropic.Anthropic()
         else:
+            # Initialize tokenizer
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_name,
+                trust_remote_code=True,
+                padding_side='left'  # Important for batch generation
+            )
+            
+            # Set pad token if not set
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+                
             model = AutoModelForCausalLM.from_pretrained(
                 model_name,
                 torch_dtype=torch.float16, 
@@ -85,7 +91,8 @@ def server_worker_process(model_name: str,
                 # attn_implementation="flash_attention_2",
             )
         
-        model.eval()
+            model.eval()
+            
         print(f"Server {server_id} ({model_name}) initialized on GPU {gpu_id}")
         
         # Maintain local processing queue
@@ -139,58 +146,92 @@ def server_worker_process(model_name: str,
                 )
 
                 try:
-                    # Generate response
-                    inputs = tokenizer(
-                        request.prompt,
-                        return_tensors="pt",
-                        padding=True,
-                        truncation=True,
-                        max_length=128
-                    ).to(model.device)
-                    
-                    # Validate input tensors
-                    if inputs['input_ids'].size(0) == 0 or inputs['input_ids'].size(1) == 0:
-                        raise ValueError("Empty input tensor")
-                    
-                    # Process request with proper validation
-                    with torch.no_grad():
-                        with torch.amp.autocast('cuda', dtype=torch.float16):
-                            outputs = model.generate(
-                                input_ids=inputs['input_ids'],
-                                attention_mask=inputs['attention_mask'],
-                                max_new_tokens=200,
-                                temperature=0.7,
-                                top_p=0.95,
-                                do_sample=True,
-                                pad_token_id=tokenizer.pad_token_id,
-                                eos_token_id=tokenizer.eos_token_id,
-                                min_length=10,
-                                use_cache=True,
-                                num_return_sequences=1,
+                    if "gpt" in model_name or "o1" in model_name:
+                        response = model.responses.create(
+                            model=model_name,
+                            input= request.prompt
                             )
+                        response_text = response.output_text
+                    elif "gemini" in model_name:
+                        if model_name == "gemini-1.5-flash-001":
+                            model_name = "gemini-1.5-flash"
+                        elif model_name == "gemini-2.0-flash-001":
+                            model_name = "gemini-2.0-flash"
+                        message = model.models.generate_content(
+                            model=model_name, contents="Explain how AI works in a few words"
+                        )
+                        response_text = message.text
+                    elif "claude" in model_name:
+                        message = model.messages.create(
+                            model=model_name,
+                            max_tokens=200,
+                            messages=[
+                                {
+                                    "role": "user",
+                                    "content": [
+                                        {
+                                            "type": "text",
+                                            "text": request.prompt
+                                        }
+                                    ]
+                                }
+                            ]
+                        )
+                        response_text = message.content[0].text
+                    else:
                     
-                    # Validate output and extract new tokens
-                    if outputs is None or outputs.size(0) == 0:
-                        raise ValueError("Model returned empty output")
+                        # Generate response
+                        inputs = tokenizer(
+                            request.prompt,
+                            return_tensors="pt",
+                            padding=True,
+                            truncation=True,
+                            max_length=128
+                        ).to(model.device)
                         
-                    input_length = inputs['input_ids'].size(1)
-                    if outputs.size(1) <= input_length:
-                        raise ValueError("No new tokens generated")
+                        # Validate input tensors
+                        if inputs['input_ids'].size(0) == 0 or inputs['input_ids'].size(1) == 0:
+                            raise ValueError("Empty input tensor")
                         
-                    # Get only the new tokens
-                    new_tokens = outputs[0, input_length:]
-                    if len(new_tokens) == 0:
-                        raise ValueError("No tokens generated after input")
+                        # Process request with proper validation
+                        with torch.no_grad():
+                            with torch.amp.autocast('cuda', dtype=torch.float16):
+                                outputs = model.generate(
+                                    input_ids=inputs['input_ids'],
+                                    attention_mask=inputs['attention_mask'],
+                                    max_new_tokens=200,
+                                    temperature=0.7,
+                                    top_p=0.95,
+                                    do_sample=True,
+                                    pad_token_id=tokenizer.pad_token_id,
+                                    eos_token_id=tokenizer.eos_token_id,
+                                    min_length=10,
+                                    use_cache=True,
+                                    num_return_sequences=1,
+                                )
+                        
+                        # Validate output and extract new tokens
+                        if outputs is None or outputs.size(0) == 0:
+                            raise ValueError("Model returned empty output")
+                            
+                        input_length = inputs['input_ids'].size(1)
+                        if outputs.size(1) <= input_length:
+                            raise ValueError("No new tokens generated")
+                            
+                        # Get only the new tokens
+                        new_tokens = outputs[0, input_length:]
+                        if len(new_tokens) == 0:
+                            raise ValueError("No tokens generated after input")
 
-                    # Decode response
-                    response_text = tokenizer.decode(
-                        new_tokens,
-                        skip_special_tokens=True,
-                        clean_up_tokenization_spaces=True
-                    )
-                    
-                    if not response_text.strip():
-                        raise ValueError("Empty response after decoding")
+                        # Decode response
+                        response_text = tokenizer.decode(
+                            new_tokens,
+                            skip_special_tokens=True,
+                            clean_up_tokenization_spaces=True
+                        )
+                        
+                        if not response_text.strip():
+                            raise ValueError("Empty response after decoding")
 
                     # Update request with completion info
                     request.completion_time = time.time()
@@ -199,7 +240,7 @@ def server_worker_process(model_name: str,
                     request.response = {
                         "response_text": response_text,
                         "decode_time": request.processing_latency,
-                        "tokens_generated": len(new_tokens)
+                        "tokens_generated": len(response_text)
                     }
                         
                     # Calculate average processing time

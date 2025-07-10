@@ -123,14 +123,17 @@ class EnhancedLLMRouterTrainer:
         # Count processed prompts per server
         num_servers = len(Config.SERVER_CAPACITIES)
         num_processed = [0] * num_servers
-        for req in record:
+        for index,req in enumerate(record):
             server_id = req['server_id']
             if server_id is not None and req['status'] == 'completed' and req['episode'] == self.current_episode:
-                num_processed[server_id] += 1
+                num_processed[server_id] += 1 
+            if index == len(record) - 1:
+                req['reward'] += len(record) # Add bonus for last request in episode
+
 
         # Compute per-server service rate
         duration = Config.EPISODE_TIME_INTERVAL
-        service_rate = [n / duration for n in num_processed]
+        service_rate = [n / duration + self.last_service_rate[index] for index,n in enumerate(num_processed)]
         
         print(service_rate)
 
@@ -165,6 +168,7 @@ class EnhancedLLMRouterTrainer:
         
         import time
         start = time.time()
+        robin_counter = 0  # Initialize round-robin counter
         
         while True:
             if time.time() - start > Config.EPISODE_TIME_INTERVAL:
@@ -182,7 +186,8 @@ class EnhancedLLMRouterTrainer:
             prompt = prompt['prompt']  # Extract the actual prompt text
             print(prompt)
             # Use a dummy prompt for action selection (actual prompt comes from environment)
-            action, log_prob, value = self.agent.get_action(state, prompt, action_mask, service_rate=self.last_service_rate)
+            action, log_prob, value, next_counter = self.agent.get_action(state, prompt, action_mask, service_rate=self.last_service_rate, round_robin_counter=robin_counter)
+            robin_counter = next_counter
             
             next_state, done = self.env.step(action, prompt)
             
@@ -262,27 +267,42 @@ class EnhancedLLMRouterTrainer:
             print(episode_info)
             
             # Train every episode
-            training_metrics = None
-            print(f"Training agent (episode {episode})...")
-            training_metrics = self.train_step()
-            if training_metrics:
-                print(f"   Policy Loss: {training_metrics['policy_loss']:.6f}")
-                print(f"   Value Loss: {training_metrics['value_loss']:.6f}")
-            
-            if self.wandb_available:
-                wandb.log({
-                    "episode": episode,
-                    "total_reward": episode_info['total_reward'],
-                    "mean_reward": np.mean(episode_info['rewards']),
-                    "std_reward": np.std(episode_info['rewards']),
-                    "policy_loss": training_metrics['policy_loss'] if training_metrics else None,
-                    "value_loss": training_metrics['value_loss'] if training_metrics else None,
-                    "entropy_loss": training_metrics['entropy_loss'] if training_metrics else None,
-                    "throughput_per_episode/requests_completed": episode_info['valid_actions'],
-                }, step=episode)
-            
-            if self.wandb_available and hasattr(self.env, 'queue_monitor'):
-                self.env.queue_monitor.log_throughput_to_wandb(episode)
+            if not Config.ROUND_ROBIN:
+                training_metrics = None
+                print(f"Training agent (episode {episode})...")
+                training_metrics = self.train_step()
+                if training_metrics:
+                    print(f"   Policy Loss: {training_metrics['policy_loss']:.6f}")
+                    print(f"   Value Loss: {training_metrics['value_loss']:.6f}")
+                
+                if self.wandb_available:
+                    wandb.log({
+                        "episode": episode,
+                        "total_reward": episode_info['total_reward'],
+                        "mean_reward": np.mean(episode_info['rewards']),
+                        "std_reward": np.std(episode_info['rewards']),
+                        "policy_loss": training_metrics['policy_loss'] if training_metrics else None,
+                        "value_loss": training_metrics['value_loss'] if training_metrics else None,
+                        "entropy_loss": training_metrics['entropy_loss'] if training_metrics else None,
+                        "quality_scores": np.mean(episode_info['quality_scores']),
+                        "throughput_per_episode/requests_completed": episode_info['valid_actions'],
+                    }, step=episode)
+                
+                if self.wandb_available and hasattr(self.env, 'queue_monitor'):
+                    self.env.queue_monitor.log_throughput_to_wandb(episode)
+            else:   
+                if self.wandb_available:
+                        wandb.log({
+                            "episode": episode,
+                            "total_reward": episode_info['total_reward'],
+                            "mean_reward": np.mean(episode_info['rewards']),
+                            "std_reward": np.std(episode_info['rewards']),
+                            "quality_scores": np.mean(episode_info['quality_scores']),
+                            "throughput_per_episode/requests_completed": episode_info['valid_actions'],
+                        }, step=episode)
+                    
+                if self.wandb_available and hasattr(self.env, 'queue_monitor'):
+                    self.env.queue_monitor.log_throughput_to_wandb(episode)
             
             # Plot progress and queue monitoring
             plot_interval = 25 if episode < 100 else 50
