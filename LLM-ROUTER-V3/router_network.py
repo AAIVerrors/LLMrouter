@@ -6,6 +6,7 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 from config import Config
 import torch.multiprocessing as mp
+from environment import QualityScorer
 
 class RouterNetwork(nn.Module):
     def __init__(self, state_dim: int, action_dim: int):
@@ -20,22 +21,43 @@ class RouterNetwork(nn.Module):
             param.requires_grad = False
         
         # Input dimensions
-        prompt_dim = 384 
-        total_input_dim = prompt_dim + state_dim
-    
-        # Shared layers with improved initialization
-        self.shared_layers = nn.Sequential(
-            nn.Linear(total_input_dim, Config.HIDDEN_DIM),
-            nn.LayerNorm(Config.HIDDEN_DIM),  # Add layer normalization
-            nn.ReLU(),
-            nn.Dropout(0.1),
-            nn.Linear(Config.HIDDEN_DIM, Config.HIDDEN_DIM),
-            nn.LayerNorm(Config.HIDDEN_DIM),  # Add layer normalization
-            nn.ReLU(),
-            nn.Dropout(0.1),
+        prompt_dim = 384
+        self.state_dim = state_dim  # 3 * num_servers
+        num_servers = state_dim // 3
+        self.num_servers = num_servers
+        
+        # Positional encoding
+        self.positional_encoding = nn.Parameter(
+            torch.randn(1, state_dim, Config.HIDDEN_DIM // 4) / 10
         )
         
-        # Actor head (policy) with better initialization
+        # Initial projection to match hidden dimension
+        self.input_projection = nn.Linear(1, Config.HIDDEN_DIM // 4)
+        
+        # Attention layer
+        self.attention = nn.MultiheadAttention(
+            embed_dim=Config.HIDDEN_DIM // 4,
+            num_heads=Config.ATTENTION_HEADS,
+            dropout=0.1
+        )
+        
+        # Shared layers with residual connections
+        self.shared_layers = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear((Config.HIDDEN_DIM // 4) + prompt_dim, Config.HIDDEN_DIM),
+                nn.LayerNorm(Config.HIDDEN_DIM),
+                nn.ReLU(),
+                nn.Dropout(0.1)
+            ),
+            nn.Sequential(
+                nn.Linear(Config.HIDDEN_DIM, Config.HIDDEN_DIM),
+                nn.LayerNorm(Config.HIDDEN_DIM),
+                nn.ReLU(),
+                nn.Dropout(0.1)
+            )
+        ])
+        
+        # Actor head (policy)
         self.actor = nn.Sequential(
             nn.Linear(Config.HIDDEN_DIM, Config.HIDDEN_DIM // 2),
             nn.LayerNorm(Config.HIDDEN_DIM // 2),
@@ -44,7 +66,7 @@ class RouterNetwork(nn.Module):
             nn.Linear(Config.HIDDEN_DIM // 2, action_dim)
         )
         
-        # Critic head (value function) with better initialization
+        # Critic head (value function)
         self.critic = nn.Sequential(
             nn.Linear(Config.HIDDEN_DIM, Config.HIDDEN_DIM // 2),
             nn.LayerNorm(Config.HIDDEN_DIM // 2),
@@ -55,14 +77,13 @@ class RouterNetwork(nn.Module):
         
         self.action_dim = action_dim
         
-        # Initialize weights properly
+        # Initialize weights
         self._initialize_weights()
         
     def _initialize_weights(self):
         """Initialize network weights to prevent gradient explosions"""
         for module in self.modules():
             if isinstance(module, nn.Linear):
-                # Xavier initialization for linear layers
                 nn.init.xavier_uniform_(module.weight, gain=0.5)
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
@@ -81,47 +102,54 @@ class RouterNetwork(nn.Module):
         """
         Forward pass
         Args:
-            state: Server loads [batch_size, state_dim]
+            state: Server loads and rates [batch_size, 3 * num_servers]
             prompt: Text prompts (list of strings or single string)
             action_mask: Valid action mask [batch_size, action_dim]
+        Returns:
+            logits: Policy probabilities [batch_size, action_dim]
+            value: Value estimate [batch_size, 1]
         """
+        print('state:', state)
+        batch_size = state.shape[0] if len(state.shape) > 1 else 1
+        state = state.view(batch_size, self.state_dim, 1)  # [batch_size, state_dim, 1]
+        
         # Encode prompt
         prompt_embedding = self.encode_prompt(prompt)
-        
-        # Ensure proper dimensions
         if len(prompt_embedding.shape) == 1:
             prompt_embedding = prompt_embedding.unsqueeze(0)
-        if len(state.shape) == 1:
-            state = state.unsqueeze(0)
+        prompt_embedding = prompt_embedding.expand(batch_size, -1)
         
-        # Concatenate state and prompt embedding
-        combined_input = torch.cat([state, prompt_embedding], dim=-1)
+        # Project state and add positional encoding
+        state_features = self.input_projection(state)  # [batch_size, state_dim, hidden_dim/4]
+        state_features = state_features + self.positional_encoding
         
-        # Shared forward pass
-        shared_output = self.shared_layers(combined_input)
+        # Apply attention
+        state_features = state_features.permute(1, 0, 2)  # [state_dim, batch_size, hidden_dim/4]
+        attn_output, _ = self.attention(state_features, state_features, state_features)
+        attn_output = attn_output.permute(1, 0, 2)  # [batch_size, state_dim, hidden_dim/4]
+        attn_output = attn_output.mean(dim=1)  # [batch_size, hidden_dim/4]
+        
+        # Combine with prompt embedding
+        combined = torch.cat([attn_output, prompt_embedding], dim=-1)
+        
+        # Shared layers with residual connections
+        x = self.shared_layers[0](combined)
+        residual = x
+        x = self.shared_layers[1](x)
+        x = x + residual  # Residual connection
         
         # Actor output (logits)
-        logits =  self.actor(shared_output)
+        logits = self.actor(x)
         
-        print(state)
-        print(action_mask)
-        
-        # Apply action mask if provided
-      
-        # Apply action mask BEFORE softmax if provided
+        # Apply action mask BEFORE softmax
         if action_mask is not None:
-            # FIXED: Use action_mask directly (not 1 - action_mask)
-            # Where mask=0 (invalid), add large negative value
-            # Where mask=1 (valid), add 0 (no change)
             mask_value = -1e9
             logits = logits + (action_mask == 0).float() * mask_value
             
         logits = F.softmax(logits, dim=-1)
         
         # Value output
-        value = self.critic(shared_output)
-        # print(action_mask)
-        # print(logits)
+        value = self.critic(x)
         
         return logits, value
     
@@ -146,20 +174,20 @@ class RouterNetwork(nn.Module):
         """
         scores = []
         
-        for i,element in enumerate(state):
-            load = element  
+        for i,element in enumerate(Config.SERVER_CAPACITIES):
+            utilization = state[i] 
             capacity = Config.SERVER_CAPACITIES[i]
-            utilization = load / capacity
+            load = utilization * capacity
             
             for index, ele in enumerate(service_rate):
                 if i <= 0:
                     service_rate[i] = 0.0001
             
             # Compute score based on load and service rate
-            # score = (1-factor)*(1-utilization)*(service_rate[i]/(load+epslon))\
-            #         + (1-factor)*utilization*(1-(load/capacity)) \
-            #         + factor*(service_rate[i]/max(service_rate)) 
-            score = service_rate[i]/(load+epslon)
+            score = (1-factor)*(1-utilization)*(service_rate[i]/(load+epslon))\
+                    + (1-factor)*utilization*(1-(load/capacity)) \
+                    + factor*(service_rate[i]/max(service_rate)) 
+            # score = service_rate[i]/(load+epslon)
             scores.append(score)
 
         return torch.FloatTensor(scores).to(Config.DEVICE)
@@ -167,15 +195,18 @@ class RouterNetwork(nn.Module):
 class PPOAgent:
     def __init__(self, state_dim: int, action_dim: int):
         self.network = RouterNetwork(state_dim, action_dim).to(Config.DEVICE)
-        self.optimizer = torch.optim.Adam(self.network.parameters(), lr=Config.LEARNING_RATE)
+        self.optimizer = torch.optim.AdamW(self.network.parameters(), lr=Config.LEARNING_RATE)
         
         self.state_dim = state_dim
         self.action_dim = action_dim
+        
+        self.quality_scorer = QualityScorer()
 
 
     def get_action(self, state, prompt, action_mask=None, alpha=Config.MERGE_ALPHA, service_rate=[1]*len(Config.SERVER_CAPACITIES), round_robin_counter=0):
         """Get action for given state and prompt"""
         alpha=Config.MERGE_ALPHA
+        
         state_tensor = torch.FloatTensor(state).to(Config.DEVICE)
         
         if action_mask is not None:
@@ -183,27 +214,33 @@ class PPOAgent:
         else:
             action_mask_tensor = None
         
-        if Config.ROUND_ROBIN:
-            action = round_robin_counter % self.action_dim
-            count = 0
-            while action_mask_tensor is not None and action_mask_tensor[action] == 0:
-                round_robin_counter += 1
-                action = round_robin_counter % self.action_dim
-                count += 1
-                if count > self.action_dim:
-                    print("All actions are masked, returning random action")
-                    action = torch.randint(0, self.action_dim, (1,)).item()
-                    break
-            log_prob = torch.tensor(0.0).to(Config.DEVICE)
-            entropy = torch.tensor(0.0).to(Config.DEVICE)
-            value = torch.tensor(0.0).to(Config.DEVICE)
-            dist_policy = torch.zeros(self.action_dim).to(Config.DEVICE)
-            dist_policy[action] = 1.0  # Set probability for the chosen action
-            print(f"Round Robin Action: {action}")
-            round_robin_counter += 1
-            return action, log_prob.cpu().item(), value.cpu().item(), round_robin_counter
-            
+        # if Config.ROUND_ROBIN:
+        #     action = round_robin_counter % self.action_dim
+        #     count = 0
+        #     while action_mask_tensor is not None and action_mask_tensor[action] == 0:
+        #         round_robin_counter += 1
+        #         action = round_robin_counter % self.action_dim
+        #         count += 1
+        #         if count > self.action_dim:
+        #             print("All actions are masked, returning random action")
+        #             action = torch.randint(0, self.action_dim, (1,)).item()
+        #             break
+        #     log_prob = torch.tensor(0.0).to(Config.DEVICE)
+        #     entropy = torch.tensor(0.0).to(Config.DEVICE)
+        #     value = torch.tensor(0.0).to(Config.DEVICE)
+        #     dist_policy = torch.zeros(self.action_dim).to(Config.DEVICE)
+        #     dist_policy[action] = 1.0  # Set probability for the chosen action
+        #     print(f"Round Robin Action: {action}")
+        #     round_robin_counter += 1
+        #     return action, log_prob.cpu().item(), value.cpu().item(), round_robin_counter
         
+        pre_len = 2*len(Config.MODEL_NAMES)
+        coefs = self.quality_scorer.compute_quality_score_all(prompt)
+        for index,server in enumerate(Config.MODEL_NAMES):
+            state_tensor[pre_len + index] = float(coefs[server])
+            print(f"Quality score for {server}: {coefs[server]}")
+        print(state_tensor)
+
         with torch.no_grad():
             action, log_prob, entropy, value, dist_policy = self.network.get_action_and_value(
                 state_tensor, prompt, action_mask_tensor
@@ -229,6 +266,26 @@ class PPOAgent:
         # print(f"Action: {action}, Merged Log Prob: {merged_log_prob}, dist: {dist.__dict__}")
         print(merged_log_probs)
         print(action)
+        
+        if Config.ROUND_ROBIN:
+            action = round_robin_counter % self.action_dim
+            count = 0
+            while action_mask_tensor is not None and action_mask_tensor[action] == 0:
+                round_robin_counter += 1
+                action = round_robin_counter % self.action_dim
+                count += 1
+                if count > self.action_dim:
+                    print("All actions are masked, returning random action")
+                    action = torch.randint(0, self.action_dim, (1,)).item()
+                    break
+            log_prob = torch.tensor(0.0).to(Config.DEVICE)
+            entropy = torch.tensor(0.0).to(Config.DEVICE)
+            value = torch.tensor(0.0).to(Config.DEVICE)
+            dist_policy = torch.zeros(self.action_dim).to(Config.DEVICE)
+            dist_policy[action] = 1.0  # Set probability for the chosen action
+            print(f"Round Robin Action: {action}")
+            round_robin_counter += 1
+            return action, log_prob.cpu().item(), value.cpu().item(), round_robin_counter
         return action.cpu().item(), merged_log_prob.cpu().item(), value.cpu().item(), round_robin_counter
 
     def update(self, trajectories):

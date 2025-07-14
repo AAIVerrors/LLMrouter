@@ -65,13 +65,14 @@ def server_worker_process(model_name: str,
                 trust_remote_code=True,
                 # attn_implementation="flash_attention_2",
             )
-        elif "gpt" in model_name or "o1" in model_name:
+        elif "gpt" in model_name or "o1" in model_name or "o3" in model_name:
             model = OpenAI()
         elif "gemini" in model_name:
             model = genai.Client(api_key='AIzaSyCVkz9FRUPwBkvOGKEEAQP5llI1y1p8FFo')
         elif "claude" in model_name:
             model = anthropic.Anthropic()
         else:
+            
             # Initialize tokenizer
             tokenizer = AutoTokenizer.from_pretrained(
                 model_name,
@@ -146,7 +147,9 @@ def server_worker_process(model_name: str,
                 )
 
                 try:
-                    if "gpt" in model_name or "o1" in model_name:
+                    if "gpt" in model_name or "o1" in model_name or "o3" in model_name:
+                        # if model_name == "o1-mini":
+                        #     model_name = "o1-mini-2024-09-12"
                         response = model.responses.create(
                             model=model_name,
                             input= request.prompt
@@ -366,11 +369,32 @@ class QualityScorer:
         self.model_elo_scores = Config.MODEL_ELO_SCORES
         self.quality_model = P2LPredictor()
         
-    def compute_quality_score(self, prompt: str, model_name: str) -> float:
+    def compute_quality_score_real(self, prompt: str, model_name: str) -> float:
         coefs = self.quality_model.get_coefficients(prompt)
-        score = coefs.get(model_name.split('/')[1], 0.0)
-        return score
+        if "/" in model_name:
+            model_name = model_name.split("/")[1].lower()
+        # print("coefs: " + str(coefs))
+        all_coefs = {m.split("/")[1].lower() if "/" in m else m: coefs.get(m.split("/")[1].lower() if "/" in m else m) for m in Config.MODEL_NAMES}
+        # print("all_coefs: " + str(all_coefs))
+        score = coefs.get(model_name)
+        normalized_score = (score - min(all_coefs.values())) / (max(all_coefs.values()) - min(all_coefs.values()))  
+        print("normalized_score" + str(normalized_score))
+        return normalized_score
     
+    def compute_quality_score_all(self, prompt: str) -> float:
+        coefs = self.quality_model.get_coefficients(prompt)
+        all_coefs = {m: coefs.get(m.split("/")[1].lower() if "/" in m else m) for m in Config.MODEL_NAMES}
+        # Normalize scores to [0, 1]
+        min_score = min(all_coefs.values())
+        max_score = max(all_coefs.values())
+        normalized_scores = {
+            model: (score - min_score) / (max_score - min_score) if max_score > min_score else 0.0
+            for model, score in all_coefs.items()
+        }
+        print("normalized_scores: " + str(normalized_scores))
+        return normalized_scores
+        
+
     def compute_quality_score(self, prompt: str, server_id: int) -> float:
         """Compute quality score for prompt-server pair"""
         prompt_length = len(prompt.split())
@@ -416,7 +440,7 @@ def response_collector_worker(response_queue,
                     latency = request.processing_latency
                     
                     # Scale latency penalty
-                    normalized_latency = latency / 10.0
+                    normalized_latency = latency/10
                     quality_reward = config_alpha * request.quality_score
                     latency_penalty = config_beta * normalized_latency
                     reward = quality_reward - latency_penalty
@@ -447,7 +471,9 @@ def response_collector_worker(response_queue,
                     print(f"Warning: Incomplete response data for request {request.id}")
                 
             elif request.status == 'failed':
+                
                 request.reward = -config_lambda
+                episode_completed.put(request)
                 print(f"Response failed - ID: {request.id}, Penalty: {-config_lambda}")
                 
         except Empty:
@@ -485,7 +511,7 @@ class EnhancedRouterEnvironment:
         self.response_queue = mp.Queue()
         
         # Episode completion tracking
-        self.episode_completed = mp.Queue()
+        self.episode_completed = self.manager.Queue()
         
         # Create prompt queue and generator
         self.prompt_queue = self.manager.Queue()
@@ -635,11 +661,19 @@ class EnhancedRouterEnvironment:
                     reason="Server at capacity",
                     episode=self.current_episode
                 )
-            
+                
+            request.status = 'failed'
+            request.reward = -Config.LAMBDA * 2.0  # Double penalty for capacity issues 
+            request.completion_time = time.time()
+            request.processing_latency = 5
+            request.quality_score = -1
+
+            self.response_queue.put([request, None, None])
+            print(f"Server {action} at capacity. Request {request_id} failed.")
             return self.get_state(), False
         
         # Valid action - compute quality and log request
-        request.quality_score = self.quality_scorer.compute_quality_score(prompt, server.get_model_name())
+        request.quality_score = self.quality_scorer.compute_quality_score_real(prompt, server.get_model_name())
 
         # Send request to server
         server.put_request(request)

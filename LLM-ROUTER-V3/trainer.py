@@ -22,7 +22,7 @@ class EnhancedLLMRouterTrainer:
         self.current_episode = 0  
         
         # Initialize PPO agent
-        state_dim = len(Config.SERVER_CAPACITIES)  # load per server
+        state_dim = len(Config.SERVER_CAPACITIES)*3  # load per server
         action_dim = len(Config.SERVER_CAPACITIES)  # Number of servers
         self.agent = PPOAgent(state_dim, action_dim)
         
@@ -123,12 +123,14 @@ class EnhancedLLMRouterTrainer:
         # Count processed prompts per server
         num_servers = len(Config.SERVER_CAPACITIES)
         num_processed = [0] * num_servers
+        counter = 0
         for index,req in enumerate(record):
             server_id = req['server_id']
             if server_id is not None and req['status'] == 'completed' and req['episode'] == self.current_episode:
                 num_processed[server_id] += 1 
+                counter += 1
             if index == len(record) - 1:
-                req['reward'] += len(record) # Add bonus for last request in episode
+                req['reward'] += counter # Add bonus for last request in episode
 
 
         # Compute per-server service rate
@@ -163,9 +165,10 @@ class EnhancedLLMRouterTrainer:
 
     def run_episode(self) -> dict:
         """Run a single episode using Poisson prompt generator"""
-        
-        state = self.env.reset()
-        
+
+        state = [self.env.reset()[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + self.last_service_rate + [1] * len(Config.SERVER_CAPACITIES)
+
+
         import time
         start = time.time()
         robin_counter = 0  # Initialize round-robin counter
@@ -191,8 +194,8 @@ class EnhancedLLMRouterTrainer:
             
             next_state, done = self.env.step(action, prompt)
             
-            state = next_state
-            
+            state = [next_state[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + self.last_service_rate + [1]* len(Config.SERVER_CAPACITIES)
+
             if done:
                 break
             
@@ -209,13 +212,13 @@ class EnhancedLLMRouterTrainer:
             
         # --- Pause and clean servers before training ---
         self.env.pause_all_servers()
-        time.sleep(1)
+        time.sleep(3)
         
         episode_record = self.env.get_episode_data()
         
-        time.sleep(2)
+        time.sleep(3)
         self.env.clean_all_queues()
-        time.sleep(2)
+        time.sleep(3)
         
         # Update buffer rewards with actual episode rewards
         for i, req in enumerate(episode_record):
@@ -248,7 +251,7 @@ class EnhancedLLMRouterTrainer:
         print("=" * 60)
         print(f"Models: {Config.MODEL_NAMES}")
         print(f"Server Capacities: {Config.SERVER_CAPACITIES}")
-        print(f"Episode Length: {Config.EPISODE_LENGTH}")
+        print(f"Episode Length: {Config.EPISODE_TIME_INTERVAL}")
         print(f"Max Episodes: {Config.MAX_EPISODES}")
         print(f"Wandb Available: {self.wandb_available}")
         print("=" * 60)
@@ -285,6 +288,7 @@ class EnhancedLLMRouterTrainer:
                         "value_loss": training_metrics['value_loss'] if training_metrics else None,
                         "entropy_loss": training_metrics['entropy_loss'] if training_metrics else None,
                         "quality_scores": np.mean(episode_info['quality_scores']),
+                        "latencies": np.mean(episode_info['latencies']),
                         "throughput_per_episode/requests_completed": episode_info['valid_actions'],
                     }, step=episode)
                 
@@ -298,6 +302,7 @@ class EnhancedLLMRouterTrainer:
                             "mean_reward": np.mean(episode_info['rewards']),
                             "std_reward": np.std(episode_info['rewards']),
                             "quality_scores": np.mean(episode_info['quality_scores']),
+                            "latencies": np.mean(episode_info['latencies']),
                             "throughput_per_episode/requests_completed": episode_info['valid_actions'],
                         }, step=episode)
                     
