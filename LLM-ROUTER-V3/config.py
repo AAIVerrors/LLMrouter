@@ -138,9 +138,11 @@ class Config:
     # Queue score settings
     QUEUE_SCORE_FACTOR = 0.2  # Factor to adjust queue score impact
     QUEUE_EPSLONG = 0.0001  # Epsilon for queue score stability
-    MERGE_ALPHA = 1 # Alpha for merging action probabilities (0.5 for equal weighting)
+    MERGE_ALPHA = 0.5 # Alpha for merging action probabilities (0.5 for equal weighting)
 
     ROUND_ROBIN = False
+    
+    USE_MERGE_TO_TRAIN = True 
 
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL

@@ -207,7 +207,8 @@ class EnhancedLLMRouterTrainer:
                 log_prob=log_prob,
                 value=value,
                 reward=0,  # Placeholder, will be updated after episode
-                action_mask=action_mask
+                action_mask=action_mask,
+                service_rate=self.last_service_rate
             )
             
         # --- Pause and clean servers before training ---
@@ -233,7 +234,7 @@ class EnhancedLLMRouterTrainer:
         
         if len(trajectories) == 0:
             return {}
-        
+       
         training_metrics = self.agent.update(trajectories)
         self.buffer.finish_episode()
         return training_metrics

@@ -383,6 +383,7 @@ class QualityScorer:
     
     def compute_quality_score_all(self, prompt: str) -> float:
         coefs = self.quality_model.get_coefficients(prompt)
+        # print("coefs: " + str(coefs))
         all_coefs = {m: coefs.get(m.split("/")[1].lower() if "/" in m else m) for m in Config.MODEL_NAMES}
         # Normalize scores to [0, 1]
         min_score = min(all_coefs.values())
@@ -392,6 +393,7 @@ class QualityScorer:
             for model, score in all_coefs.items()
         }
         print("normalized_scores: " + str(normalized_scores))
+        print("prompt: " + prompt)
         return normalized_scores
         
 

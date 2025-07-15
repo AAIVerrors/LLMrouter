@@ -88,10 +88,41 @@ class RouterNetwork(nn.Module):
                 if module.bias is not None:
                     nn.init.constant_(module.bias, 0)
         
+    # def encode_prompt(self, prompts):
+    #     """Encode prompts using sentence transformer"""
+    #     if isinstance(prompts, str):
+    #         prompts = [prompts]
+        
+    #     with torch.no_grad():
+    #         embeddings = self.prompt_encoder.encode(prompts, convert_to_tensor=True)
+        
+    #     return embeddings.to(Config.DEVICE)
+    
     def encode_prompt(self, prompts):
         """Encode prompts using sentence transformer"""
         if isinstance(prompts, str):
             prompts = [prompts]
+        elif isinstance(prompts, (float, int)):
+            prompts = [str(prompts)]
+        elif isinstance(prompts, torch.Tensor):
+            if prompts.dim() == 0:  # scalar tensor
+                prompts = [str(prompts.item())]
+            else:
+                prompts = [str(p.item()) if p.dim() == 0 else str(p) for p in prompts]
+        elif isinstance(prompts, list):
+            # Convert all elements to string, handling various types
+            converted_prompts = []
+            for p in prompts:
+                if isinstance(p, str):
+                    converted_prompts.append(p)
+                elif isinstance(p, torch.Tensor) and p.dim() == 0:
+                    converted_prompts.append(str(p.item()))
+                else:
+                    converted_prompts.append(str(p))
+            prompts = converted_prompts
+        else:
+            # Fallback for any other type
+            prompts = [str(prompts)]
         
         with torch.no_grad():
             embeddings = self.prompt_encoder.encode(prompts, convert_to_tensor=True)
@@ -167,6 +198,66 @@ class RouterNetwork(nn.Module):
         
         return action, log_prob, entropy, value, logits
 
+    def get_action_and_value_queue(self, state, state_np, prompt, action_mask=None, action=None, service_rate=None):
+        """
+        Get action and value for given state and prompt, with queue scores.
+        This is used to compute the log probabilities of actions.
+        """
+        logits, value = self.forward(state, prompt, action_mask)
+        probs = logits.clone()
+        dist = Categorical(probs)
+        
+        queue_scores = self.get_queue_scores_batch(state_np, service_rate=service_rate)
+        queue_probs = torch.softmax(queue_scores, dim=0)
+        queue_log_probs = torch.log(queue_probs + 1e-8)
+        print("queue probs, logits")
+        print(queue_probs)
+        print(logits)
+
+        # Merge log-probs for all actions
+        merged_logits =  (queue_probs * Config.ALPHA) +  (logits * (1 - Config.ALPHA))
+
+        merged_dist = Categorical(merged_logits)
+        if action is None:
+            action = merged_dist.sample()
+
+        log_prob = merged_dist.log_prob(action)
+        entropy = merged_dist.entropy()
+
+        return action, log_prob, entropy, value, merged_logits
+    
+    def get_queue_scores_batch(self, state, service_rate, factor=Config.QUEUE_SCORE_FACTOR, epslon=Config.QUEUE_EPSLONG):
+        """
+        Get queue scores for each action based on current state.
+        Handles both single and batch mode.
+        """
+        # If state is a batch (2D array or list of lists), process each sample
+        if isinstance(state, np.ndarray) and state.ndim == 2:
+            batch_scores = []
+            for s, sr in zip(state, service_rate):
+                batch_scores.append(self.get_queue_scores(s, sr, factor, epslon))
+            return torch.stack(batch_scores)
+        if isinstance(state, torch.Tensor) and state.dim() == 2:
+            batch_scores = []
+            for s, sr in zip(state, service_rate):
+                batch_scores.append(self.get_queue_scores(s.cpu().numpy(), sr, factor, epslon))
+            return torch.stack(batch_scores)
+        # If state is a numpy array, convert to list
+        if isinstance(state, np.ndarray):
+            state = state.tolist()
+        scores = []
+        for i, capacity in enumerate(Config.SERVER_CAPACITIES):
+            utilization = float(state[i])
+            load = utilization * capacity
+            # Defensive: avoid division by zero
+            if i <= 0:
+                service_rate[i] = 0.0001
+            score = (1-factor)*(1-utilization)*(service_rate[i]/(load+epslon))\
+                    + (1-factor)*utilization*(1-(load/capacity)) \
+                    + factor*(service_rate[i]/max(service_rate))
+            scores.append(score)
+        return torch.FloatTensor(scores).to(Config.DEVICE)
+
     def get_queue_scores(self, state, service_rate, factor=Config.QUEUE_SCORE_FACTOR, epslon=Config.QUEUE_EPSLONG):
         """
         Get queue scores for each action based on current state.
@@ -180,8 +271,8 @@ class RouterNetwork(nn.Module):
             load = utilization * capacity
             
             for index, ele in enumerate(service_rate):
-                if i <= 0:
-                    service_rate[i] = 0.0001
+                if index <= 0:
+                    service_rate[index] = 0.0001
             
             # Compute score based on load and service rate
             score = (1-factor)*(1-utilization)*(service_rate[i]/(load+epslon))\
@@ -288,6 +379,7 @@ class PPOAgent:
             return action, log_prob.cpu().item(), value.cpu().item(), round_robin_counter
         return action.cpu().item(), merged_log_prob.cpu().item(), value.cpu().item(), round_robin_counter
 
+        
     def update(self, trajectories):
         """Update network using PPO algorithm"""
         # Prepare batch data (convert to numpy first to avoid warning)
@@ -296,6 +388,7 @@ class PPOAgent:
         old_log_probs_np = np.array([t['log_prob'] for t in trajectories])
         rewards_np = np.array([t['reward'] for t in trajectories])
         values_np = np.array([t['value'] for t in trajectories])
+        service_rate = [t['service_rate'] for t in trajectories]
         
         states = torch.FloatTensor(states_np).to(Config.DEVICE)
         actions = torch.LongTensor(actions_np).to(Config.DEVICE)
@@ -323,9 +416,21 @@ class PPOAgent:
         
         for _ in range(Config.PPO_EPOCHS):
             # Get current policy outputs
-            _, new_log_probs, entropy, new_values, dist = self.network.get_action_and_value(
-                states, prompts, action_masks, actions
-            )
+            if Config.USE_MERGE_TO_TRAIN:
+
+                _, new_log_probs, entropy, new_values, dist = self.network.get_action_and_value_queue(
+                    states,          # state (tensor)
+                    states_np,       # state_np (numpy array)
+                    prompts,         # prompt (list of strings)
+                    action_masks,    # action_mask (tensor or None)
+                    actions,         # action (tensor)
+                    service_rate=service_rate  # service_rate (list)
+                )
+
+            else:
+                _, new_log_probs, entropy, new_values, dist = self.network.get_action_and_value(
+                    states, prompts, action_masks, actions
+                )
             
             # Policy loss
             ratio = torch.exp(new_log_probs - old_log_probs)
