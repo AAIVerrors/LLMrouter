@@ -22,7 +22,7 @@ class EnhancedLLMRouterTrainer:
         self.current_episode = 0  
         
         # Initialize PPO agent
-        state_dim = len(Config.SERVER_CAPACITIES)*3  # load per server
+        state_dim = len(Config.SERVER_CAPACITIES)*4  # load per server
         action_dim = len(Config.SERVER_CAPACITIES)  # Number of servers
         self.agent = PPOAgent(state_dim, action_dim)
         
@@ -118,6 +118,7 @@ class EnhancedLLMRouterTrainer:
             'invalid_actions': 0,
             'valid_actions': 0,
             'service_rate': [],
+            'prices': [],
         }
         
         # Count processed prompts per server
@@ -129,8 +130,8 @@ class EnhancedLLMRouterTrainer:
             if server_id is not None and req['status'] == 'completed' and req['episode'] == self.current_episode:
                 num_processed[server_id] += 1 
                 counter += 1
-            if index == len(record) - 1:
-                req['reward'] += counter # Add bonus for last request in episode
+            # if index == len(record) - 1:
+            #     req['reward'] += counter # Add bonus for last request in episode
 
 
         # Compute per-server service rate
@@ -148,6 +149,7 @@ class EnhancedLLMRouterTrainer:
             episode_info['rewards'].append(req['reward'])
             episode_info['quality_scores'].append(req['quality_score'])
             episode_info['latencies'].append(req['processing_latency'])
+            episode_info['prices'].append(req['price'])
             # If you have capacity_penalty, add logic here
 
             if req['status'] == 'completed' and req['episode'] == self.current_episode:
@@ -165,18 +167,25 @@ class EnhancedLLMRouterTrainer:
 
     def run_episode(self) -> dict:
         """Run a single episode using Poisson prompt generator"""
+        
+        price = [((a[0]+a[1]) / 2) for a in Config.PRICE] # Add average price per server
 
-        state = [self.env.reset()[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + self.last_service_rate + [1] * len(Config.SERVER_CAPACITIES)
-
+        state = [self.env.reset()[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + self.last_service_rate + [1] * len(Config.SERVER_CAPACITIES) + price
 
         import time
         start = time.time()
         robin_counter = 0  # Initialize round-robin counter
         
+        current_time_slot = 0
+        time_slot_buffer = []
+        current = -1
+        
         while True:
             if time.time() - start > Config.EPISODE_TIME_INTERVAL:
                 print(f"Episode {self.current_episode} timed out after {Config.EPISODE_TIME_INTERVAL} seconds")
                 break
+            
+            
             
             # Get prompt from Poisson generator (environment handles this)
             action_mask = self.env.get_action_mask()
@@ -187,20 +196,29 @@ class EnhancedLLMRouterTrainer:
                 time.sleep(0.1)
                 continue
             prompt = prompt['prompt']  # Extract the actual prompt text
-            print(prompt)
+
             # Use a dummy prompt for action selection (actual prompt comes from environment)
             action, log_prob, value, next_counter = self.agent.get_action(state, prompt, action_mask, service_rate=self.last_service_rate, round_robin_counter=robin_counter)
             robin_counter = next_counter
             
+            routing_start = time.time()
+            
+            current_time_slot = int(routing_start - start)
+            
             next_state, done = self.env.step(action, prompt)
             
-            state = [next_state[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + self.last_service_rate + [1]* len(Config.SERVER_CAPACITIES)
+            if current != current_time_slot:
+                current = current_time_slot
+                state = [next_state[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + self.last_service_rate + [1]* len(Config.SERVER_CAPACITIES) + price
 
             if done:
                 break
             
+            
             # Add step to buffer (reward will be filled in later)
             self.buffer.add_step(
+                time_slot = int(current_time_slot),
+                route_time= current_time_slot,
                 state=state,
                 prompt=prompt,
                 action=action,
@@ -226,6 +244,7 @@ class EnhancedLLMRouterTrainer:
             if i < len(self.buffer.current_episode):
                 self.buffer.current_episode[i]['reward'] = req['reward']
         
+        
         return episode_record
     
     def train_step(self):
@@ -235,7 +254,7 @@ class EnhancedLLMRouterTrainer:
         if len(trajectories) == 0:
             return {}
        
-        training_metrics = self.agent.update(trajectories)
+        training_metrics = self.agent.update_new(trajectories)
         self.buffer.finish_episode()
         return training_metrics
     
@@ -290,9 +309,44 @@ class EnhancedLLMRouterTrainer:
                         "entropy_loss": training_metrics['entropy_loss'] if training_metrics else None,
                         "quality_scores": np.mean(episode_info['quality_scores']),
                         "latencies": np.mean(episode_info['latencies']),
+                        "price": np.mean([episode_info['prices']]),
+                        # "Return": training_metrics['returns'] if training_metrics else None,
+                        # "Min_return": training_metrics['min_return_server_value'] if training_metrics else None,
+                        # "Min_score": training_metrics['min_score_server_value'] if training_metrics else None,
+                        # "Min_mean_reward": training_metrics['min_mean_reward_server_value'] if training_metrics else None,
                         "throughput_per_episode/requests_completed": episode_info['valid_actions'],
+                        "returns": training_metrics['rewards_returns'] if training_metrics else None,
+                        "term_returns": training_metrics['term_rewards_returns'] if training_metrics else None,
+                        'min_rewards': training_metrics['min_rewards'] if training_metrics else None,
                     }, step=episode)
+                    
+                # Add server scores if available
+                # if training_metrics and 'each_server_score' in training_metrics:
+                #     for server_id, score in training_metrics['each_server_score'].items():
+                #         wandb.log({f"server_{server_id}_score": score}, step=episode)
+                        
+                # # Add min score server 
+                # if training_metrics and 'min_score_server' in training_metrics:
+                #     wandb.log({"min_score_server": training_metrics['min_score_server']}, step=episode)
+                    
+                # # Add mean reward per server if available
+                # if training_metrics and 'mean_reward_per_server' in training_metrics:
+                #     for server_id, mean_reward in training_metrics['mean_reward_per_server'].items():
+                #         wandb.log({f"server_{server_id}_reward": mean_reward}, step=episode)
+                        
+                # # Add min mean reward server
+                # if training_metrics and 'min_mean_reward_server' in training_metrics:
+                #     wandb.log({"min_mean_reward_server": training_metrics['min_mean_reward_server']}, step=episode)
+                    
+                # # Add return of each server
+                # if training_metrics and 'each_server_returns' in training_metrics:
+                #     for server_id, ret in training_metrics['each_server_returns'].items():
+                #         wandb.log({f"server_{server_id}_trajectory_return": ret}, step=episode)
                 
+                # # Add min return server
+                # if training_metrics and 'min_return_server' in training_metrics:
+                #     wandb.log({"min_return_server": training_metrics['min_return_server']}, step=episode)
+
                 if self.wandb_available and hasattr(self.env, 'queue_monitor'):
                     self.env.queue_monitor.log_throughput_to_wandb(episode)
             else:   
@@ -304,6 +358,7 @@ class EnhancedLLMRouterTrainer:
                             "std_reward": np.std(episode_info['rewards']),
                             "quality_scores": np.mean(episode_info['quality_scores']),
                             "latencies": np.mean(episode_info['latencies']),
+                            "price": np.mean([episode_info['prices']]),
                             "throughput_per_episode/requests_completed": episode_info['valid_actions'],
                         }, step=episode)
                     

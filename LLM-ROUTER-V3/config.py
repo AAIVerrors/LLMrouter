@@ -34,19 +34,33 @@ class Config:
         # 'gpt-3.5-turbo-0125',
         # # 'gpt-3.5-turbo-1106',
         # 'gpt-4o-2024-08-06',
-        # 'gpt-4o-mini-2024-07-18',
+        'gpt-4o-mini-2024-07-18',
         # 'o3-mini',
         # 'o1-mini',
         # 'gemini-2.0-flash-001',
         'gemini-1.5-flash-001',
+        'gemini-1.5-flash-002',
+        'gemini-1.5-flash-8b-001',
         'claude-3-5-haiku-20241022',
         'claude-3-haiku-20240307',
         # 'claude-3-7-sonnet-20250219',
         # 'claude-3-5-sonnet-20240620',
     ]
     
+    PRICE = [
+        (0, 0),
+        (0, 0),
+        (0, 0),
+        (0.00000015, 0.0000006), # gpt-4o-mini-2024-07-18
+        (0.000000075, 0.0000003),  # gemini-1.5-flash-001
+        (0.000000075, 0.0000003),  # gemini-1.5-flash-002
+        (0.0000000375, 0.00000015),  # gemini-1.5-flash-8b-001
+        (0.0000008, 0.000004), # claude-3-5-haiku-20241022
+        (0.00000025, 0.00000125), # claude-3-haiku-20240307
+    ]
+    
     # Server capabilities (max concurrent requests)
-    SERVER_CAPACITIES = [24, 24, 20, 8, 10, 12]  # Capacity for each model
+    SERVER_CAPACITIES = [12, 12, 10, 13, 13, 14, 14, 13, 14]  # Capacity for each model
     
     # Dataset settings
     DATASET_NAME = "tatsu-lab/alpaca"
@@ -61,14 +75,15 @@ class Config:
     
     # Reward function weights - adjusted for better balance
     ALPHA = 0.5   # Quality weight (increased importance)
-    BETA = 0.5    # Latency weight
+    BETA = 0.3    # Latency weight
+    REWARD_GAMMA = 0.2 # price weight (increased to emphasize cost)
     LAMBDA = 5  # Capacity penalty weight (increased to strongly discourage invalid actions)
     
     # PPO hyperparameters - tuned for the routing problem
     LEARNING_RATE = 1e-5  # Reduced for more stable learning
     GAMMA = 0.95          # Slightly reduced discount factor
     GAE_LAMBDA = 0.9      # Reduced for less variance in advantage estimation
-    CLIP_EPSILON = 0.1   # Slightly reduced for more conservative updates
+    CLIP_EPSILON = 0.2   # Slightly reduced for more conservative updates
     VALUE_COEF = 0.25     # Reduced value function weight
     ENTROPY_COEF = 0   # Increased entropy for more exploration
     MAX_GRAD_NORM = 0.5
@@ -131,18 +146,26 @@ class Config:
     FINAL_EVAL_EPISODES = 10  # Number of episodes for final evaluation
     
     # Poisson prompt generation settings
-    POISSON_ARRIVAL_RATE = 5  # Average arrival rate of prompts per second
-    MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the
-    EPISODE_TIME_INTERVAL = 30  # Time interval for each episode in seconds
+    POISSON_ARRIVAL_RATE = 10  # Average arrival rate of prompts per second
+    MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
+    EPISODE_TIME_INTERVAL = 10  # Time interval for each episode in seconds
     
     # Queue score settings
     QUEUE_SCORE_FACTOR = 0.2  # Factor to adjust queue score impact
-    QUEUE_EPSLONG = 0.0001  # Epsilon for queue score stability
-    MERGE_ALPHA = 0.5 # Alpha for merging action probabilities (0.5 for equal weighting)
+    QUEUE_EPSILON = 0.0001  # Epsilon for queue score stability
+    MERGE_ALPHA = 0 # Alpha for merging action probabilities (0.5 for equal weighting)
 
     ROUND_ROBIN = False
     
-    USE_MERGE_TO_TRAIN = True 
+    USE_MERGE_TO_TRAIN = False  # Use merge action for training 
+    
+    ADAPTIVE_EPSILON = False  # Use adaptive epsilon for exploration
+    
+    MIX_QUEUE_SCORE = False
+    
+    ENTROPY_BASED_EXPLORATION = False  # Use entropy-based exploration
+    
+    T = -5
 
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL

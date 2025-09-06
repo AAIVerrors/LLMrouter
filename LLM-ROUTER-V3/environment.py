@@ -15,6 +15,7 @@ from PoissonPromptGenerator import PoissonPromptGenerator
 from quality_model import P2LPredictor
 import anthropic
 from google import genai
+from google.genai import types
 from openai import OpenAI
 
 # Set multiprocessing start method
@@ -38,6 +39,7 @@ class Request:
     status: str = "pending"
     reward: Optional[float] = 0  # Reward for this request
     episode: Optional[int] = None  # Track episode for monitoring
+    price: Optional[float] = None  # Price for this request
     
 
 def server_worker_process(model_name: str,
@@ -152,7 +154,8 @@ def server_worker_process(model_name: str,
                         #     model_name = "o1-mini-2024-09-12"
                         response = model.responses.create(
                             model=model_name,
-                            input= request.prompt
+                            input= request.prompt,
+                            max_output_tokens=200
                             )
                         response_text = response.output_text
                     elif "gemini" in model_name:
@@ -160,8 +163,13 @@ def server_worker_process(model_name: str,
                             model_name = "gemini-1.5-flash"
                         elif model_name == "gemini-2.0-flash-001":
                             model_name = "gemini-2.0-flash"
+                        elif model_name == "gemini-1.5-flash-8b-001":
+                            model_name = "gemini-1.5-flash-8b"
                         message = model.models.generate_content(
-                            model=model_name, contents="Explain how AI works in a few words"
+                            model=model_name, contents="Explain how AI works in a few words",
+                            config=types.GenerateContentConfig(
+                                max_output_tokens=200
+                            )
                         )
                         response_text = message.text
                     elif "claude" in model_name:
@@ -386,6 +394,7 @@ class QualityScorer:
         # print("coefs: " + str(coefs))
         all_coefs = {m: coefs.get(m.split("/")[1].lower() if "/" in m else m) for m in Config.MODEL_NAMES}
         # Normalize scores to [0, 1]
+        # print("all_coefs: " + str(all_coefs))
         min_score = min(all_coefs.values())
         max_score = max(all_coefs.values())
         normalized_scores = {
@@ -445,14 +454,18 @@ def response_collector_worker(response_queue,
                     normalized_latency = latency/10
                     quality_reward = config_alpha * request.quality_score
                     latency_penalty = config_beta * normalized_latency
-                    reward = quality_reward - latency_penalty
-                    
+                    price = Config.REWARD_GAMMA*(Config.PRICE[request.server_id][0]*len(request.prompt)*10000 
+                                                 + 10000*Config.PRICE[request.server_id][1]*len(request.response['response_text']))
+                    reward = quality_reward - latency_penalty - price
+
                     print(f"Response completed - ID: {request.id}, "
                           f"Quality: {request.quality_score:.3f}, "
                           f"Latency: {latency:.3f}s, "
-                          f"Reward: {reward:.3f}")
+                          f"Reward: {reward:.3f}",
+                          f"Price: {price:.3f}")
                     
                     request.reward = reward 
+                    request.price = price
                     
                     #  Update monitoring queue, completed
                     queue_monitor.log_request_completed(
@@ -475,6 +488,7 @@ def response_collector_worker(response_queue,
             elif request.status == 'failed':
                 
                 request.reward = -config_lambda
+                request.price = 0.0
                 episode_completed.put(request)
                 print(f"Response failed - ID: {request.id}, Penalty: {-config_lambda}")
                 

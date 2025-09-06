@@ -8,9 +8,11 @@ class EpisodeBuffer:
         self.trajectories = []
         self.current_episode = []
     
-    def add_step(self, state, prompt, action, log_prob, value, reward, action_mask=None, service_rate=None):
+    def add_step(self, time_slot, route_time, state, prompt, action, log_prob, value, reward, action_mask=None, service_rate=None):
         """Add a step to the current episode"""
         step_data = {
+            'time_slot': time_slot,
+            'route_time': route_time,
             'state': state,
             'prompt': prompt,
             'action': action,
