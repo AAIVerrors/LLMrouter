@@ -27,7 +27,7 @@ except RuntimeError:
 @dataclass
 class Request:
     """Represents a single request in the system"""
-    id: str
+    id: int
     prompt: str
     arrival_time: float
     start_time: Optional[float] = None
@@ -246,11 +246,11 @@ def server_worker_process(model_name: str,
 
                     # Update request with completion info
                     request.completion_time = time.time()
-                    request.processing_latency = request.completion_time - request.start_time
+                    request.processing_latency = max(min(request.completion_time - request.arrival_time, 10.0), 0)
                     request.status = 'completed'
                     request.response = {
                         "response_text": response_text,
-                        "decode_time": request.processing_latency,
+                        "decode_time": request.completion_time - request.start_time,
                         "tokens_generated": len(response_text)
                     }
                         
@@ -277,7 +277,7 @@ def server_worker_process(model_name: str,
                     print(f"Error processing request {request.id}: {str(e)}")
                     request.status = 'failed'
                     request.completion_time = time.time()
-                    request.processing_latency = request.completion_time - request.start_time
+                    request.processing_latency = max(min(request.completion_time - request.arrival_time, 10.0), 0)
                     response_queue.put([request, queue_state_before, None])
                     continue
 
@@ -424,12 +424,14 @@ class QualityScorer:
         return max(0.1, final_score)
 
 def response_collector_worker(response_queue,
-                              episode_completed,
+                            #   episode_completed,
                             total_completed,
                             running,
                             config_alpha: float,
                             config_beta: float,
                             config_lambda: float,
+                            routed_prompts,
+                            completed_prompts=None,
                             queue_monitor=None):
     """Worker function for response collection"""
     print("Response collector started")
@@ -449,13 +451,14 @@ def response_collector_worker(response_queue,
                 if (request.processing_latency is not None):
                     
                     latency = request.processing_latency
-                    
                     # Scale latency penalty
-                    normalized_latency = latency/10
+                    normalized_latency = latency / 10
                     quality_reward = config_alpha * request.quality_score
                     latency_penalty = config_beta * normalized_latency
                     price = Config.REWARD_GAMMA*(Config.PRICE[request.server_id][0]*len(request.prompt)*10000 
                                                  + 10000*Config.PRICE[request.server_id][1]*len(request.response['response_text']))
+                    price = max(min(price, 1.0), 0)
+                    price = price 
                     reward = quality_reward - latency_penalty - price
 
                     print(f"Response completed - ID: {request.id}, "
@@ -480,8 +483,10 @@ def response_collector_worker(response_queue,
                     
                     with total_completed.get_lock():
                         total_completed.value += 1
-                    
-                    episode_completed.put(request)
+
+                    routed_prompts[request.id] = request
+                    completed_prompts.value += 1
+                    # episode_completed.put(request)
                 else:
                     print(f"Warning: Incomplete response data for request {request.id}")
                 
@@ -489,7 +494,9 @@ def response_collector_worker(response_queue,
                 
                 request.reward = -config_lambda
                 request.price = 0.0
-                episode_completed.put(request)
+                routed_prompts[request.id] = request
+                completed_prompts.value += 1
+                # episode_completed.put(request)
                 print(f"Response failed - ID: {request.id}, Penalty: {-config_lambda}")
                 
         except Empty:
@@ -520,6 +527,9 @@ class EnhancedRouterEnvironment:
         # Initialize manager
         self.manager = mp.Manager()
         
+        self.routed_prompts = self.manager.dict()
+        self.completed_prompts = self.manager.Value('i', 0)
+        
         # Initialize components
         self.quality_scorer = QualityScorer()
         
@@ -527,7 +537,7 @@ class EnhancedRouterEnvironment:
         self.response_queue = mp.Queue()
         
         # Episode completion tracking
-        self.episode_completed = self.manager.Queue()
+        # self.episode_completed = self.manager.Queue()
         
         # Create prompt queue and generator
         self.prompt_queue = self.manager.Queue()
@@ -539,6 +549,8 @@ class EnhancedRouterEnvironment:
         )
         self.prompt_generator.start()
         
+        
+        
         # Response collection
         self.response_collector_running = mp.Value('b', True)
         self.total_completed = mp.Value('i', 0)
@@ -547,12 +559,14 @@ class EnhancedRouterEnvironment:
         self.response_collector = mp.Process(
             target=response_collector_worker,
             args=(self.response_queue,
-                  self.episode_completed,
+                #   self.episode_completed,
                   self.total_completed,
                   self.response_collector_running, 
                   Config.ALPHA, 
                   Config.BETA, 
                   Config.LAMBDA,
+                  self.routed_prompts,
+                  self.completed_prompts,
                   self.queue_monitor if self.enable_monitoring else None)
         )
         self.response_collector.daemon = True
@@ -615,24 +629,16 @@ class EnhancedRouterEnvironment:
         return torch.tensor([server.can_accept_request() for server in self.servers], dtype=torch.float32)
 
     def get_episode_data(self) -> List[Dict[str, Any]]:
-        episode = []
-        while True:
-            try:
-                data = self.episode_completed.get_nowait()
-                episode.append(data.__dict__.copy())  # Use __dict__ to get a dict of fields
-            except Empty:
-                break  # No more completed requests in the queue
+        episode = [self.routed_prompts[key].__dict__ for key in sorted(self.routed_prompts.keys()) if self.routed_prompts[key].episode == self.current_episode]
         print(episode[:5]) 
         return episode
     
     def clean_episode_completed(self):
-        cleared_count = 0
-        while True:
-            try:
-                self.episode_completed.get_nowait()
-                cleared_count += 1
-            except Empty:
-                break
+        self.routed_prompts.clear()
+        
+    def check_get_episode_completed(self):
+        print(f"Completed prompts: {self.completed_prompts.value}, Total routed: {len(self.routed_prompts)}")
+        return self.completed_prompts.value == len(self.routed_prompts)
     
     def get_next_prompt(self) -> str:
         prompt = None
@@ -653,7 +659,7 @@ class EnhancedRouterEnvironment:
             self.total_completed.value = 0
         
         # Create request
-        request_id = f"req_{self.request_counter}"
+        request_id = self.request_counter
         self.request_counter += 1
         
         request = Request(
@@ -681,7 +687,7 @@ class EnhancedRouterEnvironment:
             request.status = 'failed'
             request.reward = -Config.LAMBDA * 2.0  # Double penalty for capacity issues 
             request.completion_time = time.time()
-            request.processing_latency = 5
+            request.processing_latency = 10
             request.quality_score = -1
 
             self.response_queue.put([request, None, None])
@@ -690,6 +696,8 @@ class EnhancedRouterEnvironment:
         
         # Valid action - compute quality and log request
         request.quality_score = self.quality_scorer.compute_quality_score_real(prompt, server.get_model_name())
+
+        self.routed_prompts[request.id] = request
 
         # Send request to server
         server.put_request(request)
@@ -735,6 +743,10 @@ class EnhancedRouterEnvironment:
         """Set current episode"""
         self.current_episode = episode
         
+    def pause_prompt_generator(self):
+        """Pause prompt generator"""
+        self.prompt_generator.stop()
+        
     def clean_response_queue(self):
         """Clean up response queue"""
         while not self.response_queue.empty():
@@ -772,6 +784,7 @@ class EnhancedRouterEnvironment:
         self.clean_prompt_queue()
         self.clean_response_queue()
         self.clean_episode_completed()
+        self.completed_prompts.value = 0
         print("All queues cleaned.")
     
     def __del__(self):

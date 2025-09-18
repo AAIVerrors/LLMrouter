@@ -74,13 +74,13 @@ class Config:
     MAX_EPISODES = 200   # Increased for more training
     
     # Reward function weights - adjusted for better balance
-    ALPHA = 0.5   # Quality weight (increased importance)
-    BETA = 0.3    # Latency weight
-    REWARD_GAMMA = 0.2 # price weight (increased to emphasize cost)
+    ALPHA = 1/3   # Quality weight (increased importance)
+    BETA = 1/3    # Latency weight
+    REWARD_GAMMA = 1/3 # price weight (increased to emphasize cost)
     LAMBDA = 5  # Capacity penalty weight (increased to strongly discourage invalid actions)
     
     # PPO hyperparameters - tuned for the routing problem
-    LEARNING_RATE = 1e-5  # Reduced for more stable learning
+    LEARNING_RATE = 1e-3  # Reduced for more stable learning
     GAMMA = 0.95          # Slightly reduced discount factor
     GAE_LAMBDA = 0.9      # Reduced for less variance in advantage estimation
     CLIP_EPSILON = 0.2   # Slightly reduced for more conservative updates
@@ -148,7 +148,7 @@ class Config:
     # Poisson prompt generation settings
     POISSON_ARRIVAL_RATE = 10  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
-    EPISODE_TIME_INTERVAL = 10  # Time interval for each episode in seconds
+    EPISODE_TIME_INTERVAL = 5  # Time interval for each episode in seconds
     
     # Queue score settings
     QUEUE_SCORE_FACTOR = 0.2  # Factor to adjust queue score impact
@@ -165,7 +165,11 @@ class Config:
     
     ENTROPY_BASED_EXPLORATION = False  # Use entropy-based exploration
     
-    T = -5
+    USE_AVG = False 
+    
+    RANDOM_SELECT = False
+    
+    T = -2
 
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL

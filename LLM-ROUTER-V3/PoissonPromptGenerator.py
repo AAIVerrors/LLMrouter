@@ -7,6 +7,7 @@ import torch.multiprocessing as mp
 from datasets import load_dataset
 import random
 
+
 class PoissonPromptGenerator:
     """Generates prompts according to a Poisson arrival process"""
     
@@ -31,6 +32,9 @@ class PoissonPromptGenerator:
         self.thread = None
         self.total_generated = 0
         self.start_time = None
+        
+        np.random.seed(42)
+        random.seed(42)
         
         # Load dataset internally
         self.dataset = None

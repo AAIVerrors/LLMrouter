@@ -2,6 +2,7 @@ import os
 import numpy as np
 import wandb
 import torch
+import json
 from datetime import datetime
 
 from config import Config
@@ -14,6 +15,9 @@ from PoissonPromptGenerator import PoissonPromptGenerator
 
 class EnhancedLLMRouterTrainer:
     def __init__(self):
+        self.trajectory_dir = f"trajectories/run-{Config.T}-{Config.EPISODE_TIME_INTERVAL}-{Config.MAX_EPISODES}-{Config.USE_AVG}-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        os.makedirs(self.trajectory_dir, exist_ok=True)
+        
         # Initialize components
         self.env = EnhancedRouterEnvironment(enable_monitoring=Config.ENABLE_QUEUE_MONITORING)
         self.buffer = EpisodeBuffer()
@@ -228,32 +232,82 @@ class EnhancedLLMRouterTrainer:
                 action_mask=action_mask,
                 service_rate=self.last_service_rate
             )
-            
+        
+        # Wait for all prompts to be processed
+        self.env.pause_prompt_generator()
+        time.sleep(2)
+        
         # --- Pause and clean servers before training ---
-        self.env.pause_all_servers()
-        time.sleep(3)
+        while self.env.check_get_episode_completed() == False:
+            print("Waiting for all prompts to be processed...")
+            time.sleep(1)
         
         episode_record = self.env.get_episode_data()
         
-        time.sleep(3)
+        time.sleep(2)
+        
+        self.env.pause_all_servers()
+        time.sleep(2)
+        
         self.env.clean_all_queues()
-        time.sleep(3)
+        time.sleep(2)
         
         # Update buffer rewards with actual episode rewards
         for i, req in enumerate(episode_record):
             if i < len(self.buffer.current_episode):
                 self.buffer.current_episode[i]['reward'] = req['reward']
-        
+                
+        # normalize latency, price and then recompute rewards
+        # if len(episode_record) > 0:
+        #     latencies = np.array([req['processing_latency'] for req in episode_record])
+        #     prices = np.array([req['price'] for req in episode_record])
+        #     if len(latencies) > 1:
+        #         lat_mean, lat_std = latencies.mean(), latencies.std()
+        #         prices_mean, prices_std = prices.mean(), prices.std()
+        #         for i, req in enumerate(episode_record):
+        #             norm_latency = (req['processing_latency'] - lat_mean) / (lat_std + 1e-8) if lat_std > 0 else 0
+        #             req['processing_latency'] = norm_latency
+        #             norm_price = (req['price'] - prices_mean) / (prices_std + 1e-8) if prices_std > 0 else 0
+        #             req['price'] = norm_price
+        #             # Recompute reward with normalized latency and price
+        #             req['reward'] = Config.ALPHA * req['quality_score'] - Config.BETA * norm_latency - Config.REWARD_GAMMA * norm_price
+        #             # Update buffer as well
+        #             if i < len(self.buffer.current_episode):
+        #                 self.buffer.current_episode[i]['reward'] = req['reward']
         
         return episode_record
+
+    def tensor_to_python(self, obj):
+        if isinstance(obj, torch.Tensor):
+            if obj.dim() == 0:
+                return obj.item()
+            else:
+                return obj.cpu().tolist()
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, dict):
+            return {k: self.tensor_to_python(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self.tensor_to_python(v) for v in obj]
+        else:
+            return obj
+        
+    def save_trajectories_json(self, trajectories, episode, trajectory_dir):
+        serializable_trajectories = [self.tensor_to_python(t) for t in trajectories]
+        filename = os.path.join(trajectory_dir, f"episode_{episode:04d}.json")
+        with open(filename, 'w') as f:
+            json.dump(serializable_trajectories, f, indent=2)
     
-    def train_step(self):
+    def train_step(self, episode=None, trajectory_dir=None):
         """Perform one training step with collected trajectories"""
         trajectories = self.buffer.get_current_episode()
         
         if len(trajectories) == 0:
             return {}
-       
+
+        if trajectory_dir is not None:
+            self.save_trajectories_json(trajectories, episode, trajectory_dir)
+
         training_metrics = self.agent.update_new(trajectories)
         self.buffer.finish_episode()
         return training_metrics
@@ -290,10 +344,12 @@ class EnhancedLLMRouterTrainer:
             print(episode_info)
             
             # Train every episode
-            if not Config.ROUND_ROBIN:
+            # if not Config.ROUND_ROBIN:
+            if True:
                 training_metrics = None
                 print(f"Training agent (episode {episode})...")
-                training_metrics = self.train_step()
+                training_metrics = self.train_step(episode, self.trajectory_dir)
+                
                 if training_metrics:
                     print(f"   Policy Loss: {training_metrics['policy_loss']:.6f}")
                     print(f"   Value Loss: {training_metrics['value_loss']:.6f}")
@@ -301,7 +357,7 @@ class EnhancedLLMRouterTrainer:
                 if self.wandb_available:
                     wandb.log({
                         "episode": episode,
-                        "total_reward": episode_info['total_reward'],
+                        "total_reward": np.sum(episode_info['rewards']),
                         "mean_reward": np.mean(episode_info['rewards']),
                         "std_reward": np.std(episode_info['rewards']),
                         "policy_loss": training_metrics['policy_loss'] if training_metrics else None,
@@ -318,8 +374,14 @@ class EnhancedLLMRouterTrainer:
                         "returns": training_metrics['rewards_returns'] if training_metrics else None,
                         "term_returns": training_metrics['term_rewards_returns'] if training_metrics else None,
                         'min_rewards': training_metrics['min_rewards'] if training_metrics else None,
+                        'cumulated_avg_rewards_return': training_metrics['cumulated_avg_rewards'] if training_metrics else None,
                     }, step=episode)
-                    
+
+                # Add server usage percentage if available
+                if training_metrics and 'server_usage_percentage' in training_metrics:
+                    for server_id, usage in training_metrics['server_usage_percentage'].items():
+                        wandb.log({f"server_{server_id}_usage": usage}, step=episode)
+
                 # Add server scores if available
                 # if training_metrics and 'each_server_score' in training_metrics:
                 #     for server_id, score in training_metrics['each_server_score'].items():
@@ -350,6 +412,76 @@ class EnhancedLLMRouterTrainer:
                 if self.wandb_available and hasattr(self.env, 'queue_monitor'):
                     self.env.queue_monitor.log_throughput_to_wandb(episode)
             else:   
+                # # min rewards of each time slot
+                def cumulated_return(self, rewards):
+                    """Compute cumulated returns"""
+                    returns = torch.zeros_like(rewards)
+                    returns[-1] = rewards[-1]
+                    for t in reversed(range(len(rewards) - 1)):
+                        returns[t] = rewards[t] + Config.GAMMA * returns[t + 1]
+                    return returns
+                
+                # term_rewards = []
+                
+                # min_rewards = []
+                # term_returns = []
+                # for t in range(Config.EPISODE_TIME_INTERVAL):
+                #     rewards_t = [step['reward'] for step in self.buffer.current_episode if step['time_slot'] == t]
+                #     if rewards_t:
+                #         term_rewards.append(np.mean(rewards_t))
+                #     else:
+                #         term_rewards.append(0)
+                # min_rewards = []
+                # term_returns = []
+                # for t in range(Config.EPISODE_TIME_INTERVAL):
+                #     rewards_t = [step['reward'] for step in self.buffer.current_episode if step['time_slot'] == t]
+                #     if rewards_t:
+                #         min_rewards.append(min(rewards_t))
+                #     else:
+                #         min_rewards.append(0)
+                
+                min_rewards_per_time_slot = []
+                for t in range(Config.EPISODE_TIME_INTERVAL):
+                    rewards_t = [step['reward'] for step in self.buffer.current_episode if step['time_slot'] == t]
+                    if rewards_t:
+                        min_rewards_per_time_slot.append(min(rewards_t))
+                    else:
+                        min_rewards_per_time_slot.append(0)
+                min_rewards = np.array(min_rewards_per_time_slot)
+                
+                returns = self.cumulated_return(self, torch.tensor([step['reward'] for step in self.buffer.current_episode], dtype=torch.float32))[0]
+                
+                
+                        
+                # # return 
+                # rewards_returns = []
+
+                # returns = self.cumulated_return(self, torch.tensor([step['reward'] for step in self.buffer.current_episode], dtype=torch.float32))[0]
+
+                # term_returns = []
+                # G = 0
+                # for r in reversed(self.buffer.current_episode):
+                #     if r['done']:
+                #         G = 0
+                #     G = r['reward'] + Config.GAMMA * G
+                #     term_returns.insert(0, G)
+                # term_returns = np.array(term_returns)
+                # term_returns = (term_returns - term_returns.mean()) / (term_returns.std() + 1e-8)
+                
+                # cumulated_avg_rewards = []
+                # cum_sum = 0
+                # for i, r in enumerate(self.buffer.current_episode):
+                #     cum_sum += r['reward']
+                #     cumulated_avg_rewards.append(cum_sum / (i + 1)) 
+                # cumulated_avg_rewards = np.array(cumulated_avg_rewards) 
+                # cumulated_avg_rewards = (cumulated_avg_rewards - cumulated_avg_rewards.mean()) / (cumulated_avg_rewards.std() + 1e-8)
+                # training_metrics = {
+                #     'min_rewards': min_rewards,
+                #     'rewards_returns': returns,
+                #     'term_rewards_returns': term_returns,
+                #     'cumulated_avg_rewards': cumulated_avg_rewards
+                # }
+                
                 if self.wandb_available:
                         wandb.log({
                             "episode": episode,
@@ -360,7 +492,24 @@ class EnhancedLLMRouterTrainer:
                             "latencies": np.mean(episode_info['latencies']),
                             "price": np.mean([episode_info['prices']]),
                             "throughput_per_episode/requests_completed": episode_info['valid_actions'],
+                            "min_rewards": np.mean(min_rewards),
+                            "returns": returns,
+                            # "returns": training_metrics['rewards_returns'],
+                            # "term_returns": training_metrics['term_rewards_returns'],
+                            # 'min_rewards': training_metrics['min_rewards'],
+                            # 'cumulated_avg_rewards_return': training_metrics['cumulated_avg_rewards'],
                         }, step=episode)
+                
+                # server usage percentage
+                server_usage = {i: 0 for i in range(len(Config.SERVER_CAPACITIES))}
+                for step in self.buffer.current_episode:
+                    server_usage[step['action']] += 1
+                total_actions = sum(server_usage.values())
+                if total_actions > 0:
+                    server_usage = {k: v / total_actions for k, v in server_usage.items()}
+                if self.wandb_available:
+                    for server_id, usage in server_usage.items():
+                        wandb.log({f"server_{server_id}_usage": usage}, step=episode)
                     
                 if self.wandb_available and hasattr(self.env, 'queue_monitor'):
                     self.env.queue_monitor.log_throughput_to_wandb(episode)
