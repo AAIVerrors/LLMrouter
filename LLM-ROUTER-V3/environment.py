@@ -17,6 +17,7 @@ import anthropic
 from google import genai
 from google.genai import types
 from openai import OpenAI
+from mistralai import Mistral
 
 # Set multiprocessing start method
 try:
@@ -70,9 +71,12 @@ def server_worker_process(model_name: str,
         elif "gpt" in model_name or "o1" in model_name or "o3" in model_name:
             model = OpenAI()
         elif "gemini" in model_name:
-            model = genai.Client(api_key='AIzaSyCVkz9FRUPwBkvOGKEEAQP5llI1y1p8FFo')
+            model = genai.Client(api_key=os.environ["GEMINI_API"])
         elif "claude" in model_name:
             model = anthropic.Anthropic()
+        elif "mistral" in model_name or "mixtral" in model_name or "ministral" in model_name:
+            api_key = os.environ["MISTRAL_API_KEY"]
+            client = Mistral(api_key=api_key)
         else:
             
             # Initialize tokenizer
@@ -161,17 +165,44 @@ def server_worker_process(model_name: str,
                     elif "gemini" in model_name:
                         if model_name == "gemini-1.5-flash-001":
                             model_name = "gemini-1.5-flash"
-                        elif model_name == "gemini-2.0-flash-001":
-                            model_name = "gemini-2.0-flash"
+                        elif model_name == "gemini-2.0-flash-exp":
+                            model_name = "gemini-2.0-flash-lite"
                         elif model_name == "gemini-1.5-flash-8b-001":
                             model_name = "gemini-1.5-flash-8b"
                         message = model.models.generate_content(
-                            model=model_name, contents="Explain how AI works in a few words",
+                            model=model_name, contents=request.prompt,
                             config=types.GenerateContentConfig(
                                 max_output_tokens=200
                             )
                         )
                         response_text = message.text
+                    elif "mistral" in model_name or "mixtral" in model_name or "ministral" in model_name:
+                        
+                        model = model_name
+                        if model_name == "mistral-7b-instruct-v0.2":
+                            model = "open-mistral-7b"
+                        elif model_name == "mistral-medium":
+                            model = "mistral-medium-2508"
+                        elif model_name == "mistral-small-24b-instruct-2501":
+                            model = "mistral-small-2501"
+                        elif model_name == "mixtral-8x7b-instruct-v0.1":
+                            model = "open-mixtral-8x7b"
+                        
+                        
+                        chat_response = client.chat.complete(
+                                model= model,
+                                max_tokens=200,
+                                temperature=0.7,
+                                top_p=0.95,
+                                messages = [
+                                    {
+                                        "role": "user",
+                                        "content": request.prompt,
+                                    },
+                                ]
+                            )
+                        response_text = chat_response.choices[0].message.content
+                       
                     elif "claude" in model_name:
                         message = model.messages.create(
                             model=model_name,
@@ -246,14 +277,15 @@ def server_worker_process(model_name: str,
 
                     # Update request with completion info
                     request.completion_time = time.time()
-                    request.processing_latency = max(min(request.completion_time - request.arrival_time, 10.0), 0)
+                    request.processing_latency = max(min(request.completion_time - request.arrival_time, 60.0), 0)
                     request.status = 'completed'
                     request.response = {
                         "response_text": response_text,
                         "decode_time": request.completion_time - request.start_time,
                         "tokens_generated": len(response_text)
                     }
-                        
+                    print(f"response_text: {response_text}")
+
                     # Calculate average processing time
                     if request.processing_latency:
                         avg_processing_time = (
@@ -277,7 +309,7 @@ def server_worker_process(model_name: str,
                     print(f"Error processing request {request.id}: {str(e)}")
                     request.status = 'failed'
                     request.completion_time = time.time()
-                    request.processing_latency = max(min(request.completion_time - request.arrival_time, 10.0), 0)
+                    request.processing_latency = max(min(request.completion_time - request.arrival_time, 60.0), 0)
                     response_queue.put([request, queue_state_before, None])
                     continue
 
@@ -452,7 +484,7 @@ def response_collector_worker(response_queue,
                     
                     latency = request.processing_latency
                     # Scale latency penalty
-                    normalized_latency = latency / 10
+                    normalized_latency = latency / 60
                     quality_reward = config_alpha * request.quality_score
                     latency_penalty = config_beta * normalized_latency
                     price = Config.REWARD_GAMMA*(Config.PRICE[request.server_id][0]*len(request.prompt)*10000 
@@ -492,12 +524,12 @@ def response_collector_worker(response_queue,
                 
             elif request.status == 'failed':
                 
-                request.reward = -config_lambda
+                request.reward = - config_beta - Config.REWARD_GAMMA
                 request.price = 0.0
                 routed_prompts[request.id] = request
                 completed_prompts.value += 1
                 # episode_completed.put(request)
-                print(f"Response failed - ID: {request.id}, Penalty: {-config_lambda}")
+                print(f"Response failed - ID: {request.id}, Penalty: {- config_beta - Config.REWARD_GAMMA}")
                 
         except Empty:
             continue
@@ -685,10 +717,10 @@ class EnhancedRouterEnvironment:
                 )
                 
             request.status = 'failed'
-            request.reward = -Config.LAMBDA * 2.0  # Double penalty for capacity issues 
+            request.reward = -2
             request.completion_time = time.time()
-            request.processing_latency = 10
-            request.quality_score = -1
+            request.processing_latency = 60
+            request.quality_score = 0
 
             self.response_queue.put([request, None, None])
             print(f"Server {action} at capacity. Request {request_id} failed.")

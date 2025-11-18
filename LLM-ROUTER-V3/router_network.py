@@ -11,10 +11,18 @@ import math
 import time as tm
 import os
 import json
+import random
 
 class RouterNetwork(nn.Module):
     def __init__(self, state_dim: int, action_dim: int):
         super(RouterNetwork, self).__init__()
+        
+        # Set seeds for reproducibility
+        torch.manual_seed(42)
+        np.random.seed(42)
+        random.seed(42)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(42)
         
         # Prompt encoder
         self.prompt_encoder = SentenceTransformer('all-MiniLM-L6-v2')
@@ -23,9 +31,12 @@ class RouterNetwork(nn.Module):
         # Freeze prompt encoder parameters
         for param in self.prompt_encoder.parameters():
             param.requires_grad = False
+        # Prompt projection to reduce dimension
+        
+        self.prompt_projection = nn.Linear(384, 25)
         
         # Input dimensions
-        prompt_dim = 384
+        self.prompt_dim = 25
         self.state_dim = state_dim  # 4 * num_servers
         num_servers = state_dim // 4
         self.num_servers = num_servers
@@ -48,7 +59,7 @@ class RouterNetwork(nn.Module):
         # Shared layers with residual connections
         self.shared_layers = nn.ModuleList([
             nn.Sequential(
-                nn.Linear((Config.HIDDEN_DIM // 4) + prompt_dim, Config.HIDDEN_DIM),
+                nn.Linear((Config.HIDDEN_DIM // 4) + self.prompt_dim, Config.HIDDEN_DIM),
                 nn.LayerNorm(Config.HIDDEN_DIM),
                 nn.ReLU(),
                 nn.Dropout(0.1)
@@ -130,6 +141,9 @@ class RouterNetwork(nn.Module):
         
         with torch.no_grad():
             embeddings = self.prompt_encoder.encode(prompts, convert_to_tensor=True)
+            
+        # Project to smaller dimension
+        embeddings = self.prompt_projection(embeddings)
         
         return embeddings.to(Config.DEVICE)
     
@@ -144,7 +158,7 @@ class RouterNetwork(nn.Module):
             logits: Policy probabilities [batch_size, action_dim]
             value: Value estimate [batch_size, 1]
         """
-        print('state:', state)
+        # print('state:', state)
         batch_size = state.shape[0] if len(state.shape) > 1 else 1
         
         state = state.view(batch_size, self.state_dim, 1)  # [batch_size, state_dim, 1]
@@ -210,7 +224,7 @@ class RouterNetwork(nn.Module):
         probs[torch.isnan(probs)] = 0
         probs[torch.isinf(probs)] = 0
         probs_sum = probs.sum(dim=-1, keepdim=True)
-        probs = probs / (probs_sum + 1e-8)
+        probs = probs / (probs_sum)
         # If any row sums to zero, set uniform
         zero_rows = (probs_sum.squeeze(-1) == 0)
         if zero_rows.any():
@@ -333,11 +347,14 @@ class PPOAgent:
         #     round_robin_counter += 1
         #     return action, log_prob.cpu().item(), value.cpu().item(), round_robin_counter
         
+        # reset quality
         pre_len = 2*len(Config.MODEL_NAMES)
         coefs = self.quality_scorer.compute_quality_score_all(prompt)
         for index,server in enumerate(Config.MODEL_NAMES):
             state_tensor[pre_len + index] = float(coefs[server])
-            # print(f"Quality score for {server}: {coefs[server]}")
+            print(f"Quality score for {server}: {coefs[server]}")
+        
+        print(state_tensor)
 
         with torch.no_grad():
             action, log_prob, entropy, value, dist_policy = self.network.get_action_and_value(
@@ -426,7 +443,7 @@ class PPOAgent:
         returns = advantages + values
         
         # Normalize advantages
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-5)
         
         # PPO update
         total_policy_loss = 0
@@ -518,8 +535,8 @@ class PPOAgent:
                 # Compute min and max per time step
                 min_scores, _ = torch.min(queue_scores, dim=1)  # Shape (153,)
                 max_scores, _ = torch.max(queue_scores, dim=1)  # Shape (153,)
-                norm_low = (selected_scores - min_scores) / (max_scores - min_scores + 1e-8)  # Shape (153,)
-                norm_high = (max_scores - selected_scores) / (max_scores - min_scores + 1e-8)  # Shape (153,)
+                norm_low = (selected_scores - min_scores) / (max_scores - min_scores + 1e-5)  # Shape (153,)
+                norm_high = (max_scores - selected_scores) / (max_scores - min_scores + 1e-5)  # Shape (153,)
                 clip_low =  - norm_low * (1 - Config.CLIP_EPSILON) - Config.CLIP_EPSILON  # Shape (153,)
                 clip_high = norm_high * (1 - Config.CLIP_EPSILON) + Config.CLIP_EPSILON  # Shape (153,)
                 # print(f"Adaptive epsilon shapes: selected_scores={selected_scores}, clip_low={clip_low}, clip_high={clip_high}")
@@ -644,16 +661,17 @@ class PPOAgent:
         total_entropy_loss = 0
         
         term_values = []
-        intervel_subgroup_rewards = [{server: [] for server in range(len(Config.MODEL_NAMES))} for _ in range(Config.EPISODE_TIME_INTERVAL)]
+        null_timeslots = []
+        intervel_subgroup_rewards = [{server: [] for server in range(len(Config.MODEL_NAMES))} for _ in range(Config.EPISODE_TIME_INTERVAL+1)]
 
         for i in range(len(actions)):
             time = time_slots[i].item()  # Extract scalar time
             action = actions[i].item()  # Extract scalar action
             reward = rewards[i].item()  # Extract scalar reward
-            intervel_subgroup_rewards[int(time)-1][int(action)].append(reward)
+            intervel_subgroup_rewards[int(time)][int(action)].append(reward)
 
         # term values is the the first value in each time slot
-        for j in range(0, Config.EPISODE_TIME_INTERVAL):
+        for j in range(0, Config.EPISODE_TIME_INTERVAL+1):
             found_value = False
             for i in range(len(actions)):
                 time = time_slots[i].item()  # Extract scalar time
@@ -663,7 +681,7 @@ class PPOAgent:
                         found_value = True
                     break
             if not found_value:
-                term_values.append(0.0)
+                null_timeslots.append(j)
 
         # for j in range(0, Config.EPISODE_TIME_INTERVAL + 1):
         #     dic = {}
@@ -699,20 +717,23 @@ class PPOAgent:
                 if len(cur[k]) > 0:
                     cur[k] = np.mean(cur[k])
                 else:
-                    cur[k] = 0
+                    cur[k] = -Config.BETA - Config.REWARD_GAMMA  # Penalty for no selections
+            # If there are fewer routes than models, remove some zeros to avoid excessive penalties
             if num_routes < len(Config.MODEL_NAMES):
                 times = len(Config.MODEL_NAMES) - num_routes
                 for k in list(cur.keys()):
-                    if cur[k] == 0 and times > 0:
+                    if cur[k] == -Config.BETA - Config.REWARD_GAMMA and times > 0:
                         del cur[k]
                         times -= 1
             values = torch.tensor(list(cur.values()), dtype=torch.float32)
+            print(cur)
+            if len(values) == 0:
+                continue
             if Config.USE_AVG == False:
-                term_reward = (1 / Config.T) * torch.log(torch.exp(Config.T * values).mean() + 1e-8)  # Add small epsilon to avoid log(0)
+                term_reward = (1 / Config.T) * torch.log(torch.exp(Config.T * values).mean() + 1e-5)  # Add small epsilon to avoid log(0)
             else:
                 term_reward = values.mean()
             term_rewards.append(term_reward.item())  # Append scalar result
-            
 
         # Convert to tensors
         term_rewards = torch.FloatTensor(term_rewards).to(Config.DEVICE)
@@ -736,7 +757,7 @@ class PPOAgent:
         # Calculate advantages
         term_advantages = self.compute_gae(term_rewards, term_values)
         term_returns = term_advantages + term_values
-        term_advantages = (term_advantages - term_advantages.mean()) / (term_advantages.std() + 1e-8)
+        term_advantages = (term_advantages - term_advantages.mean()) / (term_advantages.std() + 1e-5)
         
         print('term_advantages:', term_advantages)
         
@@ -753,7 +774,7 @@ class PPOAgent:
                     actions,         # action (tensor)
                     service_rate=service_rate  # service_rate (list)
                 )
-                print(queue_scores)
+                # print(queue_scores)
 
             else:
                 _, new_log_probs, entropy, new_values, dist = self.network.get_action_and_value(
@@ -762,7 +783,7 @@ class PPOAgent:
 
                 
             # Term policy loss
-            new_log_probs_grouped = torch.zeros(Config.EPISODE_TIME_INTERVAL).to(Config.DEVICE)
+            new_log_probs_grouped = torch.zeros(Config.EPISODE_TIME_INTERVAL+1).to(Config.DEVICE)
             new_dic = {}
             old_dic = {}
             for i, j in enumerate(time_slots):
@@ -774,17 +795,22 @@ class PPOAgent:
                     old_dic[key] = []
                 old_dic[key].append(old_log_probs[i])
             for k in new_dic:
+                # if k didnt exist in old_dic, then skip
                 new_tensor = torch.stack(new_dic[k])
                 old_tensor = torch.stack(old_dic[k])
-                diff = torch.clamp(new_tensor - old_tensor, min=1e-8)
+                diff = torch.clamp(new_tensor - old_tensor, min=1e-5)
                 new_log_probs_grouped[int(k)-1] = torch.exp(torch.log(diff).mean())
+            
+            # delete the time slots that are null
+            if len(null_timeslots) > 0:
+                new_log_probs_grouped = torch.tensor([new_log_probs_grouped[i] for i in range(len(new_log_probs_grouped)) if i not in null_timeslots], dtype=torch.float32).to(Config.DEVICE)
                 
             surr1 = new_log_probs_grouped * term_advantages
             surr2 = torch.clamp(new_log_probs_grouped, 1 - Config.CLIP_EPSILON, 1 + Config.CLIP_EPSILON) * term_advantages
             
             term_values = []
 
-            for j in range(0, Config.EPISODE_TIME_INTERVAL):
+            for j in range(0, Config.EPISODE_TIME_INTERVAL+1):
                 t = False
                 for i in range(len(new_values)):
                     time = time_slots[i]  # Extract scalar time
@@ -793,7 +819,7 @@ class PPOAgent:
                         t = True
                         break
                 if not t:
-                    term_values.append(0.0)  # Default value if no action in this interval
+                    continue  # Default value if no action in this interval
                     
             print('term_values_new:', term_values)
 
@@ -835,7 +861,7 @@ class PPOAgent:
             entropy_loss = -entropy.mean()
             
             # Total loss
-            loss = (1-Config.VALUE_COEF) * policy_loss + Config.VALUE_COEF * value_loss 
+            loss = Config.POLICY_COEF * policy_loss + Config.VALUE_COEF * value_loss + Config.ENTROPY_COEF * entropy_loss
 
             # Backward pass
             self.optimizer.zero_grad()
@@ -872,6 +898,16 @@ class PPOAgent:
             'min_rewards': torch.mean(min_rewards).item(),
             'server_usage_percentage': server_usage_percentage,
             'cumulated_avg_rewards': avg_rewards_returns,
+            'route distribution': {i: len([a for a in actions_np if a == i]) for i in range(len(Config.SERVER_CAPACITIES))},
+            'entropy of route distribution': -sum((len([a for a in actions_np if a == i])/len(actions_np)) * math.log((len([a for a in actions_np if a == i])+1e-5)/len(actions_np)+1e-5) for i in range(len(Config.SERVER_CAPACITIES))),
+            # entropy of route distribution is calculated to measure the diversity of the routing decisions
+            # math of route distribution is calculated to measure the average uncertainty in the routing decisions
+            # higher entropy indicates more diverse routing decisions, while lower entropy indicates more concentrated routing decisions
+            # both metrics can provide insights into the exploration-exploitation balance of the routing policy
+            # in a scenario where one server is heavily favored, the entropy will be low, indicating less exploration
+            # in a scenario where all servers are equally used, the entropy will be high, indicating
+            # a good balance between exploration and exploitation
+            # math expression: -sum(p * log(p) for p in probabilities if p > 0)
         }
     
     def compute_gae(self, rewards, values, dones=None):

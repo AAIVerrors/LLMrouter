@@ -176,6 +176,8 @@ class EnhancedLLMRouterTrainer:
 
         state = [self.env.reset()[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + self.last_service_rate + [1] * len(Config.SERVER_CAPACITIES) + price
 
+        # state = [self.env.reset()[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + self.last_service_rate + price
+
         import time
         start = time.time()
         robin_counter = 0  # Initialize round-robin counter
@@ -185,15 +187,15 @@ class EnhancedLLMRouterTrainer:
         current = -1
         
         while True:
-            if time.time() - start > Config.EPISODE_TIME_INTERVAL:
+            routing_start = time.time()
+            current_time_slot = int(routing_start - start)
+            if current_time_slot > Config.EPISODE_TIME_INTERVAL:
                 print(f"Episode {self.current_episode} timed out after {Config.EPISODE_TIME_INTERVAL} seconds")
                 break
-            
-            
-            
+
             # Get prompt from Poisson generator (environment handles this)
             action_mask = self.env.get_action_mask()
-            
+
             prompt = self.env.get_next_prompt()
             if not prompt:
                 # print("No more prompts available")
@@ -203,18 +205,17 @@ class EnhancedLLMRouterTrainer:
 
             # Use a dummy prompt for action selection (actual prompt comes from environment)
             action, log_prob, value, next_counter = self.agent.get_action(state, prompt, action_mask, service_rate=self.last_service_rate, round_robin_counter=robin_counter)
+            print("log_prob:", log_prob)
             robin_counter = next_counter
-            
-            routing_start = time.time()
-            
-            current_time_slot = int(routing_start - start)
             
             next_state, done = self.env.step(action, prompt)
             
             if current != current_time_slot:
-                current = current_time_slot
                 state = [next_state[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + self.last_service_rate + [1]* len(Config.SERVER_CAPACITIES) + price
-
+                # state = [next_state[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + self.last_service_rate +  price
+                current = current_time_slot
+             
+            
             if done:
                 break
             
@@ -375,6 +376,7 @@ class EnhancedLLMRouterTrainer:
                         "term_returns": training_metrics['term_rewards_returns'] if training_metrics else None,
                         'min_rewards': training_metrics['min_rewards'] if training_metrics else None,
                         'cumulated_avg_rewards_return': training_metrics['cumulated_avg_rewards'] if training_metrics else None,
+                        'entropy of route distribution': training_metrics['entropy of route distribution'] if training_metrics else None,
                     }, step=episode)
 
                 # Add server usage percentage if available

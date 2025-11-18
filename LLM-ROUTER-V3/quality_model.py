@@ -27,7 +27,7 @@ class P2LPredictor:
     P2L model wrapper for single prompt inference
     """
     
-    def __init__(self, repo_id="lmarena-ai/p2l-135m-bt-01132025", hf_token=None):
+    def __init__(self, repo_id="lmarena-ai/p2l-0.5b-grk-01112025", hf_token=None):
         """
         Initialize the P2L predictor
         
