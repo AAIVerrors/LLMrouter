@@ -15,11 +15,11 @@ def setup_hf_authentication(token=None):
     """
     if token:
         login(token)
-    elif os.getenv('HUGGING_FACE_HUB_TOKEN'):
-        login(os.getenv('HUGGING_FACE_HUB_TOKEN'))
+    elif os.getenv('HF_TOKEN'):
+        login(os.getenv('HF_TOKEN'))
     else:
         print("Warning: No Hugging Face token provided. Some datasets may not be accessible.")
-        print("Set HUGGING_FACE_HUB_TOKEN environment variable or pass token to setup_hf_authentication()")
+        print("Set HF_TOKEN environment variable or pass token to setup_hf_authentication()")
 
 
 class P2LPredictor:

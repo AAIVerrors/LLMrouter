@@ -159,7 +159,7 @@ def server_worker_process(model_name: str,
                         response = model.responses.create(
                             model=model_name,
                             input= request.prompt,
-                            max_output_tokens=200
+                            max_output_tokens=512
                             )
                         response_text = response.output_text
                     elif "gemini" in model_name:
@@ -172,7 +172,7 @@ def server_worker_process(model_name: str,
                         message = model.models.generate_content(
                             model=model_name, contents=request.prompt,
                             config=types.GenerateContentConfig(
-                                max_output_tokens=200
+                                max_output_tokens=512
                             )
                         )
                         response_text = message.text
@@ -191,7 +191,7 @@ def server_worker_process(model_name: str,
                         
                         chat_response = client.chat.complete(
                                 model= model,
-                                max_tokens=200,
+                                max_tokens=512,
                                 temperature=0.7,
                                 top_p=0.95,
                                 messages = [
@@ -206,7 +206,7 @@ def server_worker_process(model_name: str,
                     elif "claude" in model_name:
                         message = model.messages.create(
                             model=model_name,
-                            max_tokens=200,
+                            max_tokens=512,
                             messages=[
                                 {
                                     "role": "user",
@@ -241,7 +241,7 @@ def server_worker_process(model_name: str,
                                 outputs = model.generate(
                                     input_ids=inputs['input_ids'],
                                     attention_mask=inputs['attention_mask'],
-                                    max_new_tokens=200,
+                                    max_new_tokens=512,
                                     temperature=0.7,
                                     top_p=0.95,
                                     do_sample=True,
@@ -413,9 +413,9 @@ class QualityScorer:
         coefs = self.quality_model.get_coefficients(prompt)
         if "/" in model_name:
             model_name = model_name.split("/")[1].lower()
-        # print("coefs: " + str(coefs))
+        print("coefs: " + str(coefs))
         all_coefs = {m.split("/")[1].lower() if "/" in m else m: coefs.get(m.split("/")[1].lower() if "/" in m else m) for m in Config.MODEL_NAMES}
-        # print("all_coefs: " + str(all_coefs))
+        print("all_coefs: " + str(all_coefs))
         score = coefs.get(model_name)
         normalized_score = (score - min(all_coefs.values())) / (max(all_coefs.values()) - min(all_coefs.values()))  
         print("normalized_score" + str(normalized_score))
@@ -423,10 +423,10 @@ class QualityScorer:
     
     def compute_quality_score_all(self, prompt: str) -> float:
         coefs = self.quality_model.get_coefficients(prompt)
-        # print("coefs: " + str(coefs))
+        print("coefs: " + str(coefs))
         all_coefs = {m: coefs.get(m.split("/")[1].lower() if "/" in m else m) for m in Config.MODEL_NAMES}
         # Normalize scores to [0, 1]
-        # print("all_coefs: " + str(all_coefs))
+        print("all_coefs: " + str(all_coefs))
         min_score = min(all_coefs.values())
         max_score = max(all_coefs.values())
         normalized_scores = {

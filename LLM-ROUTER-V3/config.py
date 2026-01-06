@@ -18,6 +18,12 @@ class Config:
     
     # Model settings
     MODEL_NAMES = [
+        'meta-llama/Llama-2-13b-chat',
+        # 'meta-llama/Meta-Llama-3-8B-Instruct',
+        'allenai/Llama-3.1-Tulu-3-8B',
+        'meta-llama/Llama-3.1-8B-Instruct',
+        # 'mistralai/Ministral-8B-Instruct-2410',
+        # 'mistralai/Mistral-7B-Instruct-v0.2',
         # # "lmsys/fastchat-t5-3b-v1.0",
         "google/gemma-1.1-2b-it",
         # "google/gemma-2-2b-it",
@@ -55,9 +61,13 @@ class Config:
     ]
     
     PRICE = [
-        (0, 0),
-        (0, 0),
-        (0, 0),
+        (0.00000025, 0.00000025),
+        # (0.00000025, 0.00000025),
+        (0.00000025, 0.00000025),
+        (0.00000025, 0.00000025),
+        (0.00000025, 0.00000025),
+        (0.00000025, 0.00000025),
+        (0.00000025, 0.00000025),
         (0.00000015, 0.0000006), # gpt-4o-mini-2024-07-18
         (0.00000015, 0.0000006), # genmi-2.0-flash-exp
         # (0.000000075, 0.0000003),  # gemini-1.5-flash-001
@@ -73,7 +83,7 @@ class Config:
     ]
     
     # Server capabilities (max concurrent requests)
-    SERVER_CAPACITIES = [32, 32, 30, 32, 32, 30, 32, 30, 32, 30, 30]  # Capacity for each model
+    SERVER_CAPACITIES = [32, 32, 30, 32, 32, 30, 32, 32, 30, 32, 30, 32, 30, 30]  # Capacity for each model
     
     # Dataset settings
     DATASET_NAME = "tatsu-lab/alpaca"
@@ -84,7 +94,7 @@ class Config:
     
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)
-    MAX_EPISODES = 250   # Increased for more training
+    MAX_EPISODES = 200   # Increased for more training
     
     # Reward function weights - adjusted for better balance
     ALPHA = 1/3   # Quality weight (increased importance)
@@ -96,12 +106,12 @@ class Config:
     LEARNING_RATE = 1e-3  # Reduced for more stable learning
     GAMMA = 0.95          # Slightly reduced discount factor
     GAE_LAMBDA = 0.9      # Reduced for less variance in advantage estimation
-    CLIP_EPSILON = 0.2    # Slightly reduced for more conservative updates
+    CLIP_EPSILON = 0.15    # Slightly reduced for more conservative updates
     POLICY_COEF = 1       # Policy loss weight
     VALUE_COEF = 0.5      # Reduced value function weight
     ENTROPY_COEF = 0.01   # Increased entropy for more exploration
     MAX_GRAD_NORM = 0.5
-    PPO_EPOCHS = 6        # Increased for more thorough updates
+    PPO_EPOCHS = 4        # Increased for more thorough updates
     BATCH_SIZE = 128      # Increased batch size
     
     # Neural network settings
@@ -160,9 +170,9 @@ class Config:
     FINAL_EVAL_EPISODES = 10  # Number of episodes for final evaluation
     
     # Poisson prompt generation settings
-    POISSON_ARRIVAL_RATE = 10  # Average arrival rate of prompts per second
+    POISSON_ARRIVAL_RATE = 5  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
-    EPISODE_TIME_INTERVAL = 20  # Time interval for each episode in seconds
+    EPISODE_TIME_INTERVAL = 5  # Time interval for each episode in seconds
     
     # Queue score settings
     QUEUE_SCORE_FACTOR = 0.2  # Factor to adjust queue score impact

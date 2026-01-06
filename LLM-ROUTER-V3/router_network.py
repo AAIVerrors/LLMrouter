@@ -141,6 +141,7 @@ class RouterNetwork(nn.Module):
         
         with torch.no_grad():
             embeddings = self.prompt_encoder.encode(prompts, convert_to_tensor=True)
+        embeddings = embeddings.clone()
             
         # Project to smaller dimension
         embeddings = self.prompt_projection(embeddings)

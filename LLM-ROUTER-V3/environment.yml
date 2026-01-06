@@ -396,4 +396,3 @@ dependencies:
       - yarl==1.18.3
       - zope-event==5.0
       - zope-interface==7.2
-prefix: /home/hshu3770/miniconda3/envs/p2l

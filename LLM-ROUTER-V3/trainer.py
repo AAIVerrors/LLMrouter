@@ -13,6 +13,18 @@ from plotter import TrainingPlotter
 from logger import MetricsLogger
 from PoissonPromptGenerator import PoissonPromptGenerator
 
+class NumpyEncoder(json.JSONEncoder):
+        def default(self, obj):
+            if isinstance(obj, np.float32):
+                return float(obj)
+            if isinstance(obj, np.integer):
+                return int(obj)
+            if isinstance(obj, np.floating):
+                return float(obj)
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()  # Convert arrays to lists
+            return super(NumpyEncoder, self).default(obj)
+
 class EnhancedLLMRouterTrainer:
     def __init__(self):
         self.trajectory_dir = f"trajectories/run-{Config.T}-{Config.EPISODE_TIME_INTERVAL}-{Config.MAX_EPISODES}-{Config.USE_AVG}-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -292,12 +304,14 @@ class EnhancedLLMRouterTrainer:
             return [self.tensor_to_python(v) for v in obj]
         else:
             return obj
-        
+
+    
+    
     def save_trajectories_json(self, trajectories, episode, trajectory_dir):
         serializable_trajectories = [self.tensor_to_python(t) for t in trajectories]
         filename = os.path.join(trajectory_dir, f"episode_{episode:04d}.json")
         with open(filename, 'w') as f:
-            json.dump(serializable_trajectories, f, indent=2)
+            json.dump(serializable_trajectories, f, indent=2, cls=NumpyEncoder)
     
     def train_step(self, episode=None, trajectory_dir=None):
         """Perform one training step with collected trajectories"""
