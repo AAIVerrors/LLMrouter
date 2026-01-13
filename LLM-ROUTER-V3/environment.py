@@ -56,9 +56,8 @@ def server_worker_process(model_name: str,
     try:
         # Set GPU
         if gpu_id is not None:
-            os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-            torch.cuda.set_device(0)
-
+            # os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+            torch.cuda.set_device(gpu_id)
         
         if "t5" in model_name:
             model = AutoModelForSeq2SeqLM.from_pretrained(
@@ -612,7 +611,7 @@ class EnhancedRouterEnvironment:
         # Create server processes
         print(f"Initializing {len(Config.MODEL_NAMES)} servers...")
         self.servers = []
-        self.gpu_ids = list(range(torch.cuda.device_count()))
+        self.gpu_ids = Config.GPU_LIST
         
         for i in range(len(Config.MODEL_NAMES)):
             gpu_id = self.gpu_ids[i % len(self.gpu_ids)] if self.gpu_ids else None

@@ -106,10 +106,10 @@ class Config:
     LEARNING_RATE = 1e-4  # Reduced for more stable learning
     GAMMA = 0.95          # Slightly reduced discount factor
     GAE_LAMBDA = 0.9      # Reduced for less variance in advantage estimation
-    CLIP_EPSILON = 0.2    # Slightly reduced for more conservative updates
+    CLIP_EPSILON = 0.15    # Slightly reduced for more conservative updates
     POLICY_COEF = 1       # Policy loss weight
     VALUE_COEF = 0.5      # Reduced value function weight
-    ENTROPY_COEF = 0.1   # Increased entropy for more exploration
+    ENTROPY_COEF = 0.05   # Increased entropy for more exploration
     MAX_GRAD_NORM = 0.5
     PPO_EPOCHS = 3        # Increased for more thorough updates
     BATCH_SIZE = 1      # Increased batch size
@@ -124,7 +124,8 @@ class Config:
     COMPLETION_CHECK_STEPS = 20  # Steps to wait for request completion at episode end
     
     # Device settings
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    GPU_LIST = [1]
+    DEVICE = torch.device("cuda:1")
     
     # Wandb settings
     WANDB_PROJECT = "enhanced-llm-router-ppo"
@@ -172,7 +173,7 @@ class Config:
     # Poisson prompt generation settings
     POISSON_ARRIVAL_RATE = 5  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
-    EPISODE_TIME_INTERVAL = 5  # Time interval for each episode in seconds
+    EPISODE_TIME_INTERVAL = 10  # Time interval for each episode in seconds
     
     # Queue score settings
     QUEUE_SCORE_FACTOR = 0.2  # Factor to adjust queue score impact
