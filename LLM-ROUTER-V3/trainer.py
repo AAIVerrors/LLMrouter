@@ -215,7 +215,6 @@ class EnhancedLLMRouterTrainer:
                 continue
             prompt = prompt['prompt']  # Extract the actual prompt text
 
-            # Use a dummy prompt for action selection (actual prompt comes from environment)
             action, log_prob, value, next_counter = self.agent.get_action(state, prompt, action_mask, service_rate=self.last_service_rate, round_robin_counter=robin_counter)
             print("log_prob:", log_prob)
             robin_counter = next_counter

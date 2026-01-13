@@ -153,6 +153,8 @@ def server_worker_process(model_name: str,
                 )
 
                 try:
+ 
+                    
                     if "gpt" in model_name or "o1" in model_name or "o3" in model_name:
                         # if model_name == "o1-mini":
                         #     model_name = "o1-mini-2024-09-12"
@@ -356,6 +358,10 @@ class LLMServerWrapper:
                   self.request_queue, self.response_queue,
                   self.running, gpu_id, queue_monitor, self.pause_event)
         )
+
+        if model_name == "meta-llama/Llama-2-13b-chat-hf":
+            model_name = "meta-llama/Llama-2-13b-chat"
+        
         self.process.start()
         
     def clean_queue(self):
@@ -413,28 +419,28 @@ class QualityScorer:
         coefs = self.quality_model.get_coefficients(prompt)
         if "/" in model_name:
             model_name = model_name.split("/")[1].lower()
-        print("coefs: " + str(coefs))
+        # print("coefs: " + str(coefs))
         all_coefs = {m.split("/")[1].lower() if "/" in m else m: coefs.get(m.split("/")[1].lower() if "/" in m else m) for m in Config.MODEL_NAMES}
-        print("all_coefs: " + str(all_coefs))
+        # print("all_coefs: " + str(all_coefs))
         score = coefs.get(model_name)
         normalized_score = (score - min(all_coefs.values())) / (max(all_coefs.values()) - min(all_coefs.values()))  
-        print("normalized_score" + str(normalized_score))
+        # print("normalized_score" + str(normalized_score))
         return normalized_score
     
     def compute_quality_score_all(self, prompt: str) -> float:
         coefs = self.quality_model.get_coefficients(prompt)
-        print("coefs: " + str(coefs))
+        # print("coefs: " + str(coefs))
         all_coefs = {m: coefs.get(m.split("/")[1].lower() if "/" in m else m) for m in Config.MODEL_NAMES}
         # Normalize scores to [0, 1]
-        print("all_coefs: " + str(all_coefs))
+        # print("all_coefs: " + str(all_coefs))
         min_score = min(all_coefs.values())
         max_score = max(all_coefs.values())
         normalized_scores = {
             model: (score - min_score) / (max_score - min_score) if max_score > min_score else 0.0
             for model, score in all_coefs.items()
         }
-        print("normalized_scores: " + str(normalized_scores))
-        print("prompt: " + prompt)
+        # print("normalized_scores: " + str(normalized_scores))
+        # print("prompt: " + prompt)
         return normalized_scores
         
 
@@ -485,19 +491,18 @@ def response_collector_worker(response_queue,
                     latency = request.processing_latency
                     # Scale latency penalty
                     normalized_latency = latency / 60
-                    quality_reward = config_alpha * request.quality_score
-                    latency_penalty = config_beta * normalized_latency
-                    price = Config.REWARD_GAMMA*(Config.PRICE[request.server_id][0]*len(request.prompt)*10000 
-                                                 + 10000*Config.PRICE[request.server_id][1]*len(request.response['response_text']))
-                    price = max(min(price, 1.0), 0)
-                    price = price 
+                    quality_reward = Config.ALPHA * request.quality_score
+                    latency_penalty = Config.BETA * normalized_latency
+                    price_before = (Config.PRICE[request.server_id][0]*len(request.prompt)*1000 
+                                                 + 1000*Config.PRICE[request.server_id][1]*len(request.response['response_text']))
+                    price = Config.REWARD_GAMMA * max(min(price_before, 1.0), 0)
                     reward = quality_reward - latency_penalty - price
 
                     print(f"Response completed - ID: {request.id}, "
                           f"Quality: {request.quality_score:.3f}, "
                           f"Latency: {latency:.3f}s, "
-                          f"Reward: {reward:.3f}",
-                          f"Price: {price:.3f}")
+                          f"Price: {price_before:.3f}, ",
+                         f"Reward: {reward:.3f}")
                     
                     request.reward = reward 
                     request.price = price
@@ -660,9 +665,65 @@ class EnhancedRouterEnvironment:
         """Get valid actions mask"""
         return torch.tensor([server.can_accept_request() for server in self.servers], dtype=torch.float32)
 
+    # def get_episode_data(self) -> List[Dict[str, Any]]:
+    #     # Collect requests of current episode
+    #     reqs = [
+    #         self.routed_prompts[k]
+    #         for k in sorted(self.routed_prompts.keys())
+    #         if self.routed_prompts[k].episode == self.current_episode
+    #     ]
+    
+    #     # Extract metrics from COMPLETED only (for normalization stats)
+    #     comp_lats = [
+    #         r.processing_latency for r in reqs
+    #         if r.status == "completed" and r.processing_latency is not None
+    #     ]
+    #     comp_prices = [
+    #         r.price for r in reqs
+    #         if r.status == "completed" and r.price is not None
+    #     ]
+    
+    #     # Min-max params (episode-wise). If empty / constant, handle safely.
+    #     eps = 1e-8
+    #     lat_min = min(comp_lats) if comp_lats else None
+    #     lat_max = max(comp_lats) if comp_lats else None
+    #     price_min = min(comp_prices) if comp_prices else None
+    #     price_max = max(comp_prices) if comp_prices else None
+    
+    #     out: List[Dict[str, Any]] = []
+    #     for r in reqs:
+    #         d = dict(r.__dict__)  # copy to plain dict (safe for logging/training)
+    
+    #         if r.status == "completed":
+    #             # Normalize latency (episode-wise)
+    #             if lat_min is None or lat_max is None or (lat_max - lat_min) < eps or r.processing_latency is None:
+    #                 d["latency_norm"] = 0.0
+    #             else:
+    #                 d["latency_norm"] = float((r.processing_latency - lat_min) / (lat_max - lat_min + eps))
+    
+    #             # Normalize price (episode-wise)
+    #             if price_min is None or price_max is None or (price_max - price_min) < eps or r.price is None:
+    #                 d["price_norm"] = 0.0
+    #             else:
+    #                 d["price_norm"] = float((r.price - price_min) / (price_max - price_min + eps))
+    
+    #         else:
+    #             # Force ALL failed (or non-completed) requests to reward = -2
+    #             d["reward"] = -2.0
+    #             # Optional: define norm fields for failed
+    #             d["latency_norm"] = 1.0
+    #             d["price_norm"] = 1.0
+    
+    #         out.append(d)
+    
+    #     return out
+
     def get_episode_data(self) -> List[Dict[str, Any]]:
+
+        
+        
         episode = [self.routed_prompts[key].__dict__ for key in sorted(self.routed_prompts.keys()) if self.routed_prompts[key].episode == self.current_episode]
-        print(episode[:5]) 
+        # print(episode[:5]) 
         return episode
     
     def clean_episode_completed(self):
@@ -717,7 +778,7 @@ class EnhancedRouterEnvironment:
                 )
                 
             request.status = 'failed'
-            request.reward = -2
+            request.reward = -0.6
             request.completion_time = time.time()
             request.processing_latency = 60
             request.quality_score = 0

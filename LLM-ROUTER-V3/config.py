@@ -18,7 +18,7 @@ class Config:
     
     # Model settings
     MODEL_NAMES = [
-        'meta-llama/Llama-2-13b-chat',
+        # 'meta-llama/Llama-2-13b-chat-hf',
         # 'meta-llama/Meta-Llama-3-8B-Instruct',
         'allenai/Llama-3.1-Tulu-3-8B',
         'meta-llama/Llama-3.1-8B-Instruct',
@@ -44,7 +44,7 @@ class Config:
         # 'o3-mini',
         # 'o1-mini',
         # 'gemini-2.0-flash-001',
-        'gemini-2.0-flash-exp',
+        # 'gemini-2.0-flash-exp',
         # 'gemini-1.5-flash-001',
         # 'gemini-1.5-flash-002',
         # 'gemini-1.5-flash-8b-001',
@@ -61,15 +61,15 @@ class Config:
     ]
     
     PRICE = [
-        (0.00000025, 0.00000025),
         # (0.00000025, 0.00000025),
-        (0.00000025, 0.00000025),
-        (0.00000025, 0.00000025),
-        (0.00000025, 0.00000025),
-        (0.00000025, 0.00000025),
-        (0.00000025, 0.00000025),
+        # (0.00000025, 0.00000025),
+        (0.0000001, 0.0000001),
+        (0.0000001, 0.0000001),
+        (0.0000001, 0.0000001),
+        (0.0000001, 0.0000001),
+        (0.0000001, 0.0000001),
         (0.00000015, 0.0000006), # gpt-4o-mini-2024-07-18
-        (0.00000015, 0.0000006), # genmi-2.0-flash-exp
+        # (0.00000015, 0.0000006), # genmi-2.0-flash-exp
         # (0.000000075, 0.0000003),  # gemini-1.5-flash-001
         # (0.000000075, 0.0000003),  # gemini-1.5-flash-002
         # (0.0000000375, 0.00000015),  # gemini-1.5-flash-8b-001
@@ -83,7 +83,7 @@ class Config:
     ]
     
     # Server capabilities (max concurrent requests)
-    SERVER_CAPACITIES = [32, 32, 30, 32, 32, 30, 32, 32, 30, 32, 30, 32, 30, 30]  # Capacity for each model
+    SERVER_CAPACITIES = [32, 32, 30, 32, 32, 30, 32, 32, 30, 32, 30, 32]  # Capacity for each model
     
     # Dataset settings
     DATASET_NAME = "tatsu-lab/alpaca"
@@ -103,20 +103,20 @@ class Config:
     LAMBDA = 5  # Capacity penalty weight (increased to strongly discourage invalid actions)
     
     # PPO hyperparameters - tuned for the routing problem
-    LEARNING_RATE = 1e-3  # Reduced for more stable learning
+    LEARNING_RATE = 1e-4  # Reduced for more stable learning
     GAMMA = 0.95          # Slightly reduced discount factor
     GAE_LAMBDA = 0.9      # Reduced for less variance in advantage estimation
-    CLIP_EPSILON = 0.15    # Slightly reduced for more conservative updates
+    CLIP_EPSILON = 0.2    # Slightly reduced for more conservative updates
     POLICY_COEF = 1       # Policy loss weight
     VALUE_COEF = 0.5      # Reduced value function weight
-    ENTROPY_COEF = 0.01   # Increased entropy for more exploration
+    ENTROPY_COEF = 0.1   # Increased entropy for more exploration
     MAX_GRAD_NORM = 0.5
-    PPO_EPOCHS = 4        # Increased for more thorough updates
-    BATCH_SIZE = 128      # Increased batch size
+    PPO_EPOCHS = 3        # Increased for more thorough updates
+    BATCH_SIZE = 1      # Increased batch size
     
     # Neural network settings
     HIDDEN_DIM = 512      # Increased capacity
-    INPUT_DIM = 512       # Embedding dimension for prompts
+    INPUT_DIM = 256       # Embedding dimension for prompts
     ATTENTION_HEADS = 8  # Number of attention heads
     
     # Environment settings

@@ -44,7 +44,7 @@ def print_configuration():
     print(f"Server Capacities: {Config.SERVER_CAPACITIES}")
     print(f"Episode Length: {Config.EPISODE_LENGTH}")
     print(f"Max Episodes: {Config.MAX_EPISODES}")
-    print(f"Reward Weights: α={Config.ALPHA}, β={Config.BETA}, λ={Config.LAMBDA}")
+    print(f"Reward Weights: α={Config.ALPHA}, β={Config.BETA}, λ={Config.REWARD_GAMMA}")
     print(f"Learning Rate: {Config.LEARNING_RATE}")
     print(f"PPO Epochs: {Config.PPO_EPOCHS}")
     print(f"Batch Size: {Config.BATCH_SIZE}")
