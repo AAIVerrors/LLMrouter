@@ -160,7 +160,7 @@ def server_worker_process(model_name: str,
                         response = model.responses.create(
                             model=model_name,
                             input= request.prompt,
-                            max_output_tokens=512
+                            max_output_tokens=256
                             )
                         response_text = response.output_text
                     elif "gemini" in model_name:
@@ -173,7 +173,7 @@ def server_worker_process(model_name: str,
                         message = model.models.generate_content(
                             model=model_name, contents=request.prompt,
                             config=types.GenerateContentConfig(
-                                max_output_tokens=512
+                                max_output_tokens=256
                             )
                         )
                         response_text = message.text
@@ -192,7 +192,7 @@ def server_worker_process(model_name: str,
                         
                         chat_response = client.chat.complete(
                                 model= model,
-                                max_tokens=512,
+                                max_tokens=256,
                                 temperature=0.7,
                                 top_p=0.95,
                                 messages = [
@@ -207,7 +207,7 @@ def server_worker_process(model_name: str,
                     elif "claude" in model_name:
                         message = model.messages.create(
                             model=model_name,
-                            max_tokens=512,
+                            max_tokens=256,
                             messages=[
                                 {
                                     "role": "user",
@@ -242,7 +242,7 @@ def server_worker_process(model_name: str,
                                 outputs = model.generate(
                                     input_ids=inputs['input_ids'],
                                     attention_mask=inputs['attention_mask'],
-                                    max_new_tokens=512,
+                                    max_new_tokens=256,
                                     temperature=0.7,
                                     top_p=0.95,
                                     do_sample=True,
@@ -278,7 +278,7 @@ def server_worker_process(model_name: str,
 
                     # Update request with completion info
                     request.completion_time = time.time()
-                    request.processing_latency = max(min(request.completion_time - request.arrival_time, 60.0), 0)
+                    request.processing_latency = max(min(request.completion_time - request.arrival_time, 120.0), 0)
                     request.status = 'completed'
                     request.response = {
                         "response_text": response_text,
@@ -310,7 +310,7 @@ def server_worker_process(model_name: str,
                     print(f"Error processing request {request.id}: {str(e)}")
                     request.status = 'failed'
                     request.completion_time = time.time()
-                    request.processing_latency = max(min(request.completion_time - request.arrival_time, 60.0), 0)
+                    request.processing_latency = max(min(request.completion_time - request.arrival_time, 120.0), 0)
                     response_queue.put([request, queue_state_before, None])
                     continue
 
@@ -489,11 +489,11 @@ def response_collector_worker(response_queue,
                     
                     latency = request.processing_latency
                     # Scale latency penalty
-                    normalized_latency = latency / 60
+                    normalized_latency = latency / 120
                     quality_reward = Config.ALPHA * request.quality_score
                     latency_penalty = Config.BETA * normalized_latency
-                    price_before = (Config.PRICE[request.server_id][0]*len(request.prompt)*1000 
-                                                 + 1000*Config.PRICE[request.server_id][1]*len(request.response['response_text']))
+                    price_before = (Config.PRICE[request.server_id][0]*len(request.prompt) 
+                                                 + Config.PRICE[request.server_id][1]*len(request.response['response_text'])) * 776
                     price = Config.REWARD_GAMMA * max(min(price_before, 1.0), 0)
                     reward = quality_reward - latency_penalty - price
 
@@ -779,7 +779,7 @@ class EnhancedRouterEnvironment:
             request.status = 'failed'
             request.reward = -0.6
             request.completion_time = time.time()
-            request.processing_latency = 60
+            request.processing_latency = 120
             request.quality_score = 0
 
             self.response_queue.put([request, None, None])

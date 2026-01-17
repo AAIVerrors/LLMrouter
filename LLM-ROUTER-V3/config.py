@@ -63,6 +63,8 @@ class Config:
     PRICE = [
         # (0.00000025, 0.00000025),
         # (0.00000025, 0.00000025),
+        # (0.0000001, 0.0000001),
+        # (0.0000001, 0.0000001),
         (0.0000001, 0.0000001),
         (0.0000001, 0.0000001),
         (0.0000001, 0.0000001),
@@ -94,6 +96,7 @@ class Config:
     
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)
+    INTERVAL_LENGTH = 1
     MAX_EPISODES = 200   # Increased for more training
     
     # Reward function weights - adjusted for better balance
@@ -103,15 +106,16 @@ class Config:
     LAMBDA = 5  # Capacity penalty weight (increased to strongly discourage invalid actions)
     
     # PPO hyperparameters - tuned for the routing problem
-    LEARNING_RATE = 1e-4  # Reduced for more stable learning
-    GAMMA = 0.95          # Slightly reduced discount factor
-    GAE_LAMBDA = 0.9      # Reduced for less variance in advantage estimation
-    CLIP_EPSILON = 0.15    # Slightly reduced for more conservative updates
+    LEARNING_RATE =5e-5  # Reduced for more stable learning
+    GAMMA = 0.99          # Slightly reduced discount factor
+    GAE_LAMBDA = 0.95      # Reduced for less variance in advantage estimation
+    CLIP_EPSILON = 0.2    # Slightly reduced for more conservative updates
     POLICY_COEF = 1       # Policy loss weight
     VALUE_COEF = 0.5      # Reduced value function weight
     ENTROPY_COEF = 0.05   # Increased entropy for more exploration
+    KL_COEF = 0.05
     MAX_GRAD_NORM = 0.5
-    PPO_EPOCHS = 3        # Increased for more thorough updates
+    PPO_EPOCHS = 4        # Increased for more thorough updates
     BATCH_SIZE = 1      # Increased batch size
     
     # Neural network settings
@@ -124,8 +128,8 @@ class Config:
     COMPLETION_CHECK_STEPS = 20  # Steps to wait for request completion at episode end
     
     # Device settings
-    GPU_LIST = [1]
-    DEVICE = torch.device("cuda:1")
+    GPU_LIST = [0]
+    DEVICE = torch.device("cuda:0")
     
     # Wandb settings
     WANDB_PROJECT = "enhanced-llm-router-ppo"
@@ -171,9 +175,9 @@ class Config:
     FINAL_EVAL_EPISODES = 10  # Number of episodes for final evaluation
     
     # Poisson prompt generation settings
-    POISSON_ARRIVAL_RATE = 5  # Average arrival rate of prompts per second
+    POISSON_ARRIVAL_RATE = 20  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
-    EPISODE_TIME_INTERVAL = 10  # Time interval for each episode in seconds
+    EPISODE_TIME_INTERVAL = 5  # Time interval for each episode in seconds
     
     # Queue score settings
     QUEUE_SCORE_FACTOR = 0.2  # Factor to adjust queue score impact

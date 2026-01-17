@@ -195,9 +195,9 @@ class RouterNetwork(nn.Module):
         
         dist = Categorical(probs)
         
-        queue_scores = self.get_queue_scores_batch(state_np, service_rate=service_rate)
-        queue_probs = torch.softmax(queue_scores, dim=1)  # Softmax over actions
-        queue_log_probs = torch.log(queue_probs + 1e-8)
+        # queue_scores = self.get_queue_scores_batch(state_np, service_rate=service_rate)
+        # queue_probs = torch.softmax(queue_scores, dim=1)  # Softmax over actions
+        # queue_log_probs = torch.log(queue_probs + 1e-8)
         # print("queue probs, logits")
         # print(queue_probs)
         # print(logits)
@@ -736,12 +736,29 @@ class PPOAgent:
             value_loss = F.mse_loss(v_pred, term_ret.detach())    # detach target
     
             entropy_loss = -entropy.mean()
-    
+
+            kls = []
+            for idxs in interval_indices:
+                # KL(old||new) approx = E_old[logp_old - logp_new]
+                kl_t = (old_log_probs[idxs] - new_log_probs[idxs]).mean()
+                kls.append(kl_t)
+            
+            approx_kl = torch.stack(kls).mean()
+            approx_kl = torch.clamp(approx_kl, min=0.0)  # optional safety
+
             loss = (
                 Config.POLICY_COEF * policy_loss
                 + Config.VALUE_COEF * value_loss
                 + Config.ENTROPY_COEF * entropy_loss
+                + Config.KL_COEF * approx_kl
             )
+
+    
+            # loss = (
+            #     Config.POLICY_COEF * policy_loss
+            #     + Config.VALUE_COEF * value_loss
+            #     + Config.ENTROPY_COEF * entropy_loss
+            # )
     
             self.optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -784,6 +801,7 @@ class PPOAgent:
             "cumulated_avg_rewards": avg_rewards_returns,
             "route distribution": route_dist,
             "entropy of route distribution": ent_usage,
+            "approx_kl": float(approx_kl.detach().cpu().item()),
         }
 
     

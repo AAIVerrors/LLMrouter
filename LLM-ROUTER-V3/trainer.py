@@ -200,8 +200,8 @@ class EnhancedLLMRouterTrainer:
         
         while True:
             routing_start = time.time()
-            current_time_slot = int(routing_start - start)
-            if current_time_slot > Config.EPISODE_TIME_INTERVAL:
+            current_time_slot = (routing_start - start) // Config.INTERVAL_LENGTH
+            if current_time_slot >= Config.EPISODE_TIME_INTERVAL :
                 print(f"Episode {self.current_episode} timed out after {Config.EPISODE_TIME_INTERVAL} seconds")
                 break
 
@@ -390,6 +390,7 @@ class EnhancedLLMRouterTrainer:
                         'min_rewards': training_metrics['min_rewards'] if training_metrics else None,
                         'cumulated_avg_rewards_return': training_metrics['cumulated_avg_rewards'] if training_metrics else None,
                         'entropy of route distribution': training_metrics['entropy of route distribution'] if training_metrics else None,
+                        'approx_kl': training_metrics['approx_kl'] if training_metrics else None,
                     }, step=episode)
 
                 # Add server usage percentage if available
