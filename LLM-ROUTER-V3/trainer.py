@@ -27,7 +27,7 @@ class NumpyEncoder(json.JSONEncoder):
 
 class EnhancedLLMRouterTrainer:
     def __init__(self):
-        self.trajectory_dir = f"trajectories/run-{Config.T}-{Config.EPISODE_TIME_INTERVAL}-{Config.MAX_EPISODES}-{Config.USE_AVG}-{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        self.trajectory_dir = f"trajectories/run-{Config.T}-{Config.EPISODE_TIME_INTERVAL}-{Config.MAX_EPISODES}-{Config.USE_AVG}-{datetime.now().strftime('%Y%m%d_%H%M%S')}-{Config.INTERVAL_LENGTH}-{Config.POISSON_ARRIVAL_RATE}-{Config.EPISODE_TIME_INTERVAL}"
         os.makedirs(self.trajectory_dir, exist_ok=True)
         
         # Initialize components
@@ -186,7 +186,8 @@ class EnhancedLLMRouterTrainer:
         
         price = [((a[0]+a[1]) / 2) for a in Config.PRICE] # Add average price per server
 
-        state = [self.env.reset()[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + self.last_service_rate + [1] * len(Config.SERVER_CAPACITIES) + price
+        state = [self.env.reset()[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + Config.SERVICE_RATE + [1] * len(Config.SERVER_CAPACITIES) + price
+        # state = [self.env.reset()[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + [1] * len(Config.SERVER_CAPACITIES) + price
 
         # state = [self.env.reset()[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + self.last_service_rate + price
 
@@ -222,7 +223,8 @@ class EnhancedLLMRouterTrainer:
             next_state, done = self.env.step(action, prompt)
             
             if current != current_time_slot:
-                state = [next_state[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + self.last_service_rate + [1]* len(Config.SERVER_CAPACITIES) + price
+                state = [next_state[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + Config.SERVICE_RATE + [1]* len(Config.SERVER_CAPACITIES) + price
+                # state = [next_state[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + [1]* len(Config.SERVER_CAPACITIES) + price
                 # state = [next_state[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + self.last_service_rate +  price
                 current = current_time_slot
              
@@ -242,7 +244,7 @@ class EnhancedLLMRouterTrainer:
                 value=value,
                 reward=0,  # Placeholder, will be updated after episode
                 action_mask=action_mask,
-                service_rate=self.last_service_rate
+                service_rate=Config.SERVICE_RATE
             )
         
         # Wait for all prompts to be processed
