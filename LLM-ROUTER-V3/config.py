@@ -112,7 +112,7 @@ class Config:
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)
     INTERVAL_LENGTH = 1
-    MAX_EPISODES = 200   # Increased for more training
+    MAX_EPISODES = 500   # Increased for more training
     
     # Reward function weights - adjusted for better balance
     ALPHA = 1/3   # Quality weight (increased importance)
@@ -121,14 +121,14 @@ class Config:
     LAMBDA = 5  # Capacity penalty weight (increased to strongly discourage invalid actions)
     
     # PPO hyperparameters - tuned for the routing problem
-    LEARNING_RATE =1e-4  # Reduced for more stable learning
+    LEARNING_RATE =5e-5  # Reduced for more stable learning
     GAMMA = 0.99          # Slightly reduced discount factor
     GAE_LAMBDA = 0.95      # Reduced for less variance in advantage estimation
     CLIP_EPSILON = 0.2    # Slightly reduced for more conservative updates
     POLICY_COEF = 1       # Policy loss weight
     VALUE_COEF = 0.5      # Reduced value function weight
-    ENTROPY_COEF = 0.05   # Increased entropy for more exploration
-    KL_COEF = 0.02
+    ENTROPY_COEF = 0.01   # Increased entropy for more exploration
+    KL_COEF = 0.01
     MAX_GRAD_NORM = 0.5
     PPO_EPOCHS = 4        # Increased for more thorough updates
     BATCH_SIZE = 1      # Increased batch size
@@ -212,6 +212,16 @@ class Config:
     USE_AVG = False 
     
     RANDOM_SELECT = False
+
+    NAIVE_PPO = False
+
+    ENABLE_QUEUE_PENALTY = False
+
+    JSQ = False
+
+    P2C = False
+
+    GREEDY = False
     
     T = -2
 

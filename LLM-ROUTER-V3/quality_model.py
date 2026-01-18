@@ -151,7 +151,7 @@ class P2LPredictor:
         return result['top_model']
 
 
-def predict_single_prompt(prompt, repo_id="lmarena-ai/p2l-135m-bt-01132025", hf_token=None):
+def predict_single_prompt(prompt, repo_id="lmarena-ai/p2l-0.5b-grk-01112025", hf_token=None):
     """
     Convenience function for single prompt prediction
     

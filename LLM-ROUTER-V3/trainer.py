@@ -221,12 +221,16 @@ class EnhancedLLMRouterTrainer:
             robin_counter = next_counter
             
             next_state, done = self.env.step(action, prompt)
-            
-            if current != current_time_slot:
+
+            if Config.NAIVE_PPO:
                 state = [next_state[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + Config.SERVICE_RATE + [1]* len(Config.SERVER_CAPACITIES) + price
-                # state = [next_state[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + [1]* len(Config.SERVER_CAPACITIES) + price
-                # state = [next_state[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + self.last_service_rate +  price
-                current = current_time_slot
+            else:
+            
+                if current != current_time_slot:
+                    state = [next_state[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + Config.SERVICE_RATE + [1]* len(Config.SERVER_CAPACITIES) + price
+                    # state = [next_state[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + [1]* len(Config.SERVER_CAPACITIES) + price
+                    # state = [next_state[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + self.last_service_rate +  price
+                    current = current_time_slot
              
             
             if done:

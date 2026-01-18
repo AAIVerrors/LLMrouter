@@ -40,9 +40,9 @@ class RouterNetwork(nn.Module):
         state_dim: int,
         action_dim: int,
         hidden_dim: int = Config.HIDDEN_DIM,
-        prompt_dim: int = 32,
-        trunk_depth: int = 3,
-        head_depth: int = 2,
+        prompt_dim: int = 64,
+        trunk_depth: int = 4,
+        head_depth: int = 3,
         dropout: float = 0.1,
         prompt_model: str = "all-MiniLM-L6-v2",
         freeze_prompt_encoder: bool = True,
@@ -265,7 +265,8 @@ class RouterNetwork(nn.Module):
 class PPOAgent:
     def __init__(self, state_dim: int, action_dim: int):
         self.network = RouterNetwork(state_dim, action_dim).to(Config.DEVICE)
-        self.optimizer = torch.optim.AdamW(self.network.parameters(), lr=Config.LEARNING_RATE)
+        self.optimizer = torch.optim.Adam(self.network.parameters(), lr=Config.LEARNING_RATE,betas=(0.9, 0.999), eps=1e-5)
+
         
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -368,8 +369,105 @@ class PPOAgent:
             print(f"Round Robin Action: {action}")
             round_robin_counter += 1
             return action, log_prob.cpu().item(), value.cpu().item(), round_robin_counter
+            
+        if Config.JSQ:
+            M = len(Config.MODEL_NAMES)
+        
+            # utilization u in [0,1]
+            u = np.asarray(state[:M], dtype=np.float32)
+        
+            # capacity C (max jobs, queue slots, etc.)
+            C = np.asarray(Config.SERVER_CAPACITIES, dtype=np.float32)
+        
+            # shortest queue proxy
+            q = u * C  # [M]
+        
+            # apply action mask if provided (1=valid, 0=invalid)
+            if action_mask is not None:
+                valid = (np.asarray(action_mask[:M], dtype=np.float32) > 0)
+                q = np.where(valid, q, np.inf)
+        
+            # if all masked, fallback random
+            if not np.isfinite(q).any():
+                action = int(np.random.randint(0, M))
+                return action, 0.0, 0.0, round_robin_counter
+        
+            # argmin with random tie-break
+            min_q = np.min(q)
+            candidates = np.where(np.isclose(q, min_q))[0]
+            action = int(np.random.choice(candidates))
+        
+            return action, 0.0, 0.0, round_robin_counter
+        if Config.P2C:
+            queue_state = state[:len(Config.MODEL_NAMES)]  # utilization
+            action_mask_np = None if action_mask is None else np.asarray(action_mask, dtype=np.float32)
+        
+            action = p2c_select_action(
+                state=np.asarray(state, dtype=np.float32),
+                action_mask=action_mask_np,
+                capacities=Config.SERVER_CAPACITIES,
+            )
+
+            return action, 0.0, 0.0, round_robin_counter
+
+
         return action.cpu().item(), log_prob.cpu().item(), value.cpu().item(), round_robin_counter
 
+    def p2c_select_action(
+        state: np.ndarray,
+        action_mask: np.ndarray | None,
+        capacities: list[float],
+        rng: np.random.Generator | None = None,
+        eps: float = 1e-8,
+    ) -> int:
+        """
+        P2C: randomly sample 2 valid servers, choose the one with smaller estimated queue/load.
+    
+        state: shape (state_dim,), where state[:M] are utilizations (0~1) for each server.
+        action_mask: shape (M,), 1=valid, 0=invalid (optional).
+        capacities: list length M.
+        """
+        if rng is None:
+            rng = np.random.default_rng()
+    
+        M = len(capacities)
+        util = np.asarray(state[:M], dtype=np.float64)
+        cap = np.asarray(capacities, dtype=np.float64)
+    
+        # proxy queue length / load
+        q = util * cap  # shape (M,)
+    
+        if action_mask is None:
+            valid = np.arange(M, dtype=np.int64)
+        else:
+            mask = np.asarray(action_mask, dtype=np.float64)
+            valid = np.where(mask > 0.5)[0]
+    
+        # fallback if no valid
+        if valid.size == 0:
+            return int(rng.integers(0, M))
+    
+        # if only one valid
+        if valid.size == 1:
+            return int(valid[0])
+    
+        # sample 2 distinct candidates
+        if valid.size >= 2:
+            c1, c2 = rng.choice(valid, size=2, replace=False)
+        else:
+            # shouldn't happen due to valid.size==1 handled, but keep safe
+            c1 = c2 = int(valid[0])
+    
+        q1, q2 = q[c1], q[c2]
+    
+        # choose min, tie -> random among ties
+        min_q = min(q1, q2)
+        candidates = np.array([c1, c2], dtype=np.int64)
+        qs = np.array([q1, q2], dtype=np.float64)
+    
+        tie_idx = np.where(np.isclose(qs, min_q, atol=eps, rtol=0.0))[0]
+        chosen = int(rng.choice(candidates[tie_idx]))
+        return chosen
         
     # def update(self, trajectories):
     #     """Update network using PPO algorithm"""
@@ -718,7 +816,7 @@ class PPOAgent:
                     states, prompts, action_masks, actions
                 )
     
-            # ---- interval importance weights rho_t (Eq. 14) ----
+            # interval importance weights rho_t (Eq. 14)
             rhos = []
             for idxs in interval_indices:
                 # rho_t = exp( mean_i (new_logp_i - old_logp_i) )
@@ -731,7 +829,7 @@ class PPOAgent:
             surr2 = torch.clamp(rhos, 1.0 - Config.CLIP_EPSILON, 1.0 + Config.CLIP_EPSILON) * term_adv
             policy_loss = -torch.min(surr1, surr2).mean()
     
-            # ---- critic loss (IMPORTANT: keep tensor with grad; no .item()) ----
+            # critic loss
             v_pred = new_values.squeeze(-1)[first_indices_t]      # [T+], has grad
             value_loss = F.mse_loss(v_pred, term_ret.detach())    # detach target
     
@@ -769,7 +867,7 @@ class PPOAgent:
             total_value_loss += float(value_loss.item())
             total_entropy_loss += float(entropy_loss.item())
     
-        # --------- metrics ---------
+        # metrics
         term_return_trajectory = float(self.cumulated_return(term_rewards)[0].item())
         return_trajectory = float(self.cumulated_return(rewards)[0].item())
     
