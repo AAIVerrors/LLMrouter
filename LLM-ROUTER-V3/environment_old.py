@@ -2,11 +2,6 @@ from vllm import LLM, SamplingParams
 import torch
 import numpy as np
 import time
-import re
-import string
-from collections import Counter
-from difflib import SequenceMatcher
-
 from typing import List, Dict, Tuple, Optional, Any
 from dataclasses import dataclass
 from sentence_transformers import SentenceTransformer
@@ -30,118 +25,12 @@ try:
 except RuntimeError:
     pass  # Already set
 
-
-# --------------------------
-# Ground-truth matching (less strict than EM)
-# --------------------------
-_ARTICLES_RE = re.compile(r"\b(a|an|the)\b", re.UNICODE)
-
-
-def _normalize_answer(s) -> str:
-    """Normalize text for string-based matching."""
-    if s is None:
-        return ""
-    s = str(s).lower()
-    s = "".join(ch for ch in s if ch not in string.punctuation)
-    s = _ARTICLES_RE.sub(" ", s)
-    s = " ".join(s.split())
-    return s
-
-
-def _as_list(x: Any) -> List[str]:
-    if x is None:
-        return []
-    if isinstance(x, (list, tuple)):
-        return [str(i) for i in x]
-    return [str(x)]
-
-
-def exact_match_score(pred: Optional[str], gold: Any) -> float:
-    """Strict EM on normalized strings (0/1)."""
-    pred_n = _normalize_answer(pred)
-    best = 0.0
-    for g in _as_list(gold):
-        best = max(best, float(pred_n == _normalize_answer(g)))
-    return best
-
-
-def token_f1_score(pred: Optional[str], gold: Any) -> float:
-    """SQuAD-style token F1 (0..1) on normalized whitespace tokens."""
-    pred_toks = _normalize_answer(pred).split()
-    best = 0.0
-    for g in _as_list(gold):
-        gold_toks = _normalize_answer(g).split()
-        if len(pred_toks) == 0 or len(gold_toks) == 0:
-            best = max(best, float(pred_toks == gold_toks))
-            continue
-        common = Counter(pred_toks) & Counter(gold_toks)
-        num_same = sum(common.values())
-        if num_same == 0:
-            continue
-        precision = num_same / len(pred_toks)
-        recall = num_same / len(gold_toks)
-        f1 = (2 * precision * recall) / (precision + recall)
-        best = max(best, float(f1))
-    return best
-
-
-def sequence_ratio_score(pred: Optional[str], gold: Any) -> float:
-    """Character-level similarity ratio (0..1) on normalized strings."""
-    pred_n = _normalize_answer(pred)
-    best = 0.0
-    for g in _as_list(gold):
-        gold_n = _normalize_answer(g)
-        if not pred_n and not gold_n:
-            best = max(best, 1.0)
-            continue
-        best = max(best, SequenceMatcher(None, pred_n, gold_n).ratio())
-    return float(best)
-
-
-def contains_score(pred: Optional[str], gold: Any) -> float:
-    """1.0 if either string contains the other after normalization, else 0.0."""
-    pred_n = _normalize_answer(pred)
-    best = 0.0
-    for g in _as_list(gold):
-        gold_n = _normalize_answer(g)
-        if not pred_n or not gold_n:
-            continue
-        if gold_n in pred_n or pred_n in gold_n:
-            best = 1.0
-            break
-    return best
-
-
-def match_quality_score(pred: Optional[str], gold: Any) -> float:
-    """Compute a less-strict match score for reward.
-
-    Config:
-      - EM_METRIC: 'em' | 'f1' | 'ratio' | 'contains'
-      - EM_BINARIZE: bool (optional)
-      - EM_THRESHOLD: float (optional, used if binarize)
-    """
-    metric = getattr(Config, "EM_METRIC", "f1")
-    if metric == "em":
-        score = exact_match_score(pred, gold)
-    elif metric == "ratio":
-        score = sequence_ratio_score(pred, gold)
-    elif metric == "contains":
-        score = contains_score(pred, gold)
-    else:  # default: token F1
-        score = token_f1_score(pred, gold)
-
-    if getattr(Config, "EM_BINARIZE", False):
-        thr = float(getattr(Config, "EM_THRESHOLD", 0.5))
-        score = float(score >= thr)
-    return float(max(min(score, 1.0), 0.0))
-
 @dataclass
 class Request:
     """Represents a single request in the system"""
     id: int
     prompt: str
     arrival_time: float
-    ground_truth: Optional[str] = None  # dataset reference output (for EM eval)
     start_time: Optional[float] = None
     completion_time: Optional[float] = None
     processing_latency: Optional[float] = None
@@ -389,7 +278,7 @@ def server_worker_process(model_name: str,
 
                     # Update request with completion info
                     request.completion_time = time.time()
-                    request.processing_latency = max(min(request.completion_time - request.arrival_time, 120.0), 0)
+                    request.processing_latency = max(min(request.completion_time - request.arrival_time, Config.MAX_LATENCY), 0)
                     request.status = 'completed'
                     request.response = {
                         "response_text": response_text,
@@ -421,7 +310,7 @@ def server_worker_process(model_name: str,
                     print(f"Error processing request {request.id}: {str(e)}")
                     request.status = 'failed'
                     request.completion_time = time.time()
-                    request.processing_latency = max(min(request.completion_time - request.arrival_time, 120.0), 0)
+                    request.processing_latency = max(min(request.completion_time - request.arrival_time, Config.MAX_LATENCY), 0)
                     response_queue.put([request, queue_state_before, None])
                     continue
 
@@ -595,26 +484,16 @@ def response_collector_worker(response_queue,
             queue_state_after = data[2]
 
             if request.status == 'completed':
-
-                # EM quality scoring (optional)
-                if getattr(Config, 'USE_EM_EXACT_MATCH', False):
-                    try:
-                        pred = None
-                        if request.response is not None:
-                            pred = request.response.get('response_text')
-                        request.quality_score = match_quality_score(pred, getattr(request, 'ground_truth', None))
-                    except Exception:
-                        request.quality_score = 0.0
                 # Calculate reward
                 if (request.processing_latency is not None):
                     
                     latency = request.processing_latency
                     # Scale latency penalty
-                    normalized_latency = latency / 120
+                    normalized_latency = latency / Config.MAX_LATENCY
                     quality_reward = Config.ALPHA * request.quality_score
                     latency_penalty = Config.BETA * normalized_latency
                     price_before = (Config.PRICE[request.server_id][0]*len(request.prompt) 
-                                                 + Config.PRICE[request.server_id][1]*len(request.response['response_text'])) * 776
+                                                 + Config.PRICE[request.server_id][1]*len(request.response['response_text'])) * 7760
                     price = Config.REWARD_GAMMA * max(min(price_before, 1.0), 0)
                     reward = quality_reward - latency_penalty - price
 
@@ -864,7 +743,7 @@ class EnhancedRouterEnvironment:
         return prompt
          
     
-    def step(self, action: int, prompt: str, ground_truth: Optional[str] = None) -> Tuple[np.ndarray, bool]:
+    def step(self, action: int, prompt: str) -> Tuple[np.ndarray, bool]:
         """Execute routing action"""
         
         # Collect accumulated rewards
@@ -878,7 +757,6 @@ class EnhancedRouterEnvironment:
         request = Request(
             id=request_id,
             prompt=prompt,
-            ground_truth=ground_truth,
             arrival_time=time.time(),
             server_id=action,
             episode=self.current_episode
@@ -908,7 +786,7 @@ class EnhancedRouterEnvironment:
             request.status = 'failed'
             request.reward = -0.6
             request.completion_time = time.time()
-            request.processing_latency = 120
+            request.processing_latency = Config.MAX_LATENCY
             request.quality_score = 0
 
             self.response_queue.put([request, None, None])
@@ -916,14 +794,7 @@ class EnhancedRouterEnvironment:
             return self.get_state(), False
         
         # Valid action - compute quality and log request
-        # For reward computation, quality_score is either:
-        #  - (default) predicted by the quality model at dispatch time, or
-        #  - (EM mode) computed later by exact-match against dataset ground truth.
-        if getattr(Config, 'USE_EM_EXACT_MATCH', False):
-            # EM score computed post-hoc after response is generated
-            request.quality_score = 0.0
-        else:
-            request.quality_score = self.quality_scorer.compute_quality_score_real(prompt, server.get_model_name())
+        request.quality_score = self.quality_scorer.compute_quality_score_real(prompt, server.get_model_name())
 
         self.routed_prompts[request.id] = request
 

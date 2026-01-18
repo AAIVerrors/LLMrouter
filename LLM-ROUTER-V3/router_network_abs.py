@@ -147,12 +147,12 @@ class RouterNetwork(nn.Module):
 
         # Actor
         logits = self.actor(h)  # [B, action_dim]
-        # if action_mask is not None:
-        #     if action_mask.dim() == 1:
-        #         action_mask = action_mask.unsqueeze(0)
-        #     if action_mask.shape[0] == 1 and B > 1:
-        #         action_mask = action_mask.expand(B, -1)
-        #     logits = logits.masked_fill(action_mask == 0, -1e9)
+        if action_mask is not None:
+            if action_mask.dim() == 1:
+                action_mask = action_mask.unsqueeze(0)
+            if action_mask.shape[0] == 1 and B > 1:
+                action_mask = action_mask.expand(B, -1)
+            logits = logits.masked_fill(action_mask == 0, -1e9)
 
         probs = F.softmax(logits, dim=-1)
 
@@ -319,14 +319,6 @@ class PPOAgent:
             for _ in range(M)
         ]
 
-        # Backward-compatible aliases used by helper methods
-        self.bin_stats = self._bin_stats
-        self.lin_stats = self._lin_stats
-
-        # Selection counts for greedy exploration / warmup
-        self._utility_counts = np.zeros(M, dtype=np.int64)
-        self._util_obs_counts = np.zeros(M, dtype=np.int64)  # observed samples for EMA updates
-
     def _q_bin_key(self, q: float) -> int:
         """Return an upper-bound key for the queue-length bin."""
         try:
@@ -458,42 +450,14 @@ class PPOAgent:
         if not episode_record:
             return
 
-        # Separate counts: _utility_counts is used for exploration; _util_obs_counts is for EMA updates.
-        if not hasattr(self, "_util_obs_counts"):
-            try:
-                self._util_obs_counts = np.zeros(self._util_M, dtype=np.int64)
-            except Exception:
-                self._util_obs_counts = np.zeros(len(Config.MODEL_NAMES), dtype=np.int64)
-        for r in episode_record:            # Identify server index (preferred)
-            i = None
-            sid = r.get('server_id', None)
-            if sid is not None:
-                try:
-                    i = int(sid)
-                except Exception:
-                    i = None
-
-            # Fallback: identify by model name if provided
-            if i is None:
-                mname = r.get('model', None) or r.get('model_name', None)
-                if mname is None:
-                    continue
-                # normalize
-                try:
-                    if isinstance(mname, str) and '/' in mname:
-                        mname_norm = mname
-                    else:
-                        mname_norm = str(mname)
-                except Exception:
-                    mname_norm = str(mname)
-                i = self._model_name_to_idx.get(mname_norm)
-                if i is None and isinstance(mname_norm, str) and '/' in mname_norm:
-                    i = self._model_name_to_idx.get(mname_norm.split('/')[-1], None)
-                if i is None:
-                    continue
-
-            if i < 0 or i >= self._util_M:
+        for r in episode_record:
+            mname = r.get("model", None)
+            if mname is None:
                 continue
+            i = self._model_name_to_idx.get(mname)
+            if i is None:
+                continue
+
             lat = r.get("processing_latency", None)
             if lat is None:
                 lat = r.get("processing_time", None)
@@ -509,14 +473,14 @@ class PPOAgent:
 
             # Global EMA updates
             a = self.ema_alpha
-            if int(self._util_obs_counts[i]) <= 0:
+            if int(self._utility_counts[i]) <= 0:
                 self.lat_ema[i] = lat
                 self.cost_ema[i] = cost
-                self._util_obs_counts[i] = 1
+                self._utility_counts[i] = 1
             else:
                 self.lat_ema[i] = (1.0 - a) * float(self.lat_ema[i]) + a * lat
                 self.cost_ema[i] = (1.0 - a) * float(self.cost_ema[i]) + a * cost
-                self._util_obs_counts[i] += 1
+                self._utility_counts[i] += 1
 
             # Queue-conditioned updates (if we have q)
             q = r.get("queue_len_at_dispatch", None)
@@ -562,26 +526,7 @@ class PPOAgent:
         and choose argmax predicted reward.
         """
         M = self._util_M
-        # --- Exploration when history is empty (prevents getting stuck) ---
-        min_trials = int(getattr(Config, 'GREEDY_WARMUP_MIN_TRIALS', 1))
-        if min_trials > 0:
-            need = np.where(self._utility_counts < min_trials)[0]
-            if need.size > 0 and action_mask_tensor is not None:
-                mask = action_mask_tensor.detach().cpu().numpy() > 0.5
-                need = need[mask[need]]
-            if need.size > 0:
-                return int(np.random.choice(need))
-
-        eps = float(getattr(Config, 'GREEDY_EPSILON', 0.0))
-        if eps > 0.0 and np.random.rand() < eps:
-            if action_mask_tensor is None:
-                return int(np.random.randint(0, M))
-            valid = np.where(action_mask_tensor.detach().cpu().numpy() > 0.5)[0]
-            if valid.size > 0:
-                return int(np.random.choice(valid))
-
-        include_quality_state = bool(getattr(Config, "INCLUDE_QUALITY_IN_STATE", True)) and not bool(getattr(Config, "USE_EM_EXACT_MATCH", False))
-        # state layout: [util(M), service_rate(M), (quality(M)), price(M)]
+        # state layout: [util(M), service_rate(M), quality(M), price(M)]
         util = state_tensor[:M].detach().cpu().numpy().astype(np.float64)
         cap = np.asarray(Config.SERVER_CAPACITIES, dtype=np.float64)
         q_len = util * cap
@@ -590,11 +535,7 @@ class PPOAgent:
         mu = state_tensor[M:2*M].detach().cpu().numpy().astype(np.float64)
         mu = np.maximum(mu, 1e-6)
 
-        if include_quality_state:
-            qual = state_tensor[2*M:3*M].detach().cpu().numpy().astype(np.float64)
-        else:
-            # In EM/GT mode we keep quality OUT of state; treat quality as a constant so it does not affect argmax.
-            qual = np.ones(M, dtype=np.float64)
+        qual = state_tensor[2*M:3*M].detach().cpu().numpy().astype(np.float64)
 
         # Queue-conditioned predictor for latency/cost.
         # - If Config.UTILITY_QUEUE_MODEL == "none": uses (lat_ema + Q/mu, cost_ema).
@@ -618,21 +559,6 @@ class PPOAgent:
             mask = action_mask_tensor.detach().cpu().numpy().astype(np.float64)
             score = np.where(mask > 0.5, score, -1e18)
 
-        # --- UCB exploration bonus (optional) ---
-        ucb_c = float(getattr(Config, 'GREEDY_UCB_COEF', 0.0))
-        if ucb_c > 0.0:
-            total = float(self._utility_counts.sum()) + 1.0
-            bonus = ucb_c * np.sqrt(np.log(total) / (self._utility_counts + 1.0))
-            score = score + bonus
-
-        # --- Randomize among top-K (optional) ---
-        topk = int(getattr(Config, 'GREEDY_TOPK', 1))
-        if topk > 1:
-            idx = np.argsort(score)[-topk:]
-            idx = idx[score[idx] > -1e17]
-            if idx.size > 0:
-                return int(np.random.choice(idx))
-
         if not np.isfinite(score).any():
             return int(np.random.randint(0, M))
 
@@ -651,7 +577,6 @@ class PPOAgent:
             action_mask_tensor = torch.FloatTensor(action_mask).to(Config.DEVICE)
         else:
             action_mask_tensor = None
-        include_quality_state = bool(getattr(Config, "INCLUDE_QUALITY_IN_STATE", True)) and not bool(getattr(Config, "USE_EM_EXACT_MATCH", False))
         
         # if Config.ROUND_ROBIN:
         #     action = round_robin_counter % self.action_dim
@@ -672,26 +597,23 @@ class PPOAgent:
         #     print(f"Round Robin Action: {action}")
         #     round_robin_counter += 1
         #     return action, log_prob.cpu().item(), value.cpu().item(), round_robin_counter
-        
-        if include_quality_state:
-            # reset quality
-            pre_len = 2*len(Config.MODEL_NAMES)
-            coefs = self.quality_scorer.compute_quality_score_all(prompt)
-            for index,server in enumerate(Config.MODEL_NAMES):
-                if pre_len + index < state_tensor.numel():
+
+        # reset quality (optional)
+        # If USE_EM_EXACT_MATCH is enabled OR INCLUDE_QUALITY_IN_STATE is False, we do NOT inject quality into state.
+        if (not getattr(Config, 'USE_EM_EXACT_MATCH', False)) and getattr(Config, 'INCLUDE_QUALITY_IN_STATE', True):
+            pre_len = 2 * len(Config.MODEL_NAMES)
+            # Only inject if the state vector is long enough
+            if state_tensor.numel() >= pre_len + len(Config.MODEL_NAMES):
+                coefs = self.quality_scorer.compute_quality_score_all(prompt)
+                for index, server in enumerate(Config.MODEL_NAMES):
                     state_tensor[pre_len + index] = float(coefs[server])
                     print(f"Quality score for {server}: {coefs[server]}")
-        
+
         print(state_tensor)
 
         # --- Greedy utility baseline (optional) ---
         if getattr(Config, 'GREEDY_UTILITY', False):
             action = self.greedy_utility_action(state_tensor, action_mask_tensor)
-            # count selections so we can explore when history is empty
-            try:
-                self._utility_counts[int(action)] += 1
-            except Exception:
-                pass
             log_prob = torch.tensor(0.0, device=Config.DEVICE)
             value = torch.tensor(0.0, device=Config.DEVICE)
             print(f'Greedy-Utility action: {action}')

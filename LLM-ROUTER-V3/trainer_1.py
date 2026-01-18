@@ -311,13 +311,6 @@ class EnhancedLLMRouterTrainer:
         #             if i < len(self.buffer.current_episode):
         #                 self.buffer.current_episode[i]['reward'] = req['reward']
         
-        # Update greedy utility history (EMA latency/cost, optional queue-conditioned stats).
-        # Safe no-op if the agent does not implement update_server_stats.
-        try:
-            self.agent.update_server_stats(episode_record)
-        except Exception as e:
-            print(f"[WARN] update_server_stats failed: {e}")
-
         return episode_record
 
     def tensor_to_python(self, obj):

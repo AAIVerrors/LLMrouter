@@ -121,16 +121,16 @@ class Config:
     LAMBDA = 5  # Capacity penalty weight (increased to strongly discourage invalid actions)
     
     # PPO hyperparameters - tuned for the routing problem
-    LEARNING_RATE =1e-5  # Reduced for more stable learning
+    LEARNING_RATE =1e-4  # Reduced for more stable learning
     GAMMA = 0.99          # Slightly reduced discount factor
     GAE_LAMBDA = 0.95      # Reduced for less variance in advantage estimation
     CLIP_EPSILON = 0.2    # Slightly reduced for more conservative updates
     POLICY_COEF = 1       # Policy loss weight
     VALUE_COEF = 0.5      # Reduced value function weight
     ENTROPY_COEF = 0.1   # Increased entropy for more exploration
-    KL_COEF = 0.01
+    KL_COEF = 0.05
     MAX_GRAD_NORM = 0.5
-    PPO_EPOCHS = 3        # Increased for more thorough updates
+    PPO_EPOCHS = 4        # Increased for more thorough updates
     BATCH_SIZE = 1      # Increased batch size
     
     # Neural network settings
@@ -143,8 +143,8 @@ class Config:
     COMPLETION_CHECK_STEPS = 20  # Steps to wait for request completion at episode end
     
     # Device settings
-    GPU_LIST = [1]
-    DEVICE = torch.device("cuda:1")
+    GPU_LIST = [0]
+    DEVICE = torch.device("cuda:0")
     
     # Wandb settings
     WANDB_PROJECT = "enhanced-llm-router-ppo"
@@ -199,6 +199,8 @@ class Config:
     QUEUE_EPSILON = 0.0001  # Epsilon for queue score stability
     MERGE_ALPHA = 0 # Alpha for merging action probabilities (0.5 for equal weighting)
 
+    MAX_LATENCY = 60
+
     ROUND_ROBIN = False
     
     USE_MERGE_TO_TRAIN = False  # Use merge action for training 
@@ -221,7 +223,7 @@ class Config:
 
     P2C = False
 
-    # GREEDY = False
+    GREEDY = False
 
      # Greedy utility baseline (predict next-step reward using queue Q + EMA latency/cost per server)
     GREEDY_UTILITY = False
@@ -229,35 +231,18 @@ class Config:
     #   - "none"   : use a single global EMA per server 
     #   - "bins"   : keep EMA latency/cost in coarse bins of queue length q 
     #   - "linear" : online fit of latency/cost as a + b*q per server
-    UTILITY_QUEUE_MODEL = "linear"
+    UTILITY_QUEUE_MODEL = "none"
     UTILITY_EMA_ALPHA = 0.10      # EMA update rate for latency/cost (0.05-0.2 typical)
     UTILITY_W_QUAL = 1.0          # weight on predicted quality
     UTILITY_W_LAT = 1.0           # weight on predicted latency (penalty)
     UTILITY_W_COST = 1.0          # weight on predicted cost (penalty)
     UTILITY_W_Q = 0.0             # optional extra queue penalty beyond latency term
     UTILITY_Q_EPS = 1e-6
-    UTILITY_INIT_LAT = 0        # seconds (fallback if no history yet)
-    UTILITY_INIT_COST = 0       # fallback if no history yet
-    # ============================================================
-    # Greedy utility exploration (safe defaults)
-    # ============================================================
-    
-    # Ensure each server is tried at least this many times before pure greedy utility.
-    # Set 0 to disable.
-    GREEDY_WARMUP_MIN_TRIALS = 1
-    
-    # With probability epsilon, pick a random server (exploration).
-    # Set 0.0 to disable.
-    GREEDY_EPSILON = 0.05
-    
-    # If > 0, adds a UCB-style bonus to uncertain servers in greedy utility.
-    # Set 0.0 to disable.
-    GREEDY_UCB_COEF = 0.0
-    
-    # If > 1, sample uniformly among the top-K highest-utility servers (simple exploration).
-    # Set 1 to disable.
-    GREEDY_TOPK = 1
+    UTILITY_INIT_LAT = 1.0        # seconds (fallback if no history yet)
+    UTILITY_INIT_COST = 0.0       # fallback if no history yet
 
+
+    
     T = -2
 
     # =================================================================
@@ -335,31 +320,6 @@ class Config:
         'file_export_interval': 50,        # Export files every N episodes
     }
     
-
-    # =================================================================
-    # Ground-truth matching for quality (optional)
-    # =================================================================
-    # If True, compute quality_score by comparing the model
-    # response_text against the dataset ground-truth output.
-    #
-    # NOTE: This metric is computed AFTER generation completes, so you
-    # typically should NOT include it in the RL state.
-    USE_EM_EXACT_MATCH = True
-
-    # If True, include per-server quality scores in the RL state vector.
-    # Recommended False when USE_EM_EXACT_MATCH=True.
-    INCLUDE_QUALITY_IN_STATE = False
-
-    # Softer matching metric (less strict than EM):
-    #   "f1"       : token-level F1 (default, continuous 0..1)
-    #   "ratio"    : character-level similarity ratio (0..1)
-    #   "contains" : 1 if one contains the other (after normalization)
-    #   "em"       : strict exact match (0/1)
-    EM_METRIC = "f1"
-
-    # Optionally binarize the match score (useful if you want 0/1 reward)
-    EM_BINARIZE = False
-    EM_THRESHOLD = 0.5
 
     @classmethod
     def get_config_summary(cls):

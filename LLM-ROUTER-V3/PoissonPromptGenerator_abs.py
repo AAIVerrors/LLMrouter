@@ -94,40 +94,26 @@ class PoissonPromptGenerator:
         self.dataset = dummy_data
         print(f"Created {len(self.dataset)} dummy samples")
     
-    def get_next_prompt(self) -> Dict[str, str]:
-        """Get next prompt + ground-truth output from dataset.
-
-        Returns a dict containing at least:
-          - 'prompt': formatted prompt text
-          - 'output': dataset ground-truth response (may be empty for some datasets)
-        """
+    def get_next_prompt(self) -> Tuple[str, str]:
+        """Get next prompt from dataset"""
         if not self.dataset:
-            return {
-                'prompt': 'Default prompt: Explain artificial intelligence.',
-                'output': ''
-            }
-
+            return "Default prompt: Explain artificial intelligence."
+        
         # Get current sample and advance index
         sample = self.dataset[self.dataset_index]
         self.dataset_index = (self.dataset_index + 1) % len(self.dataset)
-
-        # Convert to prompt format (Alpaca-style)
+        
+        # Convert to prompt format
         instruction = sample.get('instruction', '')
         input_text = sample.get('input', '')
-        output_text = sample.get('output', '')
-
+        
         if input_text:
             prompt = f"Instruction: {instruction}\nInput: {input_text}\nResponse:"
         else:
             prompt = f"Instruction: {instruction}\nResponse:"
+        ground_truth = sample.get('output', '')
 
-        return {
-            'prompt': prompt,
-            'output': output_text,
-            'instruction': instruction,
-            'input': input_text,
-        }
-
+        return prompt, ground_truth
     def _generate_prompts(self):
         """Background thread that generates prompts according to Poisson process"""
         self.start_time = time.time()
@@ -146,15 +132,16 @@ class PoissonPromptGenerator:
             # Check queue size to prevent overflow
             if self.prompt_queue.qsize() < self.max_queue_size:
                 try:
-                    # Get next prompt (+ ground truth) from dataset
-                    sample = self.get_next_prompt()
-
-                    # Create prompt entry with metadata (keep sample fields)
-                    prompt_entry = dict(sample)
-                    prompt_entry.update({
+                    # Get next prompt from dataset
+                    prompt, ground_truth = self.get_next_prompt()
+                    
+                    # Create prompt entry with metadata
+                    prompt_entry = {
+                        'prompt': prompt,
+                        'ground_truth': ground_truth,
                         'arrival_time': time.time(),
-                        'id': f"prompt_{self.total_generated}",
-                    })
+                        'id': f"prompt_{self.total_generated}"
+                    }
                     
                     # Put prompt in queue
                     self.prompt_queue.put(prompt_entry)

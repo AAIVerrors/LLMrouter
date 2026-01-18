@@ -36,11 +36,10 @@ class EnhancedLLMRouterTrainer:
         
         # Initialize episode tracking
         self.current_episode = 0  
+        
         # Initialize PPO agent
-        M = len(Config.SERVER_CAPACITIES)
-        include_quality_state = bool(getattr(Config, 'INCLUDE_QUALITY_IN_STATE', True)) and not bool(getattr(Config, 'USE_EM_EXACT_MATCH', False))
-        state_dim = M * (4 if include_quality_state else 3)
-        action_dim = M  # Number of servers
+        state_dim = len(Config.SERVER_CAPACITIES)*4  # load per server
+        action_dim = len(Config.SERVER_CAPACITIES)  # Number of servers
         self.agent = PPOAgent(state_dim, action_dim)
         
         # Initialize wandb based on config
@@ -185,21 +184,9 @@ class EnhancedLLMRouterTrainer:
     def run_episode(self) -> dict:
         """Run a single episode using Poisson prompt generator"""
         
-        price = [((a[0] + a[1]) / 2) for a in Config.PRICE]  # avg price per server
+        price = [((a[0]+a[1]) / 2) for a in Config.PRICE] # Add average price per server
 
-        M = len(Config.SERVER_CAPACITIES)
-        include_quality_state = bool(getattr(Config, 'INCLUDE_QUALITY_IN_STATE', True)) and not bool(getattr(Config, 'USE_EM_EXACT_MATCH', False))
-
-        def build_state(loads):
-            # loads: per-server queue lengths (from env)
-            util = [float(loads[i]) / float(c) for i, c in enumerate(Config.SERVER_CAPACITIES)]
-            s = util + list(Config.SERVICE_RATE)
-            if include_quality_state:
-                s += [1.0] * M
-            s += price
-            return s
-
-        state = build_state(self.env.reset())
+        state = [self.env.reset()[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + Config.SERVICE_RATE + [1] * len(Config.SERVER_CAPACITIES) + price
         # state = [self.env.reset()[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + [1] * len(Config.SERVER_CAPACITIES) + price
 
         # state = [self.env.reset()[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + self.last_service_rate + price
@@ -222,30 +209,25 @@ class EnhancedLLMRouterTrainer:
             # Get prompt from Poisson generator (environment handles this)
             action_mask = self.env.get_action_mask()
 
-            prompt_entry = self.env.get_next_prompt()
-            if not prompt_entry:
+            prompt = self.env.get_next_prompt()
+            if not prompt:
+                # print("No more prompts available")
                 time.sleep(0.1)
                 continue
-
-            if isinstance(prompt_entry, dict):
-                prompt = prompt_entry.get('prompt', '')
-                ground_truth = (prompt_entry.get('output') or prompt_entry.get('answer') or prompt_entry.get('target'))
-            else:
-                prompt = str(prompt_entry)
-                ground_truth = None
+            prompt = prompt['prompt']  # Extract the actual prompt text
 
             action, log_prob, value, next_counter = self.agent.get_action(state, prompt, action_mask, service_rate=self.last_service_rate, round_robin_counter=robin_counter)
             print("log_prob:", log_prob)
             robin_counter = next_counter
             
-            next_state, done = self.env.step(action, prompt, ground_truth)
+            next_state, done = self.env.step(action, prompt)
 
             if Config.NAIVE_PPO:
-                state = build_state(next_state)
+                state = [next_state[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + Config.SERVICE_RATE + [1]* len(Config.SERVER_CAPACITIES) + price
             else:
             
                 if current != current_time_slot:
-                    state = build_state(next_state)
+                    state = [next_state[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + Config.SERVICE_RATE + [1]* len(Config.SERVER_CAPACITIES) + price
                     # state = [next_state[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + [1]* len(Config.SERVER_CAPACITIES) + price
                     # state = [next_state[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + self.last_service_rate +  price
                     current = current_time_slot
@@ -311,13 +293,6 @@ class EnhancedLLMRouterTrainer:
         #             if i < len(self.buffer.current_episode):
         #                 self.buffer.current_episode[i]['reward'] = req['reward']
         
-        # Update greedy utility history (EMA latency/cost, optional queue-conditioned stats).
-        # Safe no-op if the agent does not implement update_server_stats.
-        try:
-            self.agent.update_server_stats(episode_record)
-        except Exception as e:
-            print(f"[WARN] update_server_stats failed: {e}")
-
         return episode_record
 
     def tensor_to_python(self, obj):

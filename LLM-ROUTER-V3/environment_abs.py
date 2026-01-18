@@ -2,11 +2,6 @@ from vllm import LLM, SamplingParams
 import torch
 import numpy as np
 import time
-import re
-import string
-from collections import Counter
-from difflib import SequenceMatcher
-
 from typing import List, Dict, Tuple, Optional, Any
 from dataclasses import dataclass
 from sentence_transformers import SentenceTransformer
@@ -31,117 +26,41 @@ except RuntimeError:
     pass  # Already set
 
 
-# --------------------------
-# Ground-truth matching (less strict than EM)
-# --------------------------
-_ARTICLES_RE = re.compile(r"\b(a|an|the)\b", re.UNICODE)
+# -------------------------
+# Exact Match (EM) helpers
+# -------------------------
+import re as _re
+import string as _string
 
-
-def _normalize_answer(s) -> str:
-    """Normalize text for string-based matching."""
+def _normalize_for_em(s: str) -> str:
+    """SQuAD-style lightweight normalization (lower, remove punctuation/articles, fix whitespace)."""
     if s is None:
         return ""
-    s = str(s).lower()
-    s = "".join(ch for ch in s if ch not in string.punctuation)
-    s = _ARTICLES_RE.sub(" ", s)
-    s = " ".join(s.split())
+    s = s.strip()
+    if not getattr(Config, 'EM_NORMALIZE', True):
+        return s
+    s = s.lower()
+    # remove punctuation
+    s = ''.join(ch for ch in s if ch not in _string.punctuation)
+    # remove articles
+    s = _re.sub(r'(a|an|the)', ' ', s)
+    # normalize whitespace
+    s = ' '.join(s.split())
     return s
 
-
-def _as_list(x: Any) -> List[str]:
-    if x is None:
-        return []
-    if isinstance(x, (list, tuple)):
-        return [str(i) for i in x]
-    return [str(x)]
-
-
-def exact_match_score(pred: Optional[str], gold: Any) -> float:
-    """Strict EM on normalized strings (0/1)."""
-    pred_n = _normalize_answer(pred)
-    best = 0.0
-    for g in _as_list(gold):
-        best = max(best, float(pred_n == _normalize_answer(g)))
-    return best
-
-
-def token_f1_score(pred: Optional[str], gold: Any) -> float:
-    """SQuAD-style token F1 (0..1) on normalized whitespace tokens."""
-    pred_toks = _normalize_answer(pred).split()
-    best = 0.0
-    for g in _as_list(gold):
-        gold_toks = _normalize_answer(g).split()
-        if len(pred_toks) == 0 or len(gold_toks) == 0:
-            best = max(best, float(pred_toks == gold_toks))
-            continue
-        common = Counter(pred_toks) & Counter(gold_toks)
-        num_same = sum(common.values())
-        if num_same == 0:
-            continue
-        precision = num_same / len(pred_toks)
-        recall = num_same / len(gold_toks)
-        f1 = (2 * precision * recall) / (precision + recall)
-        best = max(best, float(f1))
-    return best
-
-
-def sequence_ratio_score(pred: Optional[str], gold: Any) -> float:
-    """Character-level similarity ratio (0..1) on normalized strings."""
-    pred_n = _normalize_answer(pred)
-    best = 0.0
-    for g in _as_list(gold):
-        gold_n = _normalize_answer(g)
-        if not pred_n and not gold_n:
-            best = max(best, 1.0)
-            continue
-        best = max(best, SequenceMatcher(None, pred_n, gold_n).ratio())
-    return float(best)
-
-
-def contains_score(pred: Optional[str], gold: Any) -> float:
-    """1.0 if either string contains the other after normalization, else 0.0."""
-    pred_n = _normalize_answer(pred)
-    best = 0.0
-    for g in _as_list(gold):
-        gold_n = _normalize_answer(g)
-        if not pred_n or not gold_n:
-            continue
-        if gold_n in pred_n or pred_n in gold_n:
-            best = 1.0
-            break
-    return best
-
-
-def match_quality_score(pred: Optional[str], gold: Any) -> float:
-    """Compute a less-strict match score for reward.
-
-    Config:
-      - EM_METRIC: 'em' | 'f1' | 'ratio' | 'contains'
-      - EM_BINARIZE: bool (optional)
-      - EM_THRESHOLD: float (optional, used if binarize)
-    """
-    metric = getattr(Config, "EM_METRIC", "f1")
-    if metric == "em":
-        score = exact_match_score(pred, gold)
-    elif metric == "ratio":
-        score = sequence_ratio_score(pred, gold)
-    elif metric == "contains":
-        score = contains_score(pred, gold)
-    else:  # default: token F1
-        score = token_f1_score(pred, gold)
-
-    if getattr(Config, "EM_BINARIZE", False):
-        thr = float(getattr(Config, "EM_THRESHOLD", 0.5))
-        score = float(score >= thr)
-    return float(max(min(score, 1.0), 0.0))
+def exact_match_score(prediction: str, ground_truth: str) -> float:
+    """Return 1.0 if prediction matches ground_truth under normalization, else 0.0."""
+    if ground_truth is None:
+        return 0.0
+    return 1.0 if _normalize_for_em(prediction) == _normalize_for_em(ground_truth) else 0.0
 
 @dataclass
 class Request:
     """Represents a single request in the system"""
     id: int
     prompt: str
+    ground_truth: Optional[str] = None  # dataset reference answer (for EM mode)
     arrival_time: float
-    ground_truth: Optional[str] = None  # dataset reference output (for EM eval)
     start_time: Optional[float] = None
     completion_time: Optional[float] = None
     processing_latency: Optional[float] = None
@@ -595,23 +514,27 @@ def response_collector_worker(response_queue,
             queue_state_after = data[2]
 
             if request.status == 'completed':
-
-                # EM quality scoring (optional)
-                if getattr(Config, 'USE_EM_EXACT_MATCH', False):
-                    try:
-                        pred = None
-                        if request.response is not None:
-                            pred = request.response.get('response_text')
-                        request.quality_score = match_quality_score(pred, getattr(request, 'ground_truth', None))
-                    except Exception:
-                        request.quality_score = 0.0
                 # Calculate reward
                 if (request.processing_latency is not None):
                     
                     latency = request.processing_latency
                     # Scale latency penalty
                     normalized_latency = latency / 120
-                    quality_reward = Config.ALPHA * request.quality_score
+                    
+                    # Quality: either pre-computed scorer (default) or EM vs dataset ground-truth
+                    if getattr(Config, 'USE_EM_EXACT_MATCH', False):
+                        resp_text = ''
+                        try:
+                            resp_text = (request.response or {}).get('response_text', '')
+                        except Exception:
+                            resp_text = ''
+                        request.quality_score = exact_match_score(resp_text, getattr(request, 'ground_truth', None))
+
+                    # Fall back if still None
+                    if request.quality_score is None:
+                        request.quality_score = 0.0
+
+                    quality_reward = Config.ALPHA * float(request.quality_score)
                     latency_penalty = Config.BETA * normalized_latency
                     price_before = (Config.PRICE[request.server_id][0]*len(request.prompt) 
                                                  + Config.PRICE[request.server_id][1]*len(request.response['response_text'])) * 776
@@ -619,7 +542,7 @@ def response_collector_worker(response_queue,
                     reward = quality_reward - latency_penalty - price
 
                     print(f"Response completed - ID: {request.id}, "
-                          f"Quality: {request.quality_score:.3f}, "
+                          f"Quality: {float(request.quality_score):.3f}, "
                           f"Latency: {latency:.3f}s, "
                           f"Price: {price_before:.3f}, ",
                          f"Reward: {reward:.3f}")
@@ -853,7 +776,7 @@ class EnhancedRouterEnvironment:
         print(f"Completed prompts: {self.completed_prompts.value}, Total routed: {len(self.routed_prompts)}")
         return self.completed_prompts.value == len(self.routed_prompts)
     
-    def get_next_prompt(self) -> str:
+    def get_next_prompt(self):
         prompt = None
         try:
             prompt = self.prompt_queue.get_nowait()
@@ -864,8 +787,25 @@ class EnhancedRouterEnvironment:
         return prompt
          
     
-    def step(self, action: int, prompt: str, ground_truth: Optional[str] = None) -> Tuple[np.ndarray, bool]:
+    def step(self, action: int, prompt) -> Tuple[np.ndarray, bool]:
         """Execute routing action"""
+
+        # Allow prompt to be either a raw string OR a dict/tuple produced by PoissonPromptGenerator
+        ground_truth = None
+        prompt_text = prompt
+        try:
+            if isinstance(prompt, dict):
+                prompt_text = prompt.get('prompt', '')
+                ground_truth = prompt.get('ground_truth', None)
+                if ground_truth is None:
+                    ground_truth = prompt.get('output', None)
+            elif isinstance(prompt, (tuple, list)) and len(prompt) >= 2:
+                prompt_text = prompt[0]
+                ground_truth = prompt[1]
+        except Exception:
+            # Fall back to treating it as a string
+            prompt_text = str(prompt)
+            ground_truth = None
         
         # Collect accumulated rewards
         with self.total_completed.get_lock():
@@ -877,9 +817,9 @@ class EnhancedRouterEnvironment:
         
         request = Request(
             id=request_id,
-            prompt=prompt,
-            ground_truth=ground_truth,
+            prompt=prompt_text,
             arrival_time=time.time(),
+            ground_truth=ground_truth,
             server_id=action,
             episode=self.current_episode
         )
@@ -899,7 +839,7 @@ class EnhancedRouterEnvironment:
                 self.queue_monitor.log_request_failed(
                     server_id=action,
                     request_id=request_id,
-                    prompt=prompt,
+                    prompt=prompt_text,
                     current_time=time.time(),
                     reason="Server at capacity",
                     episode=self.current_episode
@@ -916,14 +856,10 @@ class EnhancedRouterEnvironment:
             return self.get_state(), False
         
         # Valid action - compute quality and log request
-        # For reward computation, quality_score is either:
-        #  - (default) predicted by the quality model at dispatch time, or
-        #  - (EM mode) computed later by exact-match against dataset ground truth.
-        if getattr(Config, 'USE_EM_EXACT_MATCH', False):
-            # EM score computed post-hoc after response is generated
-            request.quality_score = 0.0
+        if not getattr(Config, 'USE_EM_EXACT_MATCH', False):
+            request.quality_score = self.quality_scorer.compute_quality_score_real(prompt_text, server.get_model_name())
         else:
-            request.quality_score = self.quality_scorer.compute_quality_score_real(prompt, server.get_model_name())
+            request.quality_score = None
 
         self.routed_prompts[request.id] = request
 
