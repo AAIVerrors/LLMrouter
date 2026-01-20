@@ -100,7 +100,7 @@ class Config:
     ]
     
     # Server capabilities (max concurrent requests)
-    SERVER_CAPACITIES = [32, 32, 30, 32, 32, 30, 32, 32, 30, 32, 30, 32]  # Capacity for each model
+    SERVER_CAPACITIES = [30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30]  # Capacity for each model
     
     # Dataset settings
     DATASET_NAME = "tatsu-lab/alpaca"
@@ -121,13 +121,13 @@ class Config:
     LAMBDA = 5  # Capacity penalty weight (increased to strongly discourage invalid actions)
     
     # PPO hyperparameters - tuned for the routing problem
-    LEARNING_RATE =1e-5  # Reduced for more stable learning
+    LEARNING_RATE =1e-4  # Reduced for more stable learning
     GAMMA = 0.99          # Slightly reduced discount factor
     GAE_LAMBDA = 0.95      # Reduced for less variance in advantage estimation
     CLIP_EPSILON = 0.2    # Slightly reduced for more conservative updates
     POLICY_COEF = 1       # Policy loss weight
     VALUE_COEF = 0.5      # Reduced value function weight
-    ENTROPY_COEF = 0.1   # Increased entropy for more exploration
+    ENTROPY_COEF = 0.01   # Increased entropy for more exploration
     KL_COEF = 0.01
     MAX_GRAD_NORM = 0.5
     PPO_EPOCHS = 3        # Increased for more thorough updates
@@ -190,14 +190,21 @@ class Config:
     FINAL_EVAL_EPISODES = 10  # Number of episodes for final evaluation
     
     # Poisson prompt generation settings
-    POISSON_ARRIVAL_RATE = 5  # Average arrival rate of prompts per second
+    POISSON_ARRIVAL_RATE = 10  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
-    EPISODE_TIME_INTERVAL = 5  # Time interval for each episode in seconds
+    EPISODE_TIME_INTERVAL = 10  # Time interval for each episode in seconds
     
     # Queue score settings
     QUEUE_SCORE_FACTOR = 0.2  # Factor to adjust queue score impact
     QUEUE_EPSILON = 0.0001  # Epsilon for queue score stability
     MERGE_ALPHA = 0 # Alpha for merging action probabilities (0.5 for equal weighting)
+
+    # Drop action
+    INVALID_ROUTE_PENALTY = 0.7   # try 0.5 ~ 2.0 depending how hard you want to avoid full servers
+    FAIL_LATENCY_CAP = 60.0       # just for logging; failed branch uses penalty not latency
+    REWARD_CLIP = 2.0             # optional, set <=0 to disable
+
+
 
     ROUND_ROBIN = False
     
@@ -225,6 +232,7 @@ class Config:
 
      # Greedy utility baseline (predict next-step reward using queue Q + EMA latency/cost per server)
     GREEDY_UTILITY = False
+    GREEDY_MASK = False # True will enable action mask
     # Queue-conditioned predictor for GREEDY_UTILITY.
     #   - "none"   : use a single global EMA per server 
     #   - "bins"   : keep EMA latency/cost in coarse bins of queue length q 

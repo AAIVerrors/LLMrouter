@@ -686,7 +686,10 @@ class PPOAgent:
 
         # --- Greedy utility baseline (optional) ---
         if getattr(Config, 'GREEDY_UTILITY', False):
-            action = self.greedy_utility_action(state_tensor, action_mask_tensor)
+            if Config.GREEDY_MASK:
+                action = self.greedy_utility_action(state_tensor, action_mask_tensor)
+            else:
+                action = self.greedy_utility_action(state_tensor, None)
             # count selections so we can explore when history is empty
             try:
                 self._utility_counts[int(action)] += 1

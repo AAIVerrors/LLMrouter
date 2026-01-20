@@ -164,11 +164,11 @@ class EnhancedLLMRouterTrainer:
 
         for req in record:
             episode_info['rewards'].append(req['reward'])
-            episode_info['quality_scores'].append(req['quality_score'])
-            episode_info['latencies'].append(req['processing_latency'])
-            episode_info['prices'].append(req['price'])
-            # If you have capacity_penalty, add logic here
-
+            if req['status'] == 'completed' and req['episode'] == self.current_episode:
+                episode_info['quality_scores'].append(req['quality_score'])
+                episode_info['latencies'].append(req['processing_latency'])
+                episode_info['prices'].append(req['price'])
+                
             if req['status'] == 'completed' and req['episode'] == self.current_episode:
                 episode_info['valid_actions'] += 1
             else:
@@ -363,6 +363,48 @@ class EnhancedLLMRouterTrainer:
         checkpoint_path = f'checkpoints/enhanced_router_model_ep_{episode}.pt'
         self.agent.save(checkpoint_path)
         print(f"Saved checkpoint: {checkpoint_path}")
+
+    def safe_percentile(self, x, q):
+        """Returns percentile q of list x, or None if empty/invalid."""
+        if x is None:
+            return None
+        arr = np.array([v for v in x if v is not None and np.isfinite(v)], dtype=float)
+        if arr.size == 0:
+            return None
+        return float(np.percentile(arr, q))
+
+    def jains_fairness(self, x):
+        arr = np.asarray(list(x.values()), dtype=float)
+        n = arr.size
+        if n == 0:
+            return 0.0
+    
+        s1 = arr.sum()
+        s2 = np.square(arr).sum()
+        if s2 == 0.0:
+            return 1.0  # all zeros => perfectly equal
+    
+        return float((s1 * s1) / (n * s2))
+
+    
+    # def jains_fairness(self, x):
+    #     """
+    #     Jain's fairness index: (sum x)^2 / (n * sum x^2)
+    #     x should be non-negative (e.g., per-server completed counts).
+    #     Returns None if invalid/empty.
+    #     """
+    #     if x is None:
+    #         return None
+    #     arr = np.array(x, dtype=float)
+    #     if arr.size == 0:
+    #         return None
+    #     arr = np.clip(arr, 0.0, None)
+    #     s1 = arr.sum()
+    #     s2 = np.square(arr).sum()
+    #     if s2 <= 1e-12:
+    #         return None
+    #     return float((s1 * s1) / (arr.size * s2))
+
     
     def train(self):
         """Main training loop"""
@@ -400,29 +442,55 @@ class EnhancedLLMRouterTrainer:
                     print(f"   Value Loss: {training_metrics['value_loss']:.6f}")
                 
                 if self.wandb_available:
+                    
+                    lat_list = episode_info['latencies']
+                    p50 = self.safe_percentile(lat_list, 50)
+                    p90 = self.safe_percentile(lat_list, 90)
+                    p99 = self.safe_percentile(lat_list, 99)
+                    
+                    # Fairness: prefer COMPLETED per-server counts if you have them
+                    # (best), otherwise fall back to attempted actions.
+                    per_server_counts = None
+                    
+                    fairness = self.jains_fairness(training_metrics['route distribution'])
+                    
+                    # Fix price mean
+                    price_mean = float(np.mean(episode_info['prices'])) if episode_info.get('prices') else None
+
                     wandb.log({
                         "episode": episode,
-                        "total_reward": np.sum(episode_info['rewards']),
-                        "mean_reward": np.mean(episode_info['rewards']),
-                        "std_reward": np.std(episode_info['rewards']),
+                        "total_reward": float(np.sum(episode_info['rewards'])) if episode_info.get('rewards') else None,
+                        "mean_reward": float(np.mean(episode_info['rewards'])) if episode_info.get('rewards') else None,
+                        "std_reward": float(np.std(episode_info['rewards'])) if episode_info.get('rewards') else None,
+                    
                         "policy_loss": training_metrics['policy_loss'] if training_metrics else None,
                         "value_loss": training_metrics['value_loss'] if training_metrics else None,
                         "entropy_loss": training_metrics['entropy_loss'] if training_metrics else None,
-                        "quality_scores": np.mean(episode_info['quality_scores']),
-                        "latencies": np.mean(episode_info['latencies']),
-                        "price": np.mean([episode_info['prices']]),
-                        # "Return": training_metrics['returns'] if training_metrics else None,
-                        # "Min_return": training_metrics['min_return_server_value'] if training_metrics else None,
-                        # "Min_score": training_metrics['min_score_server_value'] if training_metrics else None,
-                        # "Min_mean_reward": training_metrics['min_mean_reward_server_value'] if training_metrics else None,
-                        "throughput_per_episode/requests_completed": episode_info['valid_actions'],
+                    
+                        "quality_scores": float(np.mean(episode_info['quality_scores'])) if episode_info.get('quality_scores') else None,
+                        "latencies": float(np.mean(episode_info['latencies'])) if episode_info.get('latencies') else None,
+                    
+                        "p50": p50,
+                        "p90": p90,
+                        "p99": p99,
+                    
+                        "Jain_fairness_index": fairness,
+
+                        'valid_total_request_ratio': episode_info.get('valid_actions', None)/episode_info.get('episode_length', None),
+                    
+                        "price": price_mean,
+                    
+                        "throughput_per_episode/requests_completed": episode_info.get('valid_actions', None),
+                        "request_total_numbers": episode_info.get('episode_length', None),
+                    
                         "returns": training_metrics['rewards_returns'] if training_metrics else None,
                         "term_returns": training_metrics['term_rewards_returns'] if training_metrics else None,
-                        'min_rewards': training_metrics['min_rewards'] if training_metrics else None,
-                        'cumulated_avg_rewards_return': training_metrics['cumulated_avg_rewards'] if training_metrics else None,
-                        'entropy of route distribution': training_metrics['entropy of route distribution'] if training_metrics else None,
-                        'approx_kl': training_metrics['approx_kl'] if training_metrics else None,
+                        "min_rewards": training_metrics['min_rewards'] if training_metrics else None,
+                        "cumulated_avg_rewards_return": training_metrics['cumulated_avg_rewards'] if training_metrics else None,
+                        "entropy of route distribution": training_metrics['entropy of route distribution'] if training_metrics else None,
+                        "approx_kl": training_metrics['approx_kl'] if training_metrics else None,
                     }, step=episode)
+
 
                 # Add server usage percentage if available
                 if training_metrics and 'server_usage_percentage' in training_metrics:

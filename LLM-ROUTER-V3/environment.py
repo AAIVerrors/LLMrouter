@@ -618,6 +618,10 @@ def response_collector_worker(response_queue,
                     price = Config.REWARD_GAMMA * max(min(price_before, 1.0), 0)
                     reward = quality_reward - latency_penalty - price
 
+                    clip = getattr(Config, 'REWARD_CLIP', None)
+                    if clip is not None and clip > 0:
+                        reward = float(max(min(reward, clip), -clip))
+
                     print(f"Response completed - ID: {request.id}, "
                           f"Quality: {request.quality_score:.3f}, "
                           f"Latency: {latency:.3f}s, "
@@ -648,13 +652,25 @@ def response_collector_worker(response_queue,
                     print(f"Warning: Incomplete response data for request {request.id}")
                 
             elif request.status == 'failed':
-                
-                request.reward = - config_beta - Config.REWARD_GAMMA
+
+                # Option A: immediate failure with bounded penalty
+                penalty = getattr(Config, 'INVALID_ROUTE_PENALTY', None)
+                if penalty is None:
+                    # preserve legacy behavior if INVALID_ROUTE_PENALTY is not set
+                    penalty = float(config_beta) + float(getattr(Config, 'REWARD_GAMMA', 0.0))
+                reward = -float(penalty)
+
+                # Optional reward clipping for PPO stability
+                clip = getattr(Config, 'REWARD_CLIP', None)
+                if clip is not None and clip > 0:
+                    reward = float(max(min(reward, clip), -clip))
+
+                request.reward = reward
                 request.price = 0.0
                 routed_prompts[request.id] = request
                 completed_prompts.value += 1
                 # episode_completed.put(request)
-                print(f"Response failed - ID: {request.id}, Penalty: {- config_beta - Config.REWARD_GAMMA}")
+                print(f"Response failed - ID: {request.id}, Penalty: {reward:.3f}")
                 
         except Empty:
             continue
@@ -782,8 +798,16 @@ class EnhancedRouterEnvironment:
         return np.array(state, dtype=np.float32)
     
     def get_action_mask(self) -> np.ndarray:
-        """Get valid actions mask"""
-        return torch.tensor([server.can_accept_request() for server in self.servers], dtype=torch.float32)
+        """Get valid actions mask.
+
+        Option A: if all servers are full, return an all-ones mask so the policy
+        can still sample an action. The environment will then assign an
+        invalid-route penalty in step() when it tries to dispatch to a full server.
+        """
+        mask = torch.tensor([server.can_accept_request() for server in self.servers], dtype=torch.float32)
+        if float(mask.sum().item()) == 0.0:
+            mask = torch.ones_like(mask)
+        return mask
 
     # def get_episode_data(self) -> List[Dict[str, Any]]:
     #     # Collect requests of current episode
@@ -906,10 +930,16 @@ class EnhancedRouterEnvironment:
                 )
                 
             request.status = 'failed'
-            request.reward = -0.6
+            # Option A: immediate failure with bounded penalty (reward finalized in response_collector_worker)
+            penalty = getattr(Config, 'INVALID_ROUTE_PENALTY', None)
+            if penalty is None:
+                penalty = float(Config.BETA) + float(getattr(Config, 'REWARD_GAMMA', 0.0))
+            request.reward = -float(penalty)
             request.completion_time = time.time()
-            request.processing_latency = 120
-            request.quality_score = 0
+            fail_lat = getattr(Config, 'FAIL_LATENCY_CAP', 120)
+            request.processing_latency = float(fail_lat)
+            request.quality_score = 0.0
+            request.price = 0.0
 
             self.response_queue.put([request, None, None])
             print(f"Server {action} at capacity. Request {request_id} failed.")
