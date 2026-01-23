@@ -1,0 +1,16 @@
+Write a short paragraph about queueing theory in LLM serving.
+
+---
+Explain KV-cache decoding and why it improves throughput. Keep it under 8 sentences.
+
+---
+Summarize the following topic in 5 bullet points: reinforcement learning for routing in heterogeneous LLM clusters.
+
+---
+Given a list of numbers, return their median and explain the steps: [1, 7, 3, 9, 2, 10, 4].
+
+---
+Write a careful explanation of why batching can increase throughput but also increase tail latency.
+
+---
+Provide a short code snippet in Python that computes Jain's fairness index for a list of positive numbers.

@@ -60,19 +60,33 @@ class Config:
         "mixtral-8x7b-instruct-v0.1" # open-mixtral-8x7b
     ]
 
+    # SERVICE_RATE = [
+    #     28,
+    #     28,
+    #     137,
+    #     163,
+    #     92,
+    #     40,
+    #     39,
+    #     105,
+    #     116,
+    #     136,
+    #     52,
+    #     102,  
+    # ]
     SERVICE_RATE = [
-        28,
-        28,
-        137,
-        163,
-        92,
-        40,
-        39,
-        105,
-        116,
-        136,
-        52,
-        102,  
+        1.414831,
+        1.678551,
+        2.500165,
+        2.617522,
+        2.770168,
+        2.821391,
+        3.031792,
+        3.415350,
+        3.625057,
+        3.885856,
+        4.959406,
+        5.876449
     ]
     
     PRICE = [
@@ -115,10 +129,11 @@ class Config:
     MAX_EPISODES = 200   # Increased for more training
     
     # Reward function weights - adjusted for better balance
-    ALPHA = 1/3   # Quality weight (increased importance)
-    BETA = 1/3    # Latency weight
-    REWARD_GAMMA = 1/3 # price weight (increased to emphasize cost)
+    ALPHA = 1   # Quality weight (increased importance)
+    BETA = 0    # Latency weight
+    REWARD_GAMMA = 0 # price weight (increased to emphasize cost)
     LAMBDA = 5  # Capacity penalty weight (increased to strongly discourage invalid actions)
+    MAX_LAT = 120
     
     # PPO hyperparameters - tuned for the routing problem
     LEARNING_RATE =1e-4  # Reduced for more stable learning
@@ -143,8 +158,8 @@ class Config:
     COMPLETION_CHECK_STEPS = 20  # Steps to wait for request completion at episode end
     
     # Device settings
-    GPU_LIST = [1]
-    DEVICE = torch.device("cuda:1")
+    GPU_LIST = [0]
+    DEVICE = torch.device("cuda:0")
     
     # Wandb settings
     WANDB_PROJECT = "enhanced-llm-router-ppo"
@@ -157,7 +172,7 @@ class Config:
     PLOT_INTERVAL = 50    # Plot progress every 50 episodes
     
     # Text generation settings (for actual LLM inference)
-    MAX_LENGTH = 100
+    MAX_LENGTH = 512
     TEMPERATURE = 0.7
     
     # Quality scoring settings
@@ -180,6 +195,15 @@ class Config:
         "qwen": (1, 2),      # Qwen latency range in seconds
         "default": (0.6, 1.1)    # Default latency range
     }
+
+    USE_ATTN_ROUTER = False
+    ATTN_D_MODEL = 256
+    ATTN_N_HEADS = 8
+    ATTN_N_LAYERS = 4
+    ATTN_FF_MULT = 4
+    ATTN_DROPOUT = 0.1
+    ATTN_USE_GLOBAL_TOKEN = True
+
     
     # Load factor settings
     MAX_LOAD_FACTOR = 1.5     # Maximum latency increase due to server load
@@ -190,7 +214,7 @@ class Config:
     FINAL_EVAL_EPISODES = 10  # Number of episodes for final evaluation
     
     # Poisson prompt generation settings
-    POISSON_ARRIVAL_RATE = 10  # Average arrival rate of prompts per second
+    POISSON_ARRIVAL_RATE = 5  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
     EPISODE_TIME_INTERVAL = 10  # Time interval for each episode in seconds
     
@@ -266,7 +290,11 @@ class Config:
     # Set 1 to disable.
     GREEDY_TOPK = 1
 
-    T = -2
+    T = -1
+    FAIR = 1 # 0..1, it will control how fair you want, 1 max, 0 min
+    MEAN_IN_FAIR_REWARD = False
+    T_QUEUE = 0.5
+    T_REWARD = 0.5
 
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL
@@ -365,9 +393,9 @@ class Config:
     #   "em"       : strict exact match (0/1)
     EM_METRIC = "f1"
 
-    # Optionally binarize the match score (useful if you want 0/1 reward)
+    # Optionally binarise the match score (useful if you want 0/1 reward)
     EM_BINARIZE = False
-    EM_THRESHOLD = 0.5
+    EM_THRESHOLD = 0.2
 
     @classmethod
     def get_config_summary(cls):

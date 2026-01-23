@@ -136,6 +136,7 @@ class EnhancedLLMRouterTrainer:
             'valid_actions': 0,
             'service_rate': [],
             'prices': [],
+            'queue_length': []
         }
         
         # Count processed prompts per server
@@ -164,6 +165,7 @@ class EnhancedLLMRouterTrainer:
 
         for req in record:
             episode_info['rewards'].append(req['reward'])
+            episode_info['queue_length'].append(req['queue_length'])
             if req['status'] == 'completed' and req['episode'] == self.current_episode:
                 episode_info['quality_scores'].append(req['quality_score'])
                 episode_info['latencies'].append(req['processing_latency'])
@@ -200,6 +202,8 @@ class EnhancedLLMRouterTrainer:
             return s
 
         state = build_state(self.env.reset())
+        self.env.clean_prompt_queue()
+        
         # state = [self.env.reset()[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + [1] * len(Config.SERVER_CAPACITIES) + price
 
         # state = [self.env.reset()[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + self.last_service_rate + price
@@ -239,6 +243,7 @@ class EnhancedLLMRouterTrainer:
             robin_counter = next_counter
             
             next_state, done = self.env.step(action, prompt, ground_truth)
+            queue_length = next_state.tolist()
 
             if Config.NAIVE_PPO:
                 state = build_state(next_state)
@@ -266,7 +271,8 @@ class EnhancedLLMRouterTrainer:
                 value=value,
                 reward=0,  # Placeholder, will be updated after episode
                 action_mask=action_mask,
-                service_rate=Config.SERVICE_RATE
+                service_rate=Config.SERVICE_RATE,
+                queue_length = queue_length
             )
         
         # Wait for all prompts to be processed
@@ -405,6 +411,40 @@ class EnhancedLLMRouterTrainer:
     #         return None
     #     return float((s1 * s1) / (arr.size * s2))
 
+    @staticmethod
+
+    def softmax_value(x, tau=Config.T_QUEUE):
+        """
+        softmax_tau(x) = tau * log( mean_i exp(x_i / tau) )
+        As tau -> 0, softmax_tau(x) -> max(x)
+        """
+        x = np.asarray(x, dtype=np.float64)
+        x = x[np.isfinite(x)]
+        if x.size == 0:
+            return None
+    
+        tau = max(float(tau), 1e-12)
+        z = x / tau
+        m = np.max(z)  # stability
+        return float(tau * (m + np.log(np.mean(np.exp(z - m)))))
+    
+    @staticmethod
+    
+    def softmin_value(x, tau=Config.T_REWARD):
+        """
+        softmin_tau(x) = -tau * log( mean_i exp(-x_i / tau) )
+        As tau -> 0, softmin_tau(x) -> min(x)
+        """
+        x = np.asarray(x, dtype=np.float64)
+        x = x[np.isfinite(x)]
+        if x.size == 0:
+            return None
+    
+        tau = max(float(tau), 1e-12)
+        z = -x / tau
+        m = np.max(z)  # stability
+        return float(-tau * (m + np.log(np.mean(np.exp(z - m)))))
+
     
     def train(self):
         """Main training loop"""
@@ -447,6 +487,7 @@ class EnhancedLLMRouterTrainer:
                     p50 = self.safe_percentile(lat_list, 50)
                     p90 = self.safe_percentile(lat_list, 90)
                     p99 = self.safe_percentile(lat_list, 99)
+                    p95 = self.safe_percentile(lat_list, 95)
                     
                     # Fairness: prefer COMPLETED per-server counts if you have them
                     # (best), otherwise fall back to attempted actions.
@@ -462,6 +503,7 @@ class EnhancedLLMRouterTrainer:
                         "total_reward": float(np.sum(episode_info['rewards'])) if episode_info.get('rewards') else None,
                         "mean_reward": float(np.mean(episode_info['rewards'])) if episode_info.get('rewards') else None,
                         "std_reward": float(np.std(episode_info['rewards'])) if episode_info.get('rewards') else None,
+                        "softmin_reward": self.softmin_value(episode_info['rewards']) if episode_info.get('rewards') else None,
                     
                         "policy_loss": training_metrics['policy_loss'] if training_metrics else None,
                         "value_loss": training_metrics['value_loss'] if training_metrics else None,
@@ -473,6 +515,7 @@ class EnhancedLLMRouterTrainer:
                         "p50": p50,
                         "p90": p90,
                         "p99": p99,
+                        'p95': p95,
                     
                         "Jain_fairness_index": fairness,
 
@@ -486,6 +529,7 @@ class EnhancedLLMRouterTrainer:
                         "returns": training_metrics['rewards_returns'] if training_metrics else None,
                         "term_returns": training_metrics['term_rewards_returns'] if training_metrics else None,
                         "min_rewards": training_metrics['min_rewards'] if training_metrics else None,
+                        "gap_rewards": float(np.max(episode_info['rewards']) - np.min(episode_info['rewards'])) if episode_info.get('rewards') else None,
                         "cumulated_avg_rewards_return": training_metrics['cumulated_avg_rewards'] if training_metrics else None,
                         "entropy of route distribution": training_metrics['entropy of route distribution'] if training_metrics else None,
                         "approx_kl": training_metrics['approx_kl'] if training_metrics else None,
@@ -496,6 +540,47 @@ class EnhancedLLMRouterTrainer:
                 if training_metrics and 'server_usage_percentage' in training_metrics:
                     for server_id, usage in training_metrics['server_usage_percentage'].items():
                         wandb.log({f"server_{server_id}_usage": usage}, step=episode)
+
+                if episode_info and episode_info.get("queue_length"):
+                    M = len(Config.SERVER_CAPACITIES)
+                    caps = np.asarray(Config.SERVER_CAPACITIES, dtype=np.float32)
+                    caps = np.maximum(caps, 1.0)  # avoid divide-by-zero
+                
+                    q_raw = episode_info["queue_length"]
+                
+                    # q_vec should be length-M (one value per server)
+                    # If q_raw is a history (T snapshots, each length-M), use the LAST snapshot.
+                    if isinstance(q_raw, (list, tuple, np.ndarray)) and len(q_raw) > 0 and isinstance(q_raw[0], (list, tuple, np.ndarray)):
+                        # history case: q_raw = [ [q1..qM], [q1..qM], ... ]
+                        q_vec = np.asarray(q_raw[-1], dtype=np.float32)
+                    else:
+                        # already per-server vector case: q_raw = [q1..qM]
+                        q_vec = np.asarray(q_raw, dtype=np.float32)
+                
+                    # Safety: ensure correct shape
+                    if q_vec.shape[0] == M:
+                        ratio_vec = q_vec / caps
+                        ratio_list = ratio_vec.tolist()
+                
+                        # ---- Per-server: ONLY length and ratio ----
+                        for server_id in range(M):
+                            wandb.log({f"queue_length/server_{server_id}_queue_length_ratio": float(ratio_vec[server_id])}, step=episode)
+                            wandb.log({f"queue_length/server_{server_id}_queue_length": float(q_vec[server_id])}, step=episode)
+                
+                        # ---- Others remain (summary) ----
+                        wandb.log({"queue_length/server_queue_length_ratio_p90": self.safe_percentile(ratio_list, 90)}, step=episode)
+                        wandb.log({"queue_length/server_queue_length_ratio_p50": self.safe_percentile(ratio_list, 50)}, step=episode)
+                        wandb.log({"queue_length/server_queue_length_ratio_p95": self.safe_percentile(ratio_list, 95)}, step=episode)
+                        wandb.log({"queue_length/server_queue_length_ratio_p99": self.safe_percentile(ratio_list, 99)}, step=episode)
+                
+                        max_ratio = float(np.max(ratio_vec))
+                        min_ratio = float(np.min(ratio_vec))
+                
+                        wandb.log({"queue_length/server_queue_length_ratio_mean": float(np.mean(ratio_vec))}, step=episode)
+                        wandb.log({"queue_length/server_queue_length_ratio_min": min_ratio}, step=episode)  # FIXED
+                        wandb.log({"queue_length/server_queue_length_ratio_max": max_ratio}, step=episode)  # FIXED
+                        wandb.log({"queue_length/server_queue_length_ratio_gap": max_ratio - min_ratio}, step=episode)
+                        wandb.log({"queue_length/server_queue_length_ratio_softmax": self.softmax_value(ratio_list)}, step=episode)
 
                 # Add server scores if available
                 # if training_metrics and 'each_server_score' in training_metrics:
