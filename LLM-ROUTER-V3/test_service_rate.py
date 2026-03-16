@@ -24,18 +24,49 @@ import pandas as pd
 # Your models (edit as needed)
 # --------------------------
 MODEL_NAMES = [
-    "allenai/Llama-3.1-Tulu-3-8B",
-    "meta-llama/Llama-3.1-8B-Instruct",
+    # 'meta-llama/Llama-2-13b-chat-hf',
+    # 'meta-llama/Meta-Llama-3-8B-Instruct',
+    'allenai/Llama-3.1-Tulu-3-8B',
+    'meta-llama/Llama-3.1-8B-Instruct',
+    # 'mistralai/Ministral-8B-Instruct-2410',
+    # 'mistralai/Mistral-7B-Instruct-v0.2',
+    # # "lmsys/fastchat-t5-3b-v1.0",
     "google/gemma-1.1-2b-it",
+    "google/gemma-7b",
+    # "google/gemma-2-2b-it",
+    # "google/gemma-2b-it",
+    # "ibm-granite/granite-3.0-2b-instruct",
+    # "ibm-granite/granite-3.1-2b-instruct",
+    # "meta-llama/Llama-3.2-1B-Instruct",
+    # "ibm-granite/granite-3.0-2b-instruct",
+    # "ibm-granite/granite-3.1-2b-instruct",
     "meta-llama/Llama-3.2-1B-Instruct",
     "meta-llama/Llama-3.2-3B-Instruct",
-    "gpt-4o-mini-2024-07-18",
-    "claude-3-5-haiku-20241022",
-    "claude-3-haiku-20240307",
+    # "microsoft/Phi-3-mini-128k-instruct",
+    # "microsoft/Phi-3-mini-4k-instruct",
+    # 'gpt-3.5-turbo-0125',
+    # # 'gpt-3.5-turbo-1106',
+    # 'gpt-4o-2024-08-06',
+    'gpt-4o-mini-2024-07-18',
+    'gpt-5-nano-2025-08-07',
+    'gpt-4.1-nano-2025-04-14',
+    # 'o3-mini',
+    # 'o1-mini',
+    # 'gemini-2.0-flash-001',
+    # 'gemini-2.0-flash-exp',
+    # 'gemini-1.5-flash-001',
+    # 'gemini-1.5-flash-002',
+    # 'gemini-1.5-flash-8b-001',
+    # 'claude-3-5-haiku-20241022',
+    # 'claude-3-haiku-20240307',
+    # 'claude-3-7-sonnet-20250219',
+    # 'claude-3-5-sonnet-20240620',
     "ministral-8b-2410",
-    "mistral-7b-instruct-v0.2",
-    "mixtral-8x7b-instruct-v0.1",
-    "mistral-medium",
+    "mistral-7b-instruct-v0.2", # open-mistral-7b
+    "mistral-medium",  # mistral-medium-2508
+    # "mistral-small-24b-instruct-2501", # mistral-small-2501
+    # "mixtral-8x22b-instruct-v0.1", # open-mixtral-8x22b
+    "mixtral-8x7b-instruct-v0.1" # open-mixtral-8x7b
 ]
 
 # HF-ish -> Mistral API model IDs

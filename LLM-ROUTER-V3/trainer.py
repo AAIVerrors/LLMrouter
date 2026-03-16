@@ -38,10 +38,21 @@ class EnhancedLLMRouterTrainer:
         self.current_episode = 0  
         # Initialize PPO agent
         M = len(Config.SERVER_CAPACITIES)
-        include_quality_state = bool(getattr(Config, 'INCLUDE_QUALITY_IN_STATE', True)) and not bool(getattr(Config, 'USE_EM_EXACT_MATCH', False))
-        state_dim = M * (4 if include_quality_state else 3)
-        action_dim = M  # Number of servers
+
+        include_quality_state = bool(getattr(Config, "INCLUDE_QUALITY_IN_STATE", True)) and not bool(
+            getattr(Config, "USE_EM_EXACT_MATCH", False)
+        )
+        
+        # queue part length depends on USE_UTIL
+        # USE_UTIL=True  -> util(M)
+        # USE_UTIL=False -> load(M) + capacity(M) = 2M
+        # ---- State dimension for flat *interleaved* per-server features ----
+        # Per-server features: util, mu, (optional q), price_in, price_out
+        per_server_dim = 2 + (1 if include_quality_state else 0) + 2
+        state_dim = M * per_server_dim
+        action_dim = M
         self.agent = PPOAgent(state_dim, action_dim)
+
         
         # Initialize wandb based on config
         self.wandb_available = False
@@ -131,11 +142,14 @@ class EnhancedLLMRouterTrainer:
             'rewards': [],
             'quality_scores': [],
             'latencies': [],
+            'latencies_clipped': [],
+            'latencies_norm': [],
             'capacity_penalties': [],
             'invalid_actions': 0,
             'valid_actions': 0,
             'service_rate': [],
             'prices': [],
+            'prices_norm': [],
             'queue_length': []
         }
         
@@ -168,8 +182,13 @@ class EnhancedLLMRouterTrainer:
             episode_info['queue_length'].append(req['queue_length'])
             if req['status'] == 'completed' and req['episode'] == self.current_episode:
                 episode_info['quality_scores'].append(req['quality_score'])
-                episode_info['latencies'].append(req['processing_latency'])
-                episode_info['prices'].append(req['price'])
+                episode_info['latencies'].append(req.get('processing_latency_raw', req.get('processing_latency')))
+                episode_info['latencies_clipped'].append(req.get('processing_latency_clipped', req.get('processing_latency')))
+                if req.get('processing_latency_norm') is not None:
+                    episode_info['latencies_norm'].append(req.get('processing_latency_norm'))
+                episode_info['prices'].append(req.get('price_raw', req.get('price')))
+                if req.get('price_norm') is not None:
+                    episode_info['prices_norm'].append(req.get('price_norm'))
                 
             if req['status'] == 'completed' and req['episode'] == self.current_episode:
                 episode_info['valid_actions'] += 1
@@ -187,20 +206,39 @@ class EnhancedLLMRouterTrainer:
     def run_episode(self) -> dict:
         """Run a single episode using Poisson prompt generator"""
         
-        price = [((a[0] + a[1]) / 2) for a in Config.PRICE]  # avg price per server
-
         M = len(Config.SERVER_CAPACITIES)
         include_quality_state = bool(getattr(Config, 'INCLUDE_QUALITY_IN_STATE', True)) and not bool(getattr(Config, 'USE_EM_EXACT_MATCH', False))
 
         def build_state(loads):
-            # loads: per-server queue lengths (from env)
-            util = [float(loads[i]) / float(c) for i, c in enumerate(Config.SERVER_CAPACITIES)]
-            s = util + list(Config.SERVICE_RATE)
-            if include_quality_state:
-                s += [1.0] * M
-            s += price
-            return s
+            """Build **flat** state vector with per-server interleaved features.
 
+            Per-server layout (concatenated for i=0..M-1):
+              [ util_i, mu_i, price_in_i, price_out_i ]   (F = 4)
+
+            Returns:
+              np.ndarray of shape [M * 4]
+            """
+            M = len(Config.SERVER_CAPACITIES)
+
+            # prices are tuples: (input_price, output_price)
+            price_in = [float(a[0]) for a in Config.PRICE]
+            price_out = [float(a[1]) for a in Config.PRICE]
+
+            feats_flat = []
+            for i in range(M):
+                cap = float(Config.SERVER_CAPACITIES[i])
+                load = float(loads[i])
+                util = load / max(cap, 1.0)
+                mu = float(Config.SERVICE_RATE[i])
+
+                feats_flat.extend([util, mu, price_in[i], price_out[i]])
+
+            # sanity check
+            expected_len = M * 4
+            if len(feats_flat) != expected_len:
+                raise ValueError(f"build_state length mismatch: got {len(feats_flat)}, expected {expected_len} (M={M}, F=4).")
+
+            return np.array(feats_flat, dtype=np.float32)   # [M * 4]
         state = build_state(self.env.reset())
         self.env.clean_prompt_queue()
         
@@ -299,24 +337,80 @@ class EnhancedLLMRouterTrainer:
             if i < len(self.buffer.current_episode):
                 self.buffer.current_episode[i]['reward'] = req['reward']
                 
-        # normalize latency, price and then recompute rewards
-        # if len(episode_record) > 0:
-        #     latencies = np.array([req['processing_latency'] for req in episode_record])
-        #     prices = np.array([req['price'] for req in episode_record])
-        #     if len(latencies) > 1:
-        #         lat_mean, lat_std = latencies.mean(), latencies.std()
-        #         prices_mean, prices_std = prices.mean(), prices.std()
-        #         for i, req in enumerate(episode_record):
-        #             norm_latency = (req['processing_latency'] - lat_mean) / (lat_std + 1e-8) if lat_std > 0 else 0
-        #             req['processing_latency'] = norm_latency
-        #             norm_price = (req['price'] - prices_mean) / (prices_std + 1e-8) if prices_std > 0 else 0
-        #             req['price'] = norm_price
-        #             # Recompute reward with normalized latency and price
-        #             req['reward'] = Config.ALPHA * req['quality_score'] - Config.BETA * norm_latency - Config.REWARD_GAMMA * norm_price
-        #             # Update buffer as well
-        #             if i < len(self.buffer.current_episode):
-        #                 self.buffer.current_episode[i]['reward'] = req['reward']
-        
+        # Optional: per-round min-max normalization for latency and price, then recompute rewards.
+        # This keeps raw fields (processing_latency / price) unchanged for logging, and only overwrites req['reward'].
+        if getattr(Config, "ROUND_MINMAX_NORM_ENABLE", False) and len(episode_record) > 0:
+            eps = float(getattr(Config, "ROUND_MINMAX_NORM_EPS", 1e-8))
+            clip01 = bool(getattr(Config, "ROUND_MINMAX_CLIP_01", True))
+            norm_lat = bool(getattr(Config, "ROUND_MINMAX_NORM_LATENCY", True))
+            norm_price = bool(getattr(Config, "ROUND_MINMAX_NORM_PRICE", True))
+            only_completed = bool(getattr(Config, "ROUND_MINMAX_ONLY_COMPLETED", True))
+            use_price_raw = bool(getattr(Config, "ROUND_MINMAX_USE_PRICE_RAW_IF_AVAILABLE", True))
+
+            idxs = []
+            lats = []
+            prices = []
+
+            for i, req in enumerate(episode_record):
+                if only_completed and req.get("status") != "completed":
+                    continue
+
+                lat = req.get("processing_latency", None)
+                if lat is None or (not np.isfinite(lat)):
+                    continue
+
+                # Prefer unscaled price if provided by the environment.
+                if use_price_raw and ("price_raw" in req) and (req.get("price_raw") is not None):
+                    pr = req.get("price_raw", 0.0)
+                else:
+                    pr = req.get("price", 0.0)
+                if pr is None or (not np.isfinite(pr)):
+                    pr = 0.0
+
+                pr_base = float(pr)
+
+                idxs.append(i)
+                lats.append(float(lat))
+                prices.append(float(pr_base))
+
+            def _minmax(arr):
+                if len(arr) == 0:
+                    return []
+                a = np.asarray(arr, dtype=np.float64)
+                mn = float(np.min(a))
+                mx = float(np.max(a))
+                if (mx - mn) < eps:
+                    out = np.zeros_like(a)
+                else:
+                    out = (a - mn) / (mx - mn + eps)
+                if clip01:
+                    out = np.clip(out, 0.0, 1.0)
+                return out.tolist()
+
+            lat_norms = _minmax(lats) if norm_lat else [0.0] * len(lats)
+            price_norms = _minmax(prices) if norm_price else [0.0] * len(prices)
+
+            for k, i in enumerate(idxs):
+                req = episode_record[i]
+                q = float(req.get("quality_score", 0.0) or 0.0)
+                reward = float(getattr(Config, "ALPHA", 1.0)) * q
+
+                if norm_lat:
+                    req["processing_latency_norm"] = float(lat_norms[k])
+                    reward -= float(getattr(Config, "BETA", 0.0)) * float(lat_norms[k])
+
+                if norm_price:
+                    req["price_norm"] = float(price_norms[k])
+                    reward -= float(getattr(Config, "REWARD_GAMMA", 0.0)) * float(price_norms[k])
+
+                clip = getattr(Config, "REWARD_CLIP", None)
+                if clip is not None and clip > 0:
+                    reward = float(max(min(reward, clip), -clip))
+
+                req["reward"] = float(reward)
+                if i < len(self.buffer.current_episode):
+                    self.buffer.current_episode[i]["reward"] = float(reward)
+
         # Update greedy utility history (EMA latency/cost, optional queue-conditioned stats).
         # Safe no-op if the agent does not implement update_server_stats.
         try:
@@ -517,6 +611,9 @@ class EnhancedLLMRouterTrainer:
                         "p99": p99,
                         'p95': p95,
                     
+                        "latencies_clipped": float(np.mean(episode_info['latencies_clipped'])) if episode_info.get('latencies_clipped') else None,
+                        "latencies_norm": float(np.mean(episode_info['latencies_norm'])) if episode_info.get('latencies_norm') else None,
+                        "price_norm": float(np.mean(episode_info['prices_norm'])) if episode_info.get('prices_norm') else None,
                         "Jain_fairness_index": fairness,
 
                         'valid_total_request_ratio': episode_info.get('valid_actions', None)/episode_info.get('episode_length', None),

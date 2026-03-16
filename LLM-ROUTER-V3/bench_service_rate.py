@@ -32,22 +32,37 @@ import pandas as pd
 
 # --------------------------
 # Default models (edit as needed)
-# --------------------------
-MODEL_NAMES = [
-    "allenai/Llama-3.1-Tulu-3-8B",
-    "meta-llama/Llama-3.1-8B-Instruct",
-    "google/gemma-1.1-2b-it",
-    "meta-llama/Llama-3.2-1B-Instruct",
-    "meta-llama/Llama-3.2-3B-Instruct",
-    "gpt-4o-mini-2024-07-18",
-    "claude-3-5-haiku-20241022",
-    "claude-3-haiku-20240307",
-    "ministral-8b-2410",
-    "mistral-7b-instruct-v0.2",
-    "mixtral-8x7b-instruct-v0.1",
-    "mistral-medium",
-]
 
+MODEL_NAMES = [
+    # "gpt-5-2025-08-07",
+    # "gpt-5-mini-2025-08-07",
+    # "gpt-5-nano-2025-08-07",
+    # 'gpt-4o-mini-2024-07-18',
+    # 'gpt-5-nano-2025-08-07',
+    'gpt-4.1-2025-04-14',
+    "gpt-4.1-mini-2025-04-14",
+    "gpt-4.1-nano-2025-04-14",
+    "ministral-8b-2410",
+    # "mistralai/Ministral-8B-Instruct-2410",
+    "mistral-7b-instruct-v0.2", # open-mistral-7b
+    # "mistralai/Mistral-7B-Instruct-v0.3",
+    "mistral-medium",  # mistral-medium-2508
+    "mixtral-8x7b-instruct-v0.1", # open-mixtral-8x7b
+    
+    "mistral-large-2512",
+    "mistral-large-2411",
+    "labs-mistral-small-creative",
+    "mistral-medium-2505",
+    
+    "mistral-small-2506",
+    "magistral-medium-2509",
+    "ministral-14b-2512",
+    # "mistralai/Ministral-3-14B-Instruct-2512",
+    "ministral-3b-2512",
+    # "mistralai/Ministral-3-3B-Instruct-2512",
+    "magistral-small-2509"
+]
+    
 # HF-ish -> Mistral API model IDs
 MISTRAL_NAME_MAP = {
     "mistral-7b-instruct-v0.2": "open-mistral-7b",
@@ -97,7 +112,7 @@ def infer_backend(model: str) -> str:
         return "openai"
     if m.startswith("claude-"):
         return "anthropic"
-    if ("mistral" in m) or ("mixtral" in m) or ("ministral" in m):
+    if ("mistral" in m) or ("mixtral" in m) or ("ministral" in m) or ("magistral" in m):
         return "mistral"
     return "hf"
 
@@ -337,14 +352,27 @@ def bench_openai(model: str, prompt: str, max_new_tokens: int, repeats: int) -> 
         usage = None
 
         try:
-            stream = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=max_new_tokens,
-                temperature=0.0,
-                stream=True,
-                stream_options={"include_usage": True},
-            )
+            try:
+                stream = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=max_new_tokens,
+                    stream=True,
+                    stream_options={"include_usage": True},
+                )
+            except Exception as e1:
+                # Fallback: some models (e.g., GPT-5 family) require `max_completion_tokens`
+                msg = str(e1)
+                if ("max_tokens" in msg and "max_completion_tokens" in msg) or ("Unsupported parameter" in msg and "max_tokens" in msg):
+                    stream = client.chat.completions.create(
+                        model=model,
+                        messages=[{"role": "user", "content": prompt}],
+                        max_completion_tokens=max_new_tokens,
+                        stream=True,
+                        stream_options={"include_usage": True},
+                    )
+                else:
+                    raise
 
             for chunk in stream:
                 choices = getattr(chunk, "choices", None) or []
@@ -430,7 +458,6 @@ def bench_anthropic(model: str, prompt: str, max_new_tokens: int, repeats: int) 
             with client.messages.stream(
                 model=model,
                 max_tokens=max_new_tokens,
-                temperature=0.0,
                 messages=[{"role": "user", "content": prompt}],
             ) as s:
                 for event in s:
@@ -503,7 +530,6 @@ def bench_mistral(model: str, prompt: str, max_new_tokens: int, repeats: int, st
                 model=api_model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=max_new_tokens,
-                temperature=0.0,
             )
         except Exception as e:
             return BenchResult(model=model, backend="error", device="api", note=f"mistral request failed: {e}")
@@ -524,6 +550,7 @@ def bench_mistral(model: str, prompt: str, max_new_tokens: int, repeats: int, st
         out_tok_list.append(ot)
         chars_list.append(len(text))
 
+        # Optional TTFT via streaming probe (not the same request; just a quick estimate)
         if stream_ttft:
             tS = now()
             first = None
@@ -532,7 +559,6 @@ def bench_mistral(model: str, prompt: str, max_new_tokens: int, repeats: int, st
                     model=api_model,
                     messages=[{"role": "user", "content": prompt}],
                     max_tokens=min(32, max_new_tokens),
-                    temperature=0.0,
                 )
                 for _chunk in stream:
                     if first is None:
@@ -553,6 +579,9 @@ def bench_mistral(model: str, prompt: str, max_new_tokens: int, repeats: int, st
 
     if res.output_tokens is not None and res.e2e_s is not None:
         res.e2e_toks_per_s = res.output_tokens / res.e2e_s
+        # If TTFT isn't measured, provide a reasonable decode_tps proxy.
+        if res.decode_toks_per_s is None:
+            res.decode_toks_per_s = res.e2e_toks_per_s
 
     res.chars = int(np.median(chars_list)) if chars_list else None
     res.chars_per_s = safe_div(res.chars, res.e2e_s)
@@ -570,10 +599,20 @@ def bench_mistral(model: str, prompt: str, max_new_tokens: int, repeats: int, st
 # Summary: service rate per model
 # --------------------------
 def compute_service_rate_summary(df_runs: pd.DataFrame) -> pd.DataFrame:
+    # Only summarize rows with finite e2e_s; skip "error" groups cleanly.
     rows = []
     for (model, backend), g in df_runs.groupby(["model", "backend"], dropna=False):
-        e2e = [x for x in g["e2e_s"].tolist()]
-        w = g["prompt_weight"].fillna(1.0).astype(float).tolist()
+        if str(backend) == "error":
+            continue
+        e2e_col = pd.to_numeric(g["e2e_s"], errors="coerce")
+        w_col = pd.to_numeric(g.get("prompt_weight", 1.0), errors="coerce").fillna(1.0)
+
+        mask = e2e_col.notna() & np.isfinite(e2e_col)
+        if int(mask.sum()) == 0:
+            continue
+
+        e2e = e2e_col[mask].astype(float).tolist()
+        w = w_col[mask].astype(float).tolist()
 
         mean_s = weighted_mean_or_none(e2e, w)
         mu = (1.0 / mean_s) if (mean_s is not None and mean_s > 0) else None
@@ -585,15 +624,15 @@ def compute_service_rate_summary(df_runs: pd.DataFrame) -> pd.DataFrame:
         mu_list = [(1.0 / x) for x in service_times if x > 0]
         mu_p50 = float(np.median(mu_list)) if mu_list else None
 
-        e2e_tps_list = [x for x in g["e2e_toks_per_s"].tolist() if x is not None and np.isfinite(x)]
-        decode_tps_list = [x for x in g["decode_toks_per_s"].tolist() if x is not None and np.isfinite(x)]
-        ttft_list = [x for x in g["ttft_s"].tolist() if x is not None and np.isfinite(x)]
+        e2e_tps_list = [x for x in pd.to_numeric(g.loc[mask, "e2e_toks_per_s"], errors="coerce").tolist() if x is not None and np.isfinite(x)]
+        decode_tps_list = [x for x in pd.to_numeric(g.loc[mask, "decode_toks_per_s"], errors="coerce").tolist() if x is not None and np.isfinite(x)]
+        ttft_list = [x for x in pd.to_numeric(g.loc[mask, "ttft_s"], errors="coerce").tolist() if x is not None and np.isfinite(x)]
 
         rows.append({
             "model": model,
             "backend": backend,
-            "n_prompts": int(g["prompt_id"].nunique()),
-            "n_rows": int(len(g)),
+            "n_prompts": int(g.loc[mask, "prompt_id"].nunique()) if "prompt_id" in g.columns else None,
+            "n_rows": int(mask.sum()),
             "mean_service_time_s_weighted": mean_s,
             "service_rate_mu_rps": mu,
             "service_time_p50_s": p50_s,
@@ -728,10 +767,19 @@ def main():
 
     df = pd.DataFrame([asdict(r) for r in results])
 
-    # Fill decode_toks_per_s if missing and we have token usage + ttft/e2e
+    # Fill decode_toks_per_s if missing:
+    # 1) if we have output_tokens + ttft/e2e
     if {"decode_toks_per_s","output_tokens","e2e_s","ttft_s"}.issubset(df.columns):
         mask = df["decode_toks_per_s"].isna() & df["output_tokens"].notna() & df["e2e_s"].notna() & df["ttft_s"].notna()
         df.loc[mask, "decode_toks_per_s"] = df.loc[mask, "output_tokens"] / (df.loc[mask, "e2e_s"] - df.loc[mask, "ttft_s"]).clip(lower=1e-9)
+
+    # 2) fallback if ttft is unavailable (e.g., Mistral non-stream): decode_tps ≈ out_tokens / e2e
+    if {"decode_toks_per_s","output_tokens","e2e_s"}.issubset(df.columns):
+        mask2 = df["decode_toks_per_s"].isna() & df["output_tokens"].notna() & df["e2e_s"].notna()
+        df.loc[mask2, "decode_toks_per_s"] = df.loc[mask2, "output_tokens"] / df.loc[mask2, "e2e_s"].clip(lower=1e-9)
+        # annotate note
+        if "note" in df.columns:
+            df.loc[mask2, "note"] = (df.loc[mask2, "note"].fillna("").astype(str) + "; decode_tps≈out/e2e(no_ttft)").str.lstrip("; ")
 
     df.to_csv(args.out, index=False)
     print(f"\nSaved per-run CSV: {args.out}")
@@ -745,9 +793,10 @@ def main():
         tmp = summary.copy()
         tmp["service_rate_mu_rps"] = pd.to_numeric(tmp["service_rate_mu_rps"], errors="coerce")
         tmp = tmp.sort_values("service_rate_mu_rps", ascending=False).head(30)
-        print(tmp.to_string(index=False))
+        # prettier console print: avoid "NaN" spam
+        print(tmp.replace({np.nan: ""}).to_string(index=False))
     else:
-        print(summary.to_string(index=False))
+        print(summary.replace({np.nan: ""}).to_string(index=False))
 
     if args.plot_png:
         maybe_plot_summary(args.summary_out, args.plot_png, args.plot_topk)

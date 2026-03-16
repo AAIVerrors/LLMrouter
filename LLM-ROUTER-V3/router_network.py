@@ -71,6 +71,12 @@ class RouterNetwork(nn.Module):
         Actor outputs 1 logit per server token.
         Critic pools tokens.
       - Else: your original MLP trunk.
+
+    Prompt encoder:
+      - Config.PROMPT_MODEL chooses SentenceTransformer model.
+      - Config.USE_PROMPT_PROJECTION:
+          False => use raw SentenceTransformer embedding (no projection)
+          True  => apply a learned projection emb_dim -> prompt_dim
     """
     def __init__(
         self,
@@ -78,8 +84,8 @@ class RouterNetwork(nn.Module):
         action_dim: int,
         hidden_dim: int = Config.HIDDEN_DIM,
         prompt_dim: int = 64,
-        trunk_depth: int = 4,
-        head_depth: int = 3,
+        trunk_depth: int = 6,
+        head_depth: int = 4,
         dropout: float = 0.1,
         prompt_model: str = "all-MiniLM-L6-v2",
         freeze_prompt_encoder: bool = True,
@@ -87,22 +93,34 @@ class RouterNetwork(nn.Module):
         super().__init__()
         self.state_dim = state_dim
         self.action_dim = action_dim
-        self.prompt_dim = prompt_dim
+        # self.prompt_dim is set below (after deciding projection)
 
         # Prompt encoder (optionally frozen)
-        self.prompt_encoder = SentenceTransformer(prompt_model)
+        self.prompt_encoder = SentenceTransformer(getattr(Config, 'PROMPT_MODEL', prompt_model))
         self.prompt_encoder.eval()
         if freeze_prompt_encoder:
             for p in self.prompt_encoder.parameters():
                 p.requires_grad = False
 
-        # 384 -> hidden_dim -> prompt_dim
-        self.prompt_projection = nn.Sequential(
-            nn.Linear(384, hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, prompt_dim),
-        )
+        # Prompt embedding + optional projection
+        # SentenceTransformer outputs emb_dim (model-specific, e.g. 384 for all-MiniLM-L6-v2).
+        self.prompt_emb_dim = int(getattr(self.prompt_encoder, "get_sentence_embedding_dimension", lambda: 384)())
+
+        # If False: use raw SentenceTransformer embedding directly (NO projection).
+        # If True: learn a small projection emb_dim -> prompt_dim.
+        self.use_prompt_projection = bool(getattr(Config, "USE_PROMPT_PROJECTION", False))
+        if self.use_prompt_projection:
+            # emb_dim -> hidden_dim -> prompt_dim
+            self.prompt_projection = nn.Sequential(
+                nn.Linear(self.prompt_emb_dim, hidden_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, prompt_dim),
+            )
+            self.prompt_dim = int(prompt_dim)
+        else:
+            self.prompt_projection = None
+            self.prompt_dim = int(self.prompt_emb_dim)
 
         # Feature flags used by queue-score mix branch too
         self.include_quality_state = bool(getattr(Config, "INCLUDE_QUALITY_IN_STATE", True)) and not bool(
@@ -111,6 +129,8 @@ class RouterNetwork(nn.Module):
 
         # Attention mode
         self.use_attn = bool(getattr(Config, "USE_ATTN_ROUTER", False))
+        # Per-server feature dim (util, mu, price_in, price_out)
+        self.server_feat_dim = 4
         if self.use_attn:
             self.M = int(action_dim)  # typically == len(Config.MODEL_NAMES)
 
@@ -126,24 +146,16 @@ class RouterNetwork(nn.Module):
 
             self.d_model = d_model
 
-            # Infer whether quality/price blocks exist from state_dim
-            off = 2 * self.M
-            has_quality = self.include_quality_state and (state_dim >= off + self.M)
-            if has_quality:
-                off += self.M
-            has_price = (state_dim >= off + self.M)
-            if has_price:
-                off += self.M
-
-            self.has_quality = has_quality
-            self.has_price = has_price
-            self.global_dim = max(state_dim - off, 0)
-
-            # server feature dim = util + mu + (qual?) + (price?)
-            self.server_feat_dim = 2 + (1 if has_quality else 0) + (1 if has_price else 0)
+            # Flat, per-server interleaved state layout:
+            #   state_flat = concat_i [util_i, mu_i, price_in_i, price_out_i]
+            # So per-server feature dim F = 4.
+            self.has_quality = False
+            self.has_price = True
+            self.global_dim = 0
+            self.server_feat_dim = 4
 
             self.server_feat_proj = nn.Linear(self.server_feat_dim, d_model)
-            self.prompt_token_proj = nn.Linear(prompt_dim, d_model)
+            self.prompt_token_proj = nn.Linear(self.prompt_dim, d_model)
             self.global_token_proj = nn.Linear(self.global_dim, d_model) if (self.use_global_token and self.global_dim > 0) else None
 
             # learned positional embedding
@@ -163,11 +175,24 @@ class RouterNetwork(nn.Module):
             self.critic_mlp = make_mlp(d_model, d_model, 1, depth=3, dropout=attn_drop)
 
         else:
-            # Original MLP trunk
-            trunk_in = state_dim + prompt_dim
-            self.trunk = make_mlp(trunk_in, hidden_dim, hidden_dim, depth=trunk_depth, dropout=dropout)
-            self.actor = make_mlp(hidden_dim, hidden_dim, action_dim, depth=head_depth, dropout=dropout)
-            self.critic = make_mlp(hidden_dim, hidden_dim, 1, depth=head_depth, dropout=dropout)
+            self.M = int(action_dim)  # number of servers/actions
+            # If True: keep **flat** input externally, but internally reshape to [B,M,F]
+            # and use a shared per-server MLP to output one logit per server (like attention router semantics).
+            self.use_serverwise_mlp = bool(getattr(Config, "USE_SERVERWISE_MLP", True))
+
+            if self.use_serverwise_mlp:
+                trunk_in = int(self.server_feat_dim + self.prompt_dim)  # per-server feat + prompt
+                self.server_in_ln = nn.LayerNorm(trunk_in)
+                self.server_mlp = make_mlp(trunk_in, hidden_dim, hidden_dim, depth=trunk_depth, dropout=dropout)
+                self.server_actor = make_mlp(hidden_dim, hidden_dim, 1, depth=head_depth, dropout=dropout)
+                self.server_critic = make_mlp(hidden_dim, hidden_dim, 1, depth=head_depth, dropout=dropout)
+            else:
+                # Original flat MLP trunk
+                trunk_in = state_dim + self.prompt_dim
+                self.in_ln = nn.LayerNorm(trunk_in)
+                self.trunk = make_mlp(trunk_in, hidden_dim, hidden_dim, depth=trunk_depth, dropout=dropout)
+                self.actor = make_mlp(hidden_dim, hidden_dim, action_dim, depth=head_depth, dropout=dropout)
+                self.critic = make_mlp(hidden_dim, hidden_dim, 1, depth=head_depth, dropout=dropout)
 
         self._init_weights()
 
@@ -179,7 +204,7 @@ class RouterNetwork(nn.Module):
                     nn.init.zeros_(m.bias)
 
     @torch.no_grad()
-    def _encode_prompts_to_384(self, prompts):
+    def _encode_prompts(self, prompts):
         # normalize to list[str]
         if isinstance(prompts, str):
             prompts = [prompts]
@@ -203,23 +228,46 @@ class RouterNetwork(nn.Module):
 
         emb = self.prompt_encoder.encode(
             prompts,
-            convert_to_numpy=True,         
+            convert_to_numpy=True,
             show_progress_bar=False,
-        )  # (N, 384) numpy array
+        )  # (N, emb_dim) numpy array
 
         emb = np.asarray(emb, dtype=np.float32)
-        return torch.from_numpy(emb)       # <-- normal CPU tensor (NOT inference tensor)
+        return torch.from_numpy(emb)       # CPU tensor (no autograd through encoder)
+
+    # def encode_prompt(self, prompts):
+    #     """Return prompt embedding tensor of shape [N, prompt_dim].
+
+    #     - If Config.USE_PROMPT_PROJECTION=True: returns projected embedding (trainable).
+    #     - Else: returns raw SentenceTransformer embedding (frozen encoder by default).
+    #     """
+    #     emb_st = self._encode_prompts(prompts)  # [N, emb_dim] on CPU
+
+    #     # move to same device/dtype as the rest of the network
+    #     device = next(self.parameters()).device
+    #     dtype = next(self.parameters()).dtype
+    #     emb_st = emb_st.to(device=device, dtype=dtype, non_blocking=True)
+
+    #     if self.prompt_projection is None:
+    #         return emb_st  # [N, emb_dim]
+
+    #     return self.prompt_projection(emb_st)  # [N, prompt_dim]
 
     def encode_prompt(self, prompts):
-        emb_384 = self._encode_prompts_to_384(prompts)
+        emb_st = self._encode_prompts(prompts)  # [N, emb_dim] CPU
+    
+        device = next(self.parameters()).device
+        dtype = next(self.parameters()).dtype
+        emb_st = emb_st.to(device=device, dtype=dtype, non_blocking=True)
+    
+        # ---- ADD THIS: L2 normalize to unit norm ----
+        emb_st = emb_st / (emb_st.norm(p=2, dim=-1, keepdim=True) + 1e-12)
+    
+        if self.prompt_projection is None:
+            return emb_st
+    
+        return self.prompt_projection(emb_st)
 
-        device = next(self.prompt_projection.parameters()).device
-        dtype = next(self.prompt_projection.parameters()).dtype
-
-        emb_384 = emb_384.to(device=device, dtype=dtype, non_blocking=True)
-
-        # Now this is safe for autograd through prompt_projection
-        return self.prompt_projection(emb_384)  # [N, prompt_dim]
 
     def _build_server_tokens(self, state: torch.Tensor):
         """
@@ -229,34 +277,25 @@ class RouterNetwork(nn.Module):
           global_token: [B, 1, d_model] or None
         """
         B = state.shape[0]
-        M = self.M
 
-        util = state[:, :M]  # [B, M]
-        mu = state[:, M:2*M] if state.shape[1] >= 2*M else torch.zeros(B, M, device=state.device)
 
-        off = 2 * M
-        qual = None
-        if self.has_quality:
-            qual = state[:, off:off+M]
-            off += M
+        M = int(self.M)
+        F = int(self.server_feat_dim)
 
-        price = None
-        if self.has_price:
-            price = state[:, off:off+M]
-            off += M
+        # Expect flat state: [B, M*F]
+        if state.dim() == 1:
+            state = state.unsqueeze(0)
+        B = state.shape[0]
 
-        feats = [util.unsqueeze(-1), mu.unsqueeze(-1)]
-        if qual is not None:
-            feats.append(qual.unsqueeze(-1))
-        if price is not None:
-            feats.append(price.unsqueeze(-1))
-        server_feat = torch.cat(feats, dim=-1)  # [B, M, server_feat_dim]
+        if state.shape[1] != M * F:
+            raise ValueError(f"Flat state_dim mismatch in attention router: got {state.shape[1]}, expected {M*F} (M={M}, F={F})")
+
+        # Reshape to per-server features: [B, M, F] where F=4 => [util, mu, price_in, price_out]
+        server_feat = state.view(B, M, F)
+
         server_tokens = self.server_feat_proj(server_feat)  # [B, M, d_model]
 
-        global_token = None
-        if self.global_token_proj is not None:
-            g = state[:, off:]  # [B, global_dim]
-            global_token = self.global_token_proj(g).unsqueeze(1)  # [B, 1, d_model]
+        global_token = None  # no global token for this flat layout
 
         return server_tokens, global_token
 
@@ -282,10 +321,32 @@ class RouterNetwork(nn.Module):
             p = p[:1].expand(B, -1)
 
         if not self.use_attn:
-            x = torch.cat([state, p], dim=-1)  # [B, state_dim + prompt_dim]
-            h = self.trunk(x)                  # [B, hidden_dim]
-            logits = self.actor(h)             # [B, action_dim]
-            value = self.critic(h)             # [B, 1]
+            if getattr(self, "use_serverwise_mlp", False):
+                # Flat state -> reshape to per-server features
+                # state: [B, M*F] where F=self.server_feat_dim
+                F = int(self.server_feat_dim)
+                M = int(self.M)
+                if state.shape[1] != M * F:
+                    raise ValueError(f"Flat state_dim mismatch: got {state.shape[1]}, expected {M*F} (M={M}, F={F})")
+                s = state.view(B, M, F)  # [B, M, F]
+
+                # broadcast prompt to each server
+                p_srv = p.unsqueeze(1).expand(B, M, p.shape[-1])  # [B, M, prompt_dim]
+                x = torch.cat([s, p_srv], dim=-1)  # [B, M, F+prompt_dim]
+                x = self.server_in_ln(x)
+
+                h = self.server_mlp(x)  # [B, M, hidden_dim]
+                logits = self.server_actor(h).squeeze(-1)  # [B, M]
+
+                h_pool = h.mean(dim=1)  # [B, hidden_dim]
+                value = self.server_critic(h_pool)  # [B, 1]
+            else:
+                # Original flat MLP trunk
+                x = torch.cat([state, p], dim=-1)  # [B, state_dim + prompt_dim]
+                x = self.in_ln(x)
+                h = self.trunk(x)                  # [B, hidden_dim]
+                logits = self.actor(h)             # [B, action_dim]
+                value = self.critic(h)             # [B, 1]
         else:
             # tokens = [PROMPT] (+[GLOBAL]) + [SERVERS]
             prompt_tok = self.prompt_token_proj(p).unsqueeze(1)  # [B, 1, d_model]
@@ -426,14 +487,351 @@ class RouterNetwork(nn.Module):
         return torch.FloatTensor(scores).to(Config.DEVICE)
 
 
+
+# =========================================================
+# LLM-backed router policy (optional)
+# =========================================================
+try:
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+except Exception:
+    AutoModelForCausalLM = None
+    AutoTokenizer = None
+
+
+class LLMRouterNetwork(nn.Module):
+    """
+    Use a HuggingFace causal LM as an encoder, and learn small actor/critic heads on top.
+
+    Inputs (same information as your current router):
+      - numeric state vector (queue / service-rate / quality / price features)
+      - the user prompt text
+
+    Output:
+      - logits over servers (action_dim)
+      - value estimate (critic)
+
+    NOTE:
+      - This is MUCH heavier than the MLP router. Keep ROUTER_LLM_FREEZE_BASE=True for feasibility.
+    """
+    def __init__(self, state_dim: int, action_dim: int):
+        super().__init__()
+        if AutoModelForCausalLM is None or AutoTokenizer is None:
+            raise ImportError("transformers is required for LLMRouterNetwork. Please install `transformers`.")
+
+        self.state_dim = int(state_dim)
+        self.action_dim = int(action_dim)
+
+        self.model_name = getattr(Config, "ROUTER_LLM_MODEL_NAME", "meta-llama/Llama-3.2-3B-Instruct")
+        self.use_chat_template = bool(getattr(Config, "ROUTER_LLM_USE_CHAT_TEMPLATE", True))
+        self.max_input_tokens = int(getattr(Config, "ROUTER_LLM_MAX_INPUT_TOKENS", 1024))
+        self.state_decimals = int(getattr(Config, "ROUTER_LLM_STATE_DECIMALS", 4))
+        self.state_max_elems = int(getattr(Config, "ROUTER_LLM_STATE_MAX_ELEMS", 256))
+        self.include_model_names = bool(getattr(Config, "ROUTER_LLM_INCLUDE_MODEL_NAMES", False))
+        # Tuning mode:
+        #   - "heads": train only small actor/critic heads (no prefix).
+        #   - "prefix": train a learnable soft prefix (embedding prefix) + heads; freeze base LM.
+        #   - "full": fine-tune the whole LM (NOT recommended for memory unless you use LoRA).
+        self.tune_mode = str(getattr(Config, "ROUTER_LLM_TUNE_MODE", "heads")).lower()
+        self.prefix_len = int(getattr(Config, "ROUTER_LLM_PREFIX_LEN", 16))
+        self.prefix_init_std = float(getattr(Config, "ROUTER_LLM_PREFIX_INIT_STD", 0.02))
+
+        # Actor/Critic adapter heads (map LM hidden -> action logits / value)
+        self.actor_hidden = int(getattr(Config, "ROUTER_LLM_ACTOR_HIDDEN", 256))
+        self.actor_depth = int(getattr(Config, "ROUTER_LLM_ACTOR_DEPTH", 2))
+        self.actor_dropout = float(getattr(Config, "ROUTER_LLM_ACTOR_DROPOUT", 0.0))
+
+        self.critic_hidden = int(getattr(Config, "ROUTER_LLM_CRITIC_HIDDEN", 256))
+        self.critic_depth = int(getattr(Config, "ROUTER_LLM_CRITIC_DEPTH", 2))
+        self.critic_dropout = float(getattr(Config, "ROUTER_LLM_CRITIC_DROPOUT", 0.0))
+
+
+        # Base LM freezing behavior
+        # For prefix-tuning we always freeze the base LM by default (prefix+heads only).
+        if self.tune_mode == "full":
+            self.freeze_base = bool(getattr(Config, "ROUTER_LLM_FREEZE_BASE", False))
+        else:
+            self.freeze_base = True
+        self.dtype_name = str(getattr(Config, "ROUTER_LLM_DTYPE", "float16")).lower()
+        self.attn_impl = getattr(Config, "ROUTER_LLM_ATTN_IMPL", None)
+        self.grad_ckpt = bool(getattr(Config, "ROUTER_LLM_GRAD_CHECKPOINTING", False))
+
+        if self.dtype_name in ("bf16", "bfloat16"):
+            torch_dtype = torch.bfloat16
+        elif self.dtype_name in ("fp32", "float32"):
+            torch_dtype = torch.float32
+        else:
+            torch_dtype = torch.float16
+
+        # Tokenizer
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, trust_remote_code=True)
+        # Left padding is often better when using last-token representations
+        try:
+            self.tokenizer.padding_side = "left"
+        except Exception:
+            pass
+        if self.tokenizer.pad_token is None:
+            # fall back to eos_token for padding
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        # Base LM (encoder)
+        base_kwargs = dict(torch_dtype=torch_dtype, trust_remote_code=True)
+        if self.attn_impl:
+            try:
+                self.base_model = AutoModelForCausalLM.from_pretrained(
+                    self.model_name, attn_implementation=self.attn_impl, **base_kwargs
+                )
+            except Exception as e:
+                print(f"[LLMRouterNetwork] attn_implementation={self.attn_impl} failed; falling back. ({type(e).__name__}: {e})")
+                self.base_model = AutoModelForCausalLM.from_pretrained(self.model_name, **base_kwargs)
+        else:
+            self.base_model = AutoModelForCausalLM.from_pretrained(self.model_name, **base_kwargs)
+
+        # Important for training: disable kv-cache
+        try:
+            self.base_model.config.use_cache = False
+        except Exception:
+            pass
+
+        if self.grad_ckpt:
+            try:
+                self.base_model.gradient_checkpointing_enable()
+            except Exception as e:
+                print(f"[LLMRouterNetwork] gradient_checkpointing_enable failed: {e}")
+
+        # Move to the same device as the router
+        self.base_model.to(Config.DEVICE)
+        self.base_model.train()
+
+        hidden_size = int(getattr(self.base_model.config, "hidden_size", 4096))
+
+        # Small heads (trainable)
+        self.ln = nn.LayerNorm(hidden_size)
+
+        # Actor: hidden -> action logits (softmax is applied later by Categorical/softmax)
+        self.actor_head = make_mlp(
+            in_dim=hidden_size,
+            hidden_dim=self.actor_hidden,
+            out_dim=self.action_dim,
+            depth=self.actor_depth,
+            dropout=self.actor_dropout,
+        )
+
+        # Critic: hidden -> scalar value
+        self.critic_head = make_mlp(
+            in_dim=hidden_size,
+            hidden_dim=self.critic_hidden,
+            out_dim=1,
+            depth=self.critic_depth,
+            dropout=self.critic_dropout,
+        )
+
+        # Prefix parameters (embedding-prefix tuning)
+        self.prefix_embed = None
+        if self.tune_mode == "prefix":
+            if self.prefix_len <= 0:
+                raise ValueError("ROUTER_LLM_PREFIX_LEN must be > 0 when ROUTER_LLM_TUNE_MODE='prefix'")
+            pe = torch.randn(self.prefix_len, hidden_size) * float(self.prefix_init_std)
+            self.prefix_embed = nn.Parameter(pe)  # [P, H]
+
+        if self.freeze_base:
+            for p in self.base_model.parameters():
+                p.requires_grad = False
+
+        # Always train the small heads
+        for p in self.ln.parameters():
+            p.requires_grad = True
+        for p in self.actor_head.parameters():
+            p.requires_grad = True
+        for p in self.critic_head.parameters():
+            p.requires_grad = True
+
+        if self.prefix_embed is not None:
+            self.prefix_embed.requires_grad = True
+
+    def _format_state(self, s: np.ndarray) -> str:
+        # s is 1D float array
+        s = np.asarray(s, dtype=np.float32).flatten()
+        if self.state_max_elems > 0 and s.size > self.state_max_elems:
+            s = s[: self.state_max_elems]
+        fmt = f"{{:.{self.state_decimals}f}}"
+        parts = [f"s{i}=" + fmt.format(float(v)) for i, v in enumerate(s.tolist())]
+        return " ".join(parts)
+
+    def _build_text(self, state_row: np.ndarray, prompt: str) -> str:
+        M = self.action_dim
+
+        sys = (
+            "You are a routing policy for an LLM serving cluster. "
+            f"Choose the best server id in [0, {M-1}] for the given request, "
+            "considering queue/service/price/quality information. "
+            "Do not answer the user question; only decide the server."
+        )
+
+        mapping = ""
+        if self.include_model_names:
+            try:
+                mapping = "Servers: " + " | ".join([f"{i}:{name}" for i, name in enumerate(Config.MODEL_NAMES)]) + "\n"
+            except Exception:
+                mapping = ""
+
+        state_txt = self._format_state(state_row)
+        user = (
+            f"{mapping}"
+            f"StateVector: {state_txt}\n"
+            f"UserPrompt: {prompt}\n"
+            f"Return only the server id."
+        )
+
+        if self.use_chat_template and hasattr(self.tokenizer, "apply_chat_template"):
+            try:
+                messages = [
+                    {"role": "system", "content": sys},
+                    {"role": "user", "content": user},
+                ]
+                # add_generation_prompt=True appends the assistant prefix (good as "decision point")
+                return self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            except Exception:
+                pass
+
+        return sys + "\n\n" + user + "\n\nServerId:"
+
+    def _encode_batch(self, state: torch.Tensor, prompts) -> tuple[torch.Tensor, torch.Tensor]:
+        if state.dim() == 1:
+            state = state.unsqueeze(0)
+        B = int(state.shape[0])
+
+        # normalize prompts to list[str]
+        if isinstance(prompts, str):
+            prompts_list = [prompts] * B
+        elif isinstance(prompts, list):
+            if len(prompts) == 1 and B > 1:
+                prompts_list = prompts * B
+            else:
+                prompts_list = [str(p) for p in prompts[:B]]
+                if len(prompts_list) < B:
+                    prompts_list = prompts_list + [prompts_list[-1]] * (B - len(prompts_list))
+        else:
+            prompts_list = [str(prompts)] * B
+
+        # Move state to CPU for string formatting (cheap compared to LLM forward)
+        state_cpu = state.detach().float().cpu().numpy()
+        texts = [self._build_text(state_cpu[i], prompts_list[i]) for i in range(B)]
+
+        enc = self.tokenizer(
+            texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=max(1, self.max_input_tokens - (self.prefix_len if self.tune_mode == 'prefix' else 0)),
+        )
+        input_ids = enc["input_ids"].to(Config.DEVICE)
+        attn = enc["attention_mask"].to(Config.DEVICE)
+        return input_ids, attn
+
+    def forward(self, state, prompt, action_mask=None):
+        if isinstance(state, np.ndarray):
+            state = torch.as_tensor(state, dtype=torch.float32, device=Config.DEVICE)
+        if state.dim() == 1:
+            state = state.unsqueeze(0)
+
+        input_ids, attn = self._encode_batch(state, prompt)
+
+                # Base LM forward
+        if self.tune_mode == "prefix" and self.prefix_embed is not None:
+            # Build inputs_embeds with a learned prefix in embedding space (soft prefix).
+            # This avoids touching attention internals and works with any CausalLM that supports inputs_embeds.
+            emb = self.base_model.get_input_embeddings()(input_ids)  # [B, T, H]
+            B = int(emb.shape[0])
+            p = self.prefix_embed.to(device=emb.device, dtype=emb.dtype).unsqueeze(0).expand(B, -1, -1)  # [B, P, H]
+            emb = torch.cat([p, emb], dim=1)  # [B, P+T, H]
+            p_mask = torch.ones((B, self.prefix_len), device=attn.device, dtype=attn.dtype)
+            attn2 = torch.cat([p_mask, attn], dim=1)  # [B, P+T]
+            out = self.base_model(
+                inputs_embeds=emb,
+                attention_mask=attn2,
+                output_hidden_states=True,
+                return_dict=True,
+            )
+            attn = attn2  # use updated mask for last-token indexing
+        else:
+            out = self.base_model(
+                input_ids=input_ids,
+                attention_mask=attn,
+                output_hidden_states=True,
+                return_dict=True,
+            )
+
+        # last hidden state: [B, T, H]
+        h = out.hidden_states[-1]
+
+        # gather last non-pad token representation per row
+        last_idx = attn.sum(dim=1) - 1  # [B]
+        last_idx = torch.clamp(last_idx, min=0)
+        B = h.shape[0]
+        h_last = h[torch.arange(B, device=h.device), last_idx]  # [B, H]
+
+        # ---- dtype safety ----
+        # Some HF models (or hidden-state paths) may return float32 hidden states
+        # even when weights are fp16/bf16. LayerNorm requires input dtype to match
+        # its parameters, otherwise you'll see:
+        #   expected scalar type Half but found Float
+        ln_dtype = self.ln.weight.dtype if hasattr(self.ln, "weight") and self.ln.weight is not None else h_last.dtype
+        if h_last.dtype != ln_dtype:
+            h_last = h_last.to(dtype=ln_dtype)
+
+        h_last = self.ln(h_last)
+
+                # Cast to head dtypes (Sequential MLP heads don't have `.weight`)
+        try:
+            actor_dtype = next(self.actor_head.parameters()).dtype
+        except StopIteration:
+            actor_dtype = h_last.dtype
+        if h_last.dtype != actor_dtype:
+            h_last = h_last.to(dtype=actor_dtype)
+
+        logits = self.actor_head(h_last)          # [B, action_dim]
+
+        try:
+            critic_dtype = next(self.critic_head.parameters()).dtype
+        except StopIteration:
+            critic_dtype = h_last.dtype
+        h_v = h_last if h_last.dtype == critic_dtype else h_last.to(dtype=critic_dtype)
+        value = self.critic_head(h_v)             # [B, 1]
+
+        # apply action mask on logits (same behavior as RouterNetwork)
+        if action_mask is not None:
+            if isinstance(action_mask, np.ndarray):
+                action_mask = torch.as_tensor(action_mask, dtype=torch.float32, device=logits.device)
+            if action_mask.dim() == 1:
+                action_mask = action_mask.unsqueeze(0)
+            if action_mask.shape[0] == 1 and logits.shape[0] > 1:
+                action_mask = action_mask.expand(logits.shape[0], -1)
+            logits = logits.masked_fill(action_mask <= 0, -1e9)
+
+        return logits, value
+
+    def get_action_and_value(self, state, prompt, action_mask=None, action=None):
+        logits, value = self.forward(state, prompt, action_mask)
+        dist = Categorical(logits=logits)
+        if action is None:
+            action = dist.sample()
+        log_prob = dist.log_prob(action)
+        entropy = dist.entropy()
+        dist_policy = dist.probs
+        return action, log_prob, entropy, value, dist_policy
+
+
 class PPOAgent:
     def __init__(self, state_dim: int, action_dim: int):
-        self.network = RouterNetwork(state_dim, action_dim).to(Config.DEVICE)
+        backbone = str(getattr(Config, "ROUTER_POLICY_BACKBONE", "mlp")).lower()
+        if backbone == "llm":
+            self.network = LLMRouterNetwork(state_dim, action_dim).to(Config.DEVICE)
+        else:
+            self.network = RouterNetwork(state_dim, action_dim).to(Config.DEVICE)
         self.optimizer = torch.optim.Adam(
             self.network.parameters(),
             lr=Config.LEARNING_RATE,
-            betas=(0.9, 0.999),
-            eps=1e-5,
+            # weight_decay=Config.WEIGHT_DECAY
         )
 
         self.state_dim = state_dim
@@ -741,11 +1139,18 @@ class PPOAgent:
         )
 
         if include_quality_state:
-            pre_len = 2 * len(Config.MODEL_NAMES)
+            # Flat *interleaved* layout per server:
+            #   [util, mu, q, price_in, price_out]  => q is at offset 2 in each bundle
             coefs = self.quality_scorer.compute_quality_score_all(prompt)
-            for index, server in enumerate(Config.MODEL_NAMES):
-                if pre_len + index < state_tensor.numel():
-                    state_tensor[pre_len + index] = float(coefs[server])
+            F = int(getattr(self.network, "server_feat_dim", 0))
+            if F <= 0:
+                # fallback to legacy assumption util+mu+q+price_in+price_out
+                F = 5
+            q_off = 2
+            for i, server in enumerate(Config.MODEL_NAMES):
+                idx = i * F + q_off
+                if idx < state_tensor.numel():
+                    state_tensor[idx] = float(coefs[server])
                     print(f"Quality score for {server}: {coefs[server]}")
 
         print(state_tensor)
@@ -766,10 +1171,16 @@ class PPOAgent:
             print(f"Greedy-Utility action: {action}")
             return int(action), float(log_prob.item()), float(value.item()), round_robin_counter
 
-        with torch.no_grad():
-            action, log_prob, entropy, value, dist_policy = self.network.get_action_and_value(
-                state_tensor, prompt, action_mask_tensor
-            )
+        if Config.MASK:
+            with torch.no_grad():
+                action, log_prob, entropy, value, dist_policy = self.network.get_action_and_value(
+                    state_tensor, prompt, action_mask_tensor
+                )
+        else:
+            with torch.no_grad():
+                action, log_prob, entropy, value, dist_policy = self.network.get_action_and_value(
+                    state_tensor, prompt, None
+                )
 
         print(dist_policy)
         print(action)
@@ -964,8 +1375,15 @@ class PPOAgent:
             # effective group size: historically you used denom=M if Nt>=M else denom=Nt
             # i.e. G = min(Nt, M)
             G = min(Nt, M)
-            
-            floor = r_t.min().detach()
+
+            if Config.FAIR_REWARD_MIN_FLOOR:
+                floor = r_t.min().detach()
+            else:
+                floor = torch.tensor(
+                            - Config.BETA - Config.REWARD_GAMMA,
+                            device=Config.DEVICE,
+                            dtype=r_t.dtype
+                        )
             
             # collect mean reward for each USED server (deterministic order by server id)
             used_means = []
@@ -1026,6 +1444,8 @@ class PPOAgent:
                     states, states_np, prompts, action_masks, actions, service_rate=service_rate
                 )
             else:
+                if not Config.MASK:
+                    action_masks = None
                 _, new_log_probs, entropy, new_values, dist = self.network.get_action_and_value(
                     states, prompts, action_masks, actions
                 )

@@ -23,18 +23,18 @@ def setup_environment():
     print("Setting up training environment...")
     
     # Set random seeds for reproducibility
-    random.seed(43)
-    np.random.seed(43)
-    torch.manual_seed(43)
+    random.seed(12)
+    np.random.seed(12)
+    torch.manual_seed(12)
     
     if torch.cuda.is_available():
-        torch.cuda.manual_seed(43)
-        torch.cuda.manual_seed_all(43)
+        torch.cuda.manual_seed(12)
+        torch.cuda.manual_seed_all(12)
         print(f"Using CUDA: {torch.cuda.get_device_name()}")
     else:
         print("Using CPU")
     
-    print(f"Random seeds set to 43 for reproducibility")
+    print(f"Random seeds set to 42 for reproducibility")
 
 def print_configuration():
     """Print training configuration"""
