@@ -13,6 +13,8 @@ from plotter import TrainingPlotter
 from logger import MetricsLogger
 from PoissonPromptGenerator import PoissonPromptGenerator
 
+import time
+
 class NumpyEncoder(json.JSONEncoder):
         def default(self, obj):
             if isinstance(obj, np.float32):
@@ -67,13 +69,102 @@ class EnhancedLLMRouterTrainer:
         self.episode_rewards = []
         self.episode_stats = []
         self.training_metrics = []
-        self.last_service_rate = [1] * len(Config.SERVER_CAPACITIES)  # Default service rate
+        self.last_service_rate = list(Config.SERVICE_RATE)  # Default service rate
         
         self.training_in_progress = False
 
         # Print configuration summary
         if Config.ENABLE_CONSOLE_LOGGING:
             self.print_config_summary()
+    
+    def update_service_rate_from_episode(self, episode_record):
+        """
+        Update per-server service rate after each trajectory/episode.
+
+        Estimate:
+            mu_i = completed_requests_i / sum(actual_service_time_i)
+
+        Prefer response['decode_time'] because it excludes queue waiting more than
+        processing_latency does.
+        """
+        M = len(Config.SERVER_CAPACITIES)
+
+        old_mu = np.asarray(self.last_service_rate, dtype=np.float64)
+        new_mu = old_mu.copy()
+
+        alpha = float(getattr(Config, "SERVICE_RATE_EMA_ALPHA", 1))
+        min_samples = int(getattr(Config, "SERVICE_RATE_MIN_SAMPLES", 1))
+        min_mu = float(getattr(Config, "SERVICE_RATE_MIN", 1e-4))
+        max_mu = float(getattr(Config, "SERVICE_RATE_MAX", 5.0))
+
+        counts = [0 for _ in range(M)]
+        service_times = [[] for _ in range(M)]
+
+        for req in episode_record:
+            if req.get("status") != "completed":
+                continue
+            if req.get("episode") != self.current_episode:
+                continue
+
+            sid = req.get("server_id", None)
+            if sid is None:
+                continue
+
+            try:
+                sid = int(sid)
+            except Exception:
+                continue
+
+            if sid < 0 or sid >= M:
+                continue
+
+            resp = req.get("response", {}) or {}
+
+            # Prefer actual decoding/service time
+            service_time = None
+            if isinstance(resp, dict):
+                service_time = resp.get("decode_time", None)
+
+            # Fallback if decode_time is missing
+            if service_time is None:
+                service_time = req.get("processing_latency_raw", None)
+            if service_time is None:
+                service_time = req.get("processing_latency", None)
+
+            try:
+                service_time = float(service_time)
+            except Exception:
+                continue
+
+            if not np.isfinite(service_time) or service_time <= 0:
+                continue
+
+            counts[sid] += 1
+            service_times[sid].append(service_time)
+
+        instant_mu = [None for _ in range(M)]
+
+        for i in range(M):
+            if counts[i] < min_samples or len(service_times[i]) == 0:
+                continue
+
+            total_service_time = float(np.sum(service_times[i]))
+            if total_service_time <= 0:
+                continue
+
+            mu_hat = counts[i] / total_service_time
+            mu_hat = float(np.clip(mu_hat, min_mu, max_mu))
+
+            instant_mu[i] = mu_hat
+            new_mu[i] = (1.0 - alpha) * old_mu[i] + alpha * mu_hat
+
+        self.last_service_rate = new_mu.tolist()
+
+        return {
+            "service_rate_updated": self.last_service_rate,
+            "service_rate_instant": instant_mu,
+            "service_rate_counts": counts,
+        }
         
     def print_config_summary(self):
         """Print current configuration summary"""
@@ -138,6 +229,7 @@ class EnhancedLLMRouterTrainer:
     def get_episode_data(self):
         record = self.run_episode()  # record is now a list of Request objects
 
+        num_servers = len(Config.SERVER_CAPACITIES)
         episode_info = {
             'rewards': [],
             'quality_scores': [],
@@ -150,36 +242,49 @@ class EnhancedLLMRouterTrainer:
             'service_rate': [],
             'prices': [],
             'prices_norm': [],
-            'queue_length': []
+            'queue_length': [],
+            'reward_sum_per_server': {i: 0.0 for i in range(num_servers)},
+            'reward_count_per_server': {i: 0 for i in range(num_servers)},
+            'mean_reward_per_server': {i: None for i in range(num_servers)},
+            'active_server_ids_with_completed_requests': [],
+            'active_server_avg_rewards': [],
+            'server_avg_reward_tilted_ConfigT': None,
         }
         
         # Count processed prompts per server
-        num_servers = len(Config.SERVER_CAPACITIES)
         num_processed = [0] * num_servers
         counter = 0
-        for index,req in enumerate(record):
+        for index, req in enumerate(record):
             server_id = req['server_id']
             if server_id is not None and req['status'] == 'completed' and req['episode'] == self.current_episode:
-                num_processed[server_id] += 1 
+                num_processed[server_id] += 1
                 counter += 1
             # if index == len(record) - 1:
             #     req['reward'] += counter # Add bonus for last request in episode
 
-
         # Compute per-server service rate
-        duration = Config.EPISODE_TIME_INTERVAL
-        service_rate = [n / duration + self.last_service_rate[index] for index,n in enumerate(num_processed)]
+        duration = Config.EPISODE_TIME_INTERVAL * Config.INTERVAL_LENGTH
+        # service_rate = [n / duration + self.last_service_rate[index] for index, n in enumerate(num_processed)]
+        service_rate = list(self.last_service_rate)
         
-        print(service_rate)
+        # print(service_rate)
 
         # Store service_rate for use in agent
-        self.last_service_rate = service_rate
+        # self.last_service_rate = service_rate
 
         episode_reward = 0
 
         for req in record:
-            episode_info['rewards'].append(req['reward'])
+            server_id = req.get('server_id')
+            reward = float(req.get('reward', 0.0))
+
+            episode_info['rewards'].append(reward)
             episode_info['queue_length'].append(req['queue_length'])
+
+            if server_id is not None and req['status'] == 'completed' and req['episode'] == self.current_episode:
+                episode_info['reward_sum_per_server'][server_id] += reward
+                episode_info['reward_count_per_server'][server_id] += 1
+
             if req['status'] == 'completed' and req['episode'] == self.current_episode:
                 episode_info['quality_scores'].append(req['quality_score'])
                 episode_info['latencies'].append(req.get('processing_latency_raw', req.get('processing_latency')))
@@ -195,7 +300,28 @@ class EnhancedLLMRouterTrainer:
             else:
                 episode_info['invalid_actions'] += 1
 
-            episode_reward += req['reward']
+            episode_reward += reward
+
+        for server_id in range(num_servers):
+            count = episode_info['reward_count_per_server'][server_id]
+            if count > 0:
+                episode_info['mean_reward_per_server'][server_id] = (
+                    episode_info['reward_sum_per_server'][server_id] / count
+                )
+
+        active_server_ids = []
+        active_server_avg_rewards = []
+        for server_id, mean_reward in episode_info['mean_reward_per_server'].items():
+            if mean_reward is not None:
+                active_server_ids.append(server_id)
+                active_server_avg_rewards.append(float(mean_reward))
+
+        episode_info['active_server_ids_with_completed_requests'] = active_server_ids
+        episode_info['active_server_avg_rewards'] = active_server_avg_rewards
+        episode_info['server_avg_reward_tilted_ConfigT'] = self.tilted_log_mean_exp_value(
+            active_server_avg_rewards,
+            beta=Config.T,
+        )
 
         episode_info['total_reward'] = episode_reward
         episode_info['episode_length'] = len(record)
@@ -220,16 +346,18 @@ class EnhancedLLMRouterTrainer:
             """
             M = len(Config.SERVER_CAPACITIES)
 
+            PRICE_SCALE = 1e6  
+
             # prices are tuples: (input_price, output_price)
-            price_in = [float(a[0]) for a in Config.PRICE]
-            price_out = [float(a[1]) for a in Config.PRICE]
+            price_in = [float(a[0]) * PRICE_SCALE for a in Config.PRICE]   
+            price_out = [float(a[1]) * PRICE_SCALE for a in Config.PRICE]   
 
             feats_flat = []
             for i in range(M):
                 cap = float(Config.SERVER_CAPACITIES[i])
                 load = float(loads[i])
                 util = load / max(cap, 1.0)
-                mu = float(Config.SERVICE_RATE[i])
+                mu = float(self.last_service_rate[i])
 
                 feats_flat.extend([util, mu, price_in[i], price_out[i]])
 
@@ -246,7 +374,7 @@ class EnhancedLLMRouterTrainer:
 
         # state = [self.env.reset()[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + self.last_service_rate + price
 
-        import time
+
         start = time.time()
         robin_counter = 0  # Initialize round-robin counter
         
@@ -261,76 +389,88 @@ class EnhancedLLMRouterTrainer:
                 print(f"Episode {self.current_episode} timed out after {Config.EPISODE_TIME_INTERVAL} seconds")
                 break
 
-            # Get prompt from Poisson generator (environment handles this)
-            action_mask = self.env.get_action_mask()
-
             prompt_entry = self.env.get_next_prompt()
             if not prompt_entry:
                 time.sleep(0.1)
                 continue
+            arrival_time = time.time()
+            prompt_time_slot = int((arrival_time - start) // Config.INTERVAL_LENGTH)
 
             if isinstance(prompt_entry, dict):
                 prompt = prompt_entry.get('prompt', '')
-                ground_truth = (prompt_entry.get('output') or prompt_entry.get('answer') or prompt_entry.get('target'))
+                ground_truth = (
+                    prompt_entry.get('output')
+                    or prompt_entry.get('answer')
+                    or prompt_entry.get('target')
+                )
             else:
                 prompt = str(prompt_entry)
                 ground_truth = None
 
-            action, log_prob, value, next_counter = self.agent.get_action(state, prompt, action_mask, service_rate=self.last_service_rate, round_robin_counter=robin_counter)
-            print("log_prob:", log_prob)
+
+            if Config.NAIVE_PPO:
+                current_loads = self.env.get_state()
+                state = build_state(current_loads)
+            else:
+                if current != current_time_slot:
+                    current_loads = self.env.get_state()
+                    state = build_state(current_loads)
+                    current = current_time_slot
+
+            action_mask = self.env.get_action_mask()
+
+            state_for_action = state.copy()
+
+            action, log_prob, value, next_counter = self.agent.get_action(
+                state_for_action,
+                prompt,
+                action_mask,
+                service_rate=self.last_service_rate,
+                round_robin_counter=robin_counter,
+            )
+
             robin_counter = next_counter
-            
+
             next_state, done = self.env.step(action, prompt, ground_truth)
             queue_length = next_state.tolist()
 
-            if Config.NAIVE_PPO:
-                state = build_state(next_state)
-            else:
-            
-                if current != current_time_slot:
-                    state = build_state(next_state)
-                    # state = [next_state[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + [1]* len(Config.SERVER_CAPACITIES) + price
-                    # state = [next_state[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + self.last_service_rate +  price
-                    current = current_time_slot
-             
-            
-            if done:
-                break
-            
-            
-            # Add step to buffer (reward will be filled in later)
             self.buffer.add_step(
-                time_slot = int(current_time_slot),
-                route_time= current_time_slot,
-                state=state,
+                time_slot=prompt_time_slot,
+                route_time=current_time_slot,
+                state=state_for_action,
                 prompt=prompt,
                 action=action,
                 log_prob=log_prob,
                 value=value,
-                reward=0,  # Placeholder, will be updated after episode
+                reward=0,
                 action_mask=action_mask,
-                service_rate=Config.SERVICE_RATE,
-                queue_length = queue_length
+                service_rate=list(self.last_service_rate),
+                queue_length=queue_length,
             )
+
+            if done:
+                break
+            
+
         
         # Wait for all prompts to be processed
         self.env.pause_prompt_generator()
-        time.sleep(2)
+        # time.sleep(2)
         
         # --- Pause and clean servers before training ---
         while self.env.check_get_episode_completed() == False:
-            print("Waiting for all prompts to be processed...")
+            # print("Waiting for all prompts to be processed...")
             time.sleep(1)
         
         episode_record = self.env.get_episode_data()
         
-        time.sleep(2)
+        time.sleep(1)
         
         self.env.pause_all_servers()
-        time.sleep(2)
+        time.sleep(1)
         
         self.env.clean_all_queues()
-        time.sleep(2)
+        time.sleep(1)
         
         # Update buffer rewards with actual episode rewards
         for i, req in enumerate(episode_record):
@@ -417,6 +557,23 @@ class EnhancedLLMRouterTrainer:
             self.agent.update_server_stats(episode_record)
         except Exception as e:
             print(f"[WARN] update_server_stats failed: {e}")
+            
+        service_rate_info = self.update_service_rate_from_episode(episode_record)
+
+        if self.wandb_available:
+            import wandb
+            log_dict = {}
+            for i, mu in enumerate(service_rate_info["service_rate_updated"]):
+                log_dict[f"service_rate/ema_server_{i}"] = mu
+
+            for i, mu in enumerate(service_rate_info["service_rate_instant"]):
+                if mu is not None:
+                    log_dict[f"service_rate/instant_server_{i}"] = mu
+
+            for i, c in enumerate(service_rate_info["service_rate_counts"]):
+                log_dict[f"service_rate/count_server_{i}"] = c
+
+            wandb.log(log_dict, step=self.current_episode)
 
         return episode_record
 
@@ -523,21 +680,55 @@ class EnhancedLLMRouterTrainer:
         return float(tau * (m + np.log(np.mean(np.exp(z - m)))))
     
     @staticmethod
-    
     def softmin_value(x, tau=Config.T_REWARD):
         """
-        softmin_tau(x) = -tau * log( mean_i exp(-x_i / tau) )
-        As tau -> 0, softmin_tau(x) -> min(x)
+        TERM-compatible tilted aggregation:
+            value = log(mean_i exp(beta * x_i)) / beta
+
+        For backward compatibility, the argument name remains ``tau``, but it is
+        interpreted as the tilt parameter ``beta`` here.
+
+        beta < 0  -> softmin-like (emphasises smaller values)
+        beta -> 0 -> mean
+        beta > 0  -> softmax-like (emphasises larger values)
         """
         x = np.asarray(x, dtype=np.float64)
         x = x[np.isfinite(x)]
         if x.size == 0:
             return None
-    
-        tau = max(float(tau), 1e-12)
-        z = -x / tau
+
+        beta = float(tau)
+        if abs(beta) < 1e-8:
+            return float(np.mean(x))
+
+        z = beta * x
         m = np.max(z)  # stability
-        return float(-tau * (m + np.log(np.mean(np.exp(z - m)))))
+        return float((m + np.log(np.mean(np.exp(z - m)))) / beta)
+
+    @staticmethod
+    def tilted_log_mean_exp_value(x, beta=Config.T):
+        """
+        Same aggregation form used in PPO training in router_network:
+            agg(x) = log(mean_i exp(beta * x_i)) / beta
+
+        - beta < 0: softmin-like aggregation
+        - beta > 0: softmax-like aggregation
+        - beta ~= 0: arithmetic mean
+
+        This helper ignores NaN/None values and returns None when no valid values exist.
+        """
+        x = np.asarray(x, dtype=np.float64)
+        x = x[np.isfinite(x)]
+        if x.size == 0:
+            return None
+
+        beta = float(beta)
+        if abs(beta) < 1e-8:
+            return float(np.mean(x))
+
+        z = beta * x
+        m = np.max(z)
+        return float((m + np.log(np.mean(np.exp(z - m)))) / beta)
 
     
     def train(self):
@@ -598,6 +789,8 @@ class EnhancedLLMRouterTrainer:
                         "mean_reward": float(np.mean(episode_info['rewards'])) if episode_info.get('rewards') else None,
                         "std_reward": float(np.std(episode_info['rewards'])) if episode_info.get('rewards') else None,
                         "softmin_reward": self.softmin_value(episode_info['rewards']) if episode_info.get('rewards') else None,
+                        "reward/server_avg_reward_tilted_ConfigT": episode_info.get('server_avg_reward_tilted_ConfigT'),
+                        "reward/server_avg_reward_active_server_count": len(episode_info.get('active_server_avg_rewards', [])),
                     
                         "policy_loss": training_metrics['policy_loss'] if training_metrics else None,
                         "value_loss": training_metrics['value_loss'] if training_metrics else None,
@@ -634,11 +827,22 @@ class EnhancedLLMRouterTrainer:
 
 
                 # Add server usage percentage if available
-                if training_metrics and 'server_usage_percentage' in training_metrics:
+                if self.wandb_available and training_metrics and 'server_usage_percentage' in training_metrics:
                     for server_id, usage in training_metrics['server_usage_percentage'].items():
                         wandb.log({f"server_{server_id}_usage": usage}, step=episode)
 
-                if episode_info and episode_info.get("queue_length"):
+                # Add avg reward per server
+                if self.wandb_available and episode_info and 'mean_reward_per_server' in episode_info:
+                    for server_id, mean_reward in episode_info['mean_reward_per_server'].items():
+                        if mean_reward is not None:
+                            wandb.log({f"reward/server_{server_id}_avg_reward": float(mean_reward)}, step=episode)
+                        wandb.log({f"reward/server_{server_id}_count": int(episode_info['reward_count_per_server'][server_id])}, step=episode)
+                        wandb.log({f"reward/server_{server_id}_sum": float(episode_info['reward_sum_per_server'][server_id])}, step=episode)
+                    agg_server_avg_reward = episode_info.get('server_avg_reward_tilted_ConfigT')
+                    if agg_server_avg_reward is not None:
+                        wandb.log({"reward/server_avg_reward_softmin_ConfigT": float(agg_server_avg_reward)}, step=episode)
+
+                if self.wandb_available and episode_info and episode_info.get("queue_length"):
                     M = len(Config.SERVER_CAPACITIES)
                     caps = np.asarray(Config.SERVER_CAPACITIES, dtype=np.float32)
                     caps = np.maximum(caps, 1.0)  # avoid divide-by-zero
@@ -785,6 +989,8 @@ class EnhancedLLMRouterTrainer:
                             "total_reward": episode_info['total_reward'],
                             "mean_reward": np.mean(episode_info['rewards']),
                             "std_reward": np.std(episode_info['rewards']),
+                            "reward/server_avg_reward_tilted_ConfigT": episode_info.get('server_avg_reward_tilted_ConfigT'),
+                            "reward/server_avg_reward_active_server_count": len(episode_info.get('active_server_avg_rewards', [])),
                             "quality_scores": np.mean(episode_info['quality_scores']),
                             "latencies": np.mean(episode_info['latencies']),
                             "price": np.mean([episode_info['prices']]),
@@ -807,6 +1013,15 @@ class EnhancedLLMRouterTrainer:
                 if self.wandb_available:
                     for server_id, usage in server_usage.items():
                         wandb.log({f"server_{server_id}_usage": usage}, step=episode)
+                    if episode_info and 'mean_reward_per_server' in episode_info:
+                        for server_id, mean_reward in episode_info['mean_reward_per_server'].items():
+                            if mean_reward is not None:
+                                wandb.log({f"reward/server_{server_id}_avg_reward": float(mean_reward)}, step=episode)
+                            wandb.log({f"reward/server_{server_id}_count": int(episode_info['reward_count_per_server'][server_id])}, step=episode)
+                            wandb.log({f"reward/server_{server_id}_sum": float(episode_info['reward_sum_per_server'][server_id])}, step=episode)
+                        agg_server_avg_reward = episode_info.get('server_avg_reward_tilted_ConfigT')
+                        if agg_server_avg_reward is not None:
+                            wandb.log({"reward/server_avg_reward_softmin_ConfigT": float(agg_server_avg_reward)}, step=episode)
                     
                 if self.wandb_available and hasattr(self.env, 'queue_monitor'):
                     self.env.queue_monitor.log_throughput_to_wandb(episode)
@@ -830,6 +1045,7 @@ class EnhancedLLMRouterTrainer:
                 
             # --- Resume servers after training ---
             self.env.resume_all_servers()
+            time.sleep(2)
         
         print(f"\nTraining completed!")
         

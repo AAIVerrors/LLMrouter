@@ -34,6 +34,26 @@ def make_mlp(in_dim: int, hidden_dim: int, out_dim: int, depth: int, dropout: fl
     layers += [nn.Linear(d, out_dim)]
     return nn.Sequential(*layers)
 
+def make_actor_mlp(in_dim: int, hidden_dim: int, out_dim: int, depth: int, dropout: float):
+    """
+    depth=1 => Linear(in_dim -> out_dim)
+    depth>=2 => [Linear->GELU->Dropout] * (depth-1) then Linear->out_dim
+    """
+    if depth <= 1:
+        return nn.Linear(in_dim, out_dim)
+
+    layers = []
+    d = in_dim
+    for _ in range(depth - 1):
+        layers += [
+            nn.Linear(d, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        ]
+        d = hidden_dim
+    layers += [nn.Linear(d, out_dim)]
+    return nn.Sequential(*layers)
+
 
 class AttnBlock(nn.Module):
     """Transformer-like block (self-attention + FFN) with batch_first=True."""
@@ -84,9 +104,9 @@ class RouterNetwork(nn.Module):
         action_dim: int,
         hidden_dim: int = Config.HIDDEN_DIM,
         prompt_dim: int = 64,
-        trunk_depth: int = 6,
-        head_depth: int = 4,
-        dropout: float = 0.1,
+        trunk_depth: int = 4,
+        head_depth: int = 2,
+        dropout: float = 0,
         prompt_model: str = "all-MiniLM-L6-v2",
         freeze_prompt_encoder: bool = True,
     ):
@@ -94,6 +114,8 @@ class RouterNetwork(nn.Module):
         self.state_dim = state_dim
         self.action_dim = action_dim
         # self.prompt_dim is set below (after deciding projection)
+        
+        self.use_clip_fusion = bool(getattr(Config, "USE_CLIP_FUSION_ROUTER", False))
 
         # Prompt encoder (optionally frozen)
         self.prompt_encoder = SentenceTransformer(getattr(Config, 'PROMPT_MODEL', prompt_model))
@@ -131,8 +153,127 @@ class RouterNetwork(nn.Module):
         self.use_attn = bool(getattr(Config, "USE_ATTN_ROUTER", False))
         # Per-server feature dim (util, mu, price_in, price_out)
         self.server_feat_dim = 4
-        if self.use_attn:
-            self.M = int(action_dim)  # typically == len(Config.MODEL_NAMES)
+        
+        if self.use_clip_fusion:
+            self.M = int(action_dim)
+
+            d_model   = int(getattr(Config, "ATTN_D_MODEL", 256))
+            n_heads   = int(getattr(Config, "ATTN_N_HEADS", 8))
+            n_layers  = int(getattr(Config, "ATTN_N_LAYERS", 2))   # server self-attn 层数
+            ff_mult   = int(getattr(Config, "ATTN_FF_MULT", 4))
+            attn_drop = float(getattr(Config, "ATTN_DROPOUT", dropout))
+
+            if d_model % n_heads != 0:
+                raise ValueError(f"ATTN_D_MODEL ({d_model}) must be divisible by ATTN_N_HEADS ({n_heads}).")
+
+            self.d_model = d_model
+
+            # ---- Dual-channel server features (same as before) ----
+            self.dyn_feat_dim  = int(getattr(Config, "SERVER_DYN_DIM", 1))   # util
+            self.stat_feat_dim = int(getattr(Config, "SERVER_STAT_DIM", 3))  # mu, p_in, p_out
+            self.server_feat_dim = self.dyn_feat_dim + self.stat_feat_dim    # = 4
+
+            self.server_dyn_proj  = nn.Linear(self.dyn_feat_dim,  d_model)
+            self.server_stat_proj = nn.Linear(self.stat_feat_dim, d_model)
+
+            self.dyn_type_emb  = nn.Parameter(torch.zeros(1, 1, d_model))
+            self.stat_type_emb = nn.Parameter(torch.zeros(1, 1, d_model))
+            nn.init.normal_(self.dyn_type_emb,  std=0.02)
+            nn.init.normal_(self.stat_type_emb, std=0.02)
+
+            # Position embedding for 2M server tokens
+            self.server_pos_emb = nn.Parameter(torch.zeros(1, 2 * self.M, d_model))
+            nn.init.normal_(self.server_pos_emb, std=0.02)
+
+            # ---- Server tower: self-attention so servers see each other ----
+            self.server_self_attn = nn.ModuleList([
+                AttnBlock(d_model, n_heads, ff_mult, attn_drop)
+                for _ in range(n_layers)
+            ])
+
+            # ---- Prompt tower: small MLP P -> d_model ----
+            self.prompt_tower = nn.Sequential(
+                nn.LayerNorm(self.prompt_dim),
+                nn.Linear(self.prompt_dim, d_model),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(d_model, d_model),
+            )
+
+            # ---- Cross-attention: prompt (Q) attends to servers (K,V) ----
+            self.cross_attn_ln_q  = nn.LayerNorm(d_model)
+            self.cross_attn_ln_kv = nn.LayerNorm(d_model)
+            self.cross_attn = nn.MultiheadAttention(
+                embed_dim=d_model, num_heads=n_heads,
+                dropout=attn_drop, batch_first=True,
+            )
+            self.cross_attn_ff = nn.Sequential(
+                nn.Linear(d_model, ff_mult * d_model),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(ff_mult * d_model, d_model),
+            )
+            self.cross_attn_ln_out = nn.LayerNorm(d_model)
+
+            # ---- Actor heads: CLIP-style dot product per channel ----
+            # Project prompt-conditioned query and server keys into a shared space
+            self.actor_q_proj    = nn.Linear(d_model, d_model)
+            self.actor_k_dyn     = nn.Linear(d_model, d_model)
+            self.actor_k_stat    = nn.Linear(d_model, d_model)
+
+            # Learnable temperature (CLIP parameterization)
+            init_temp = float(getattr(Config, "CLIP_INIT_TEMP", 0.07))
+            self.log_temp = nn.Parameter(torch.tensor(math.log(1.0 / init_temp)))
+            self.log_temp_max = math.log(100.0)  # clamp upper bound
+
+            # ---- Critic: pooled MLP over [prompt_q, mean(servers)] ----
+            self.critic_mlp = make_mlp(2 * d_model, d_model, 1, depth=3, dropout=attn_drop)
+
+        # if self.use_attn:
+        #     self.M = int(action_dim)  # typically == len(Config.MODEL_NAMES)
+
+        #     d_model = int(getattr(Config, "ATTN_D_MODEL", 256))
+        #     n_heads = int(getattr(Config, "ATTN_N_HEADS", 8))
+        #     n_layers = int(getattr(Config, "ATTN_N_LAYERS", 4))
+        #     ff_mult = int(getattr(Config, "ATTN_FF_MULT", 4))
+        #     attn_drop = float(getattr(Config, "ATTN_DROPOUT", dropout))
+        #     self.use_global_token = bool(getattr(Config, "ATTN_USE_GLOBAL_TOKEN", True))
+
+        #     if d_model % n_heads != 0:
+        #         raise ValueError(f"ATTN_D_MODEL ({d_model}) must be divisible by ATTN_N_HEADS ({n_heads}).")
+
+        #     self.d_model = d_model
+
+        #     # Flat, per-server interleaved state layout:
+        #     #   state_flat = concat_i [util_i, mu_i, price_in_i, price_out_i]
+        #     # So per-server feature dim F = 4.
+        #     self.has_quality = False
+        #     self.has_price = True
+        #     self.global_dim = 0
+        #     self.server_feat_dim = 4
+
+        #     self.server_feat_proj = nn.Linear(self.server_feat_dim, d_model)
+        #     self.prompt_token_proj = nn.Linear(self.prompt_dim, d_model)
+        #     self.global_token_proj = nn.Linear(self.global_dim, d_model) if (self.use_global_token and self.global_dim > 0) else None
+
+        #     # learned positional embedding
+        #     max_tokens = 1 + (1 if self.global_token_proj is not None else 0) + self.M
+        #     self.pos_emb = nn.Parameter(torch.zeros(1, max_tokens, d_model))
+        #     nn.init.normal_(self.pos_emb, mean=0.0, std=0.02)
+
+        #     self.attn_blocks = nn.ModuleList(
+        #         [AttnBlock(d_model=d_model, n_heads=n_heads, ff_mult=ff_mult, dropout=attn_drop) for _ in range(n_layers)]
+        #     )
+
+        #     # Actor: per-server logit head
+        #     self.actor_ln = nn.LayerNorm(d_model)
+        #     self.actor_head = nn.Linear(d_model, 1)
+
+        #     # Critic: pooled tokens -> value
+        #     self.critic_mlp = make_mlp(d_model, d_model, 1, depth=3, dropout=attn_drop)
+
+        elif self.use_attn:
+            self.M = int(action_dim)
 
             d_model = int(getattr(Config, "ATTN_D_MODEL", 256))
             n_heads = int(getattr(Config, "ATTN_N_HEADS", 8))
@@ -146,20 +287,39 @@ class RouterNetwork(nn.Module):
 
             self.d_model = d_model
 
-            # Flat, per-server interleaved state layout:
-            #   state_flat = concat_i [util_i, mu_i, price_in_i, price_out_i]
-            # So per-server feature dim F = 4.
+            # ================================================================
+            # [CHANNEL] Dual-channel per-server tokens.
+            # Flat per-server layout (must match trainer.build_state):
+            #   [util_i, mu_i, price_in_i, price_out_i]
+            # -> dynamic: [util_i]              (1 dim, changes every decision)
+            # -> static:  [mu_i, pin_i, pout_i] (3 dims, constant)
+            # Each server becomes TWO tokens so attention can't dilute util
+            # inside a joint linear projection.
+            # ================================================================
+            self.dyn_feat_dim = int(getattr(Config, "SERVER_DYN_DIM", 1))
+            self.stat_feat_dim = int(getattr(Config, "SERVER_STAT_DIM", 3))
+            self.server_feat_dim = self.dyn_feat_dim + self.stat_feat_dim   # = 4
+
+            # Independent projections for each channel
+            self.server_dyn_proj = nn.Linear(self.dyn_feat_dim, d_model)
+            self.server_stat_proj = nn.Linear(self.stat_feat_dim, d_model)
+
+            # Type embeddings so attention can distinguish the two channels
+            self.dyn_type_emb = nn.Parameter(torch.zeros(1, 1, d_model))
+            self.stat_type_emb = nn.Parameter(torch.zeros(1, 1, d_model))
+            nn.init.normal_(self.dyn_type_emb, mean=0.0, std=0.02)
+            nn.init.normal_(self.stat_type_emb, mean=0.0, std=0.02)
+
+            self.prompt_token_proj = nn.Linear(self.prompt_dim, d_model)
+
+            # No global token in this layout
+            self.global_token_proj = None
             self.has_quality = False
             self.has_price = True
             self.global_dim = 0
-            self.server_feat_dim = 4
 
-            self.server_feat_proj = nn.Linear(self.server_feat_dim, d_model)
-            self.prompt_token_proj = nn.Linear(self.prompt_dim, d_model)
-            self.global_token_proj = nn.Linear(self.global_dim, d_model) if (self.use_global_token and self.global_dim > 0) else None
-
-            # learned positional embedding
-            max_tokens = 1 + (1 if self.global_token_proj is not None else 0) + self.M
+            # Position embedding: 1 prompt + 2*M server tokens
+            max_tokens = 1 + 2 * self.M
             self.pos_emb = nn.Parameter(torch.zeros(1, max_tokens, d_model))
             nn.init.normal_(self.pos_emb, mean=0.0, std=0.02)
 
@@ -167,13 +327,19 @@ class RouterNetwork(nn.Module):
                 [AttnBlock(d_model=d_model, n_heads=n_heads, ff_mult=ff_mult, dropout=attn_drop) for _ in range(n_layers)]
             )
 
-            # Actor: per-server logit head
-            self.actor_ln = nn.LayerNorm(d_model)
-            self.actor_head = nn.Linear(d_model, 1)
+            # Actor reads from DYNAMIC tokens only (one logit per server)
+            self.actor_ln = nn.LayerNorm(3 * d_model)   
+            self.actor_head = make_actor_mlp(
+                in_dim=3 * d_model,                   
+                hidden_dim=d_model,
+                out_dim=1,
+                depth=3,
+                dropout=0,
+            )
 
-            # Critic: pooled tokens -> value
-            self.critic_mlp = make_mlp(d_model, d_model, 1, depth=3, dropout=attn_drop)
-
+            # Critic pools over all tokens
+            self.critic_mlp = make_mlp(2 * d_model, d_model, 1, depth=3, dropout=attn_drop)
+        
         else:
             self.M = int(action_dim)  # number of servers/actions
             # If True: keep **flat** input externally, but internally reshape to [B,M,F]
@@ -181,27 +347,121 @@ class RouterNetwork(nn.Module):
             self.use_serverwise_mlp = bool(getattr(Config, "USE_SERVERWISE_MLP", True))
 
             if self.use_serverwise_mlp:
-                trunk_in = int(self.server_feat_dim + self.prompt_dim)  # per-server feat + prompt
-                self.server_in_ln = nn.LayerNorm(trunk_in)
-                self.server_mlp = make_mlp(trunk_in, hidden_dim, hidden_dim, depth=trunk_depth, dropout=dropout)
-                self.server_actor = make_mlp(hidden_dim, hidden_dim, 1, depth=head_depth, dropout=dropout)
-                self.server_critic = make_mlp(hidden_dim, hidden_dim, 1, depth=head_depth, dropout=dropout)
+                trunk_in = self.server_feat_dim + self.prompt_dim
+
+                # separately normalize server features and prompt embedding
+                self.server_feat_ln = nn.LayerNorm(self.server_feat_dim)
+                self.prompt_ln = nn.LayerNorm(self.prompt_dim)
+                # self.server_feat_ln = nn.Identity()
+                # self.prompt_ln = nn.Identity()
+                print(self.server_feat_ln)
+                print(self.prompt_ln)
+
+                self.server_mlp = make_mlp(
+                    trunk_in,
+                    hidden_dim,
+                    hidden_dim,
+                    depth=trunk_depth,
+                    dropout=dropout,
+                )
+
+                self.server_actor = make_mlp(
+                    hidden_dim,
+                    hidden_dim,
+                    1,
+                    depth=head_depth,
+                    dropout=dropout,
+                )
+
+                self.server_critic = make_mlp(
+                    hidden_dim,
+                    hidden_dim,
+                    1,
+                    depth=head_depth,
+                    dropout=dropout,
+                )
+            # else:
+            #     # Original flat MLP trunk
+            #     trunk_in = state_dim + self.prompt_dim
+            #     self.in_ln = nn.LayerNorm(trunk_in)
+            #     self.trunk = make_mlp(trunk_in, hidden_dim, hidden_dim, depth=trunk_depth, dropout=dropout)
+            #     self.actor = make_mlp(hidden_dim, hidden_dim, action_dim, depth=head_depth, dropout=dropout)
+            #     self.critic = make_mlp(hidden_dim, hidden_dim, 1, depth=head_depth, dropout=dropout)
             else:
                 # Original flat MLP trunk
                 trunk_in = state_dim + self.prompt_dim
-                self.in_ln = nn.LayerNorm(trunk_in)
+                self.state_ln = nn.LayerNorm(state_dim)
+                self.prompt_ln = nn.LayerNorm(self.prompt_dim)
                 self.trunk = make_mlp(trunk_in, hidden_dim, hidden_dim, depth=trunk_depth, dropout=dropout)
                 self.actor = make_mlp(hidden_dim, hidden_dim, action_dim, depth=head_depth, dropout=dropout)
                 self.critic = make_mlp(hidden_dim, hidden_dim, 1, depth=head_depth, dropout=dropout)
 
         self._init_weights()
 
+    # def _init_weights(self):
+    #     for m in self.modules():
+    #         if isinstance(m, nn.Linear):
+    #             nn.init.xavier_uniform_(m.weight,1)
+    #             if m.bias is not None:
+    #                 nn.init.zeros_(m.bias)
+    
+    # def _init_weights(self):
+    #     for m in self.modules():
+    #         if isinstance(m, nn.Linear):
+    #             nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
+    #             if m.bias is not None:
+    #                 nn.init.zeros_(m.bias)
+                    
+    #     actor_out, critic_out = self._get_output_layers()
+
+    #     if actor_out is not None:
+    #         nn.init.orthogonal_(actor_out.weight, gain=0.01)
+    #         if actor_out.bias is not None:
+    #             nn.init.zeros_(actor_out.bias)
+
+    #     if critic_out is not None:
+    #         nn.init.orthogonal_(critic_out.weight, gain=1.0)
+    #         if critic_out.bias is not None:
+    #             nn.init.zeros_(critic_out.bias)
+    
     def _init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight, gain=1.0)
+                nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
+
+        actor_out, critic_out = self._get_output_layers()
+
+        if actor_out is not None:
+            nn.init.orthogonal_(actor_out.weight, gain=1)  
+            if actor_out.bias is not None:
+                nn.init.zeros_(actor_out.bias)
+
+        if critic_out is not None:
+            nn.init.orthogonal_(critic_out.weight, gain=1.0)
+            if critic_out.bias is not None:
+                nn.init.zeros_(critic_out.bias)
+                
+    def _get_output_layers(self):
+        def last_linear(module):
+            if isinstance(module, nn.Linear):
+                return module
+            if isinstance(module, nn.Sequential):
+                for m in reversed(module):
+                    if isinstance(m, nn.Linear):
+                        return m
+            return None
+
+        if getattr(self, "use_clip_fusion", False):
+            # Actor "output" is the projection layers; critic is critic_mlp
+            return last_linear(self.actor_k_dyn), last_linear(self.critic_mlp)
+        elif self.use_attn:
+            return last_linear(self.actor_head), last_linear(self.critic_mlp)
+        elif getattr(self, "use_serverwise_mlp", False):
+            return last_linear(self.server_actor), last_linear(self.server_critic)
+        else:
+            return last_linear(self.actor), last_linear(self.critic)
 
     @torch.no_grad()
     def _encode_prompts(self, prompts):
@@ -261,7 +521,7 @@ class RouterNetwork(nn.Module):
         emb_st = emb_st.to(device=device, dtype=dtype, non_blocking=True)
     
         # ---- ADD THIS: L2 normalize to unit norm ----
-        emb_st = emb_st / (emb_st.norm(p=2, dim=-1, keepdim=True) + 1e-12)
+        # emb_st = emb_st / (emb_st.norm(p=2, dim=-1, keepdim=True) + 1e-12)
     
         if self.prompt_projection is None:
             return emb_st
@@ -269,35 +529,78 @@ class RouterNetwork(nn.Module):
         return self.prompt_projection(emb_st)
 
 
+    # def _build_server_tokens(self, state: torch.Tensor):
+    #     """
+    #     state: [B, state_dim]
+    #     returns:
+    #       server_tokens: [B, M, d_model]
+    #       global_token: [B, 1, d_model] or None
+    #     """
+    #     B = state.shape[0]
+
+
+    #     M = int(self.M)
+    #     F = int(self.server_feat_dim)
+
+    #     # Expect flat state: [B, M*F]
+    #     if state.dim() == 1:
+    #         state = state.unsqueeze(0)
+    #     B = state.shape[0]
+
+    #     if state.shape[1] != M * F:
+    #         raise ValueError(f"Flat state_dim mismatch in attention router: got {state.shape[1]}, expected {M*F} (M={M}, F={F})")
+
+    #     # Reshape to per-server features: [B, M, F] where F=4 => [util, mu, price_in, price_out]
+    #     server_feat = state.view(B, M, F)
+
+    #     server_tokens = self.server_feat_proj(server_feat)  # [B, M, d_model]
+
+    #     global_token = None  # no global token for this flat layout
+
+    #     return server_tokens, global_token
+    
     def _build_server_tokens(self, state: torch.Tensor):
         """
-        state: [B, state_dim]
-        returns:
-          server_tokens: [B, M, d_model]
-          global_token: [B, 1, d_model] or None
+        [CHANNEL] Build dual-channel server tokens.
+
+        Expected flat state:
+        state = concat_i [util_i, mu_i, pin_i, pout_i]   (per-server F_total = 4)
+
+        Returns:
+        server_tokens: [B, 2M, d_model]
+                        interleaved: [dyn_0, stat_0, dyn_1, stat_1, ...]
+        global_token:  None
         """
-        B = state.shape[0]
-
-
-        M = int(self.M)
-        F = int(self.server_feat_dim)
-
-        # Expect flat state: [B, M*F]
         if state.dim() == 1:
             state = state.unsqueeze(0)
         B = state.shape[0]
+        M = int(self.M)
+        F_dyn = int(self.dyn_feat_dim)
+        F_stat = int(self.stat_feat_dim)
+        F_total = F_dyn + F_stat
 
-        if state.shape[1] != M * F:
-            raise ValueError(f"Flat state_dim mismatch in attention router: got {state.shape[1]}, expected {M*F} (M={M}, F={F})")
+        if state.shape[1] != M * F_total:
+            raise ValueError(
+                f"Flat state_dim mismatch in attention router: got {state.shape[1]}, "
+                f"expected {M * F_total} (M={M}, F_dyn={F_dyn}, F_stat={F_stat})"
+            )
 
-        # Reshape to per-server features: [B, M, F] where F=4 => [util, mu, price_in, price_out]
-        server_feat = state.view(B, M, F)
+        server_feat = state.view(B, M, F_total)          # [B, M, F_total]
+        dyn_feat = server_feat[..., :F_dyn]              # [B, M, F_dyn]   (util)
+        stat_feat = server_feat[..., F_dyn:]             # [B, M, F_stat]  (mu, pin, pout)
 
-        server_tokens = self.server_feat_proj(server_feat)  # [B, M, d_model]
+        dyn_tok = self.server_dyn_proj(dyn_feat)         # [B, M, d_model]
+        stat_tok = self.server_stat_proj(stat_feat)      # [B, M, d_model]
 
-        global_token = None  # no global token for this flat layout
+        # Add type embedding to tell the channels apart
+        dyn_tok = dyn_tok + self.dyn_type_emb
+        stat_tok = stat_tok + self.stat_type_emb
 
-        return server_tokens, global_token
+        # Interleave: [dyn_0, stat_0, dyn_1, stat_1, ...]
+        combined = torch.stack([dyn_tok, stat_tok], dim=2)   # [B, M, 2, d_model]
+        server_tokens = combined.view(B, 2 * M, self.d_model)
+
+        return server_tokens, None
 
     def forward(self, state, prompt, action_mask=None):
         """
@@ -319,56 +622,166 @@ class RouterNetwork(nn.Module):
             p = p.expand(B, -1)
         elif p.shape[0] != B:
             p = p[:1].expand(B, -1)
+        
+        # =========================================================
+        # NEW: Two-tower + cross-attention fusion (CLIP-style head)
+        # =========================================================
+        if getattr(self, "use_clip_fusion", False):
+            # ---- Server tower ----
+            M = int(self.M)
+            F_dyn  = self.dyn_feat_dim
+            F_stat = self.stat_feat_dim
+            F_total = F_dyn + F_stat
+            if state.shape[1] != M * F_total:
+                raise ValueError(
+                    f"state_dim mismatch in CLIP fusion: got {state.shape[1]}, "
+                    f"expected {M * F_total}"
+                )
 
-        if not self.use_attn:
+            sf       = state.view(B, M, F_total)
+            dyn_in   = sf[..., :F_dyn]
+            stat_in  = sf[..., F_dyn:]
+
+            dyn_tok  = self.server_dyn_proj(dyn_in)   + self.dyn_type_emb   # [B,M,d]
+            stat_tok = self.server_stat_proj(stat_in) + self.stat_type_emb  # [B,M,d]
+
+            # Interleave [dyn_0, stat_0, dyn_1, stat_1, ...]
+            server_tokens = torch.stack([dyn_tok, stat_tok], dim=2).view(B, 2 * M, self.d_model)
+            server_tokens = server_tokens + self.server_pos_emb[:, :2 * M, :]
+
+            # Server self-attention (servers see each other)
+            for blk in self.server_self_attn:
+                server_tokens = blk(server_tokens)
+
+            # Split back into dyn/stat channels
+            dyn_h  = server_tokens[:, 0::2, :]   # [B, M, d]
+            stat_h = server_tokens[:, 1::2, :]   # [B, M, d]
+
+            # ---- Prompt tower ----
+            prompt_tok = self.prompt_tower(p).unsqueeze(1)   # [B, 1, d]
+
+            # ---- Cross-attention: prompt asks servers ----
+            q  = self.cross_attn_ln_q(prompt_tok)
+            kv = self.cross_attn_ln_kv(server_tokens)
+            attended, _ = self.cross_attn(q, kv, kv, need_weights=False)   # [B,1,d]
+            prompt_q = prompt_tok + attended
+            prompt_q = prompt_q + self.cross_attn_ff(self.cross_attn_ln_out(prompt_q))
+            # prompt_q: [B, 1, d] -- prompt-conditioned query that has "seen" all servers
+
+            # ---- Actor: CLIP-style dot product, per channel ----
+            q_vec = F.normalize(self.actor_q_proj(prompt_q), dim=-1)         # [B,1,d]
+            k_dyn  = F.normalize(self.actor_k_dyn(dyn_h),    dim=-1)         # [B,M,d]
+            k_stat = F.normalize(self.actor_k_stat(stat_h),  dim=-1)         # [B,M,d]
+
+            # clamp temperature for stability
+            log_temp = self.log_temp.clamp(max=self.log_temp_max)
+            scale = log_temp.exp()
+
+            logits_dyn  = (q_vec * k_dyn ).sum(-1) * scale   # [B, M]
+            logits_stat = (q_vec * k_stat).sum(-1) * scale   # [B, M]
+            logits = logits_dyn + logits_stat                # [B, M]
+
+            # ---- Critic: pooled MLP ----
+            server_pool = server_tokens.mean(dim=1)              # [B, d]
+            critic_in   = torch.cat([prompt_q.squeeze(1), server_pool], dim=-1)  # [B, 2d]
+            value = self.critic_mlp(critic_in)                   # [B, 1]
+
+
+        elif not self.use_attn:
             if getattr(self, "use_serverwise_mlp", False):
                 # Flat state -> reshape to per-server features
-                # state: [B, M*F] where F=self.server_feat_dim
-                F = int(self.server_feat_dim)
+                F_dim = int(self.server_feat_dim)
                 M = int(self.M)
-                if state.shape[1] != M * F:
-                    raise ValueError(f"Flat state_dim mismatch: got {state.shape[1]}, expected {M*F} (M={M}, F={F})")
-                s = state.view(B, M, F)  # [B, M, F]
+                if state.shape[1] != M * F_dim:
+                    raise ValueError(f"Flat state_dim mismatch: got {state.shape[1]}, expected {M*F_dim} (M={M}, F={F_dim})")
+                s = state.view(B, M, F_dim)  # [B, M, F_dim]
 
                 # broadcast prompt to each server
-                p_srv = p.unsqueeze(1).expand(B, M, p.shape[-1])  # [B, M, prompt_dim]
-                x = torch.cat([s, p_srv], dim=-1)  # [B, M, F+prompt_dim]
-                x = self.server_in_ln(x)
+                # p_srv = p.unsqueeze(1).expand(B, M, p.shape[-1])  # [B, M, prompt_dim]
+                # x = torch.cat([s, p_srv], dim=-1)  # [B, M, F+prompt_dim]
+                # x = self.server_in_ln(x)
 
-                h = self.server_mlp(x)  # [B, M, hidden_dim]
-                logits = self.server_actor(h).squeeze(-1)  # [B, M]
+                # h = self.server_mlp(x)  # [B, M, hidden_dim]
+                # logits = self.server_actor(h).squeeze(-1)  # [B, M]
 
-                h_pool = h.mean(dim=1)  # [B, hidden_dim]
-                value = self.server_critic(h_pool)  # [B, 1]
+                # h_pool = h.mean(dim=1)  # [B, hidden_dim]
+                # value = self.server_critic(h_pool)  # [B, 1]
+                # s: [B, M, F]
+                # p: [B, prompt_dim]
+
+                s_norm = self.server_feat_ln(s)
+
+                p_norm = self.prompt_ln(p)
+                p_srv = p_norm.unsqueeze(1).expand(B, M, p_norm.shape[-1])
+
+                x = torch.cat([s_norm, p_srv], dim=-1)
+
+                h = self.server_mlp(x)
+                logits = self.server_actor(h).squeeze(-1)
+
+                h_pool = h.mean(dim=1)
+                value = self.server_critic(h_pool)
+            # else:
+            #     # Original flat MLP trunk
+            #     x = torch.cat([state, p], dim=-1)  # [B, state_dim + prompt_dim]
+            #     x = self.in_ln(x)
+            #     h = self.trunk(x)                  # [B, hidden_dim]
+            #     logits = self.actor(h)             # [B, action_dim]
+            #     value = self.critic(h)             # [B, 1]
             else:
-                # Original flat MLP trunk
-                x = torch.cat([state, p], dim=-1)  # [B, state_dim + prompt_dim]
-                x = self.in_ln(x)
-                h = self.trunk(x)                  # [B, hidden_dim]
-                logits = self.actor(h)             # [B, action_dim]
-                value = self.critic(h)             # [B, 1]
+                # Original flat MLP trunk with separate norms
+                s_norm = self.state_ln(state)
+                p_norm = self.prompt_ln(p)
+                x = torch.cat([s_norm, p_norm], dim=-1)
+                h = self.trunk(x)
+                logits = self.actor(h)
+                value = self.critic(h)
         else:
             # tokens = [PROMPT] (+[GLOBAL]) + [SERVERS]
             prompt_tok = self.prompt_token_proj(p).unsqueeze(1)  # [B, 1, d_model]
             server_tokens, global_token = self._build_server_tokens(state)  # [B, M, d_model], maybe [B,1,d]
 
-            if global_token is None:
-                x = torch.cat([prompt_tok, server_tokens], dim=1)  # [B, 1+M, d]
-            else:
-                x = torch.cat([prompt_tok, global_token, server_tokens], dim=1)  # [B, 2+M, d]
+            # if global_token is None:
+            #     x = torch.cat([prompt_tok, server_tokens], dim=1)  # [B, 1+M, d]
+            # else:
+            #     x = torch.cat([prompt_tok, global_token, server_tokens], dim=1)  # [B, 2+M, d]
 
+            # x = x + self.pos_emb[:, :x.shape[1], :]
+
+            # for blk in self.attn_blocks:
+            #     x = blk(x)
+
+            # # server reps are last M tokens
+            # server_h = x[:, -self.M:, :]         # [B, M, d_model]
+            # server_h = self.actor_ln(server_h)
+            # logits = self.actor_head(server_h).squeeze(-1)  # [B, M] (action_dim assumed == M)
+
+            # pooled = x.mean(dim=1)               # [B, d_model]
+            # value = self.critic_mlp(pooled)      # [B, 1]
+            
+            # [CHANNEL] server_tokens is [B, 2M, d_model] in dual-channel mode
+            x = torch.cat([prompt_tok, server_tokens], dim=1)  # [B, 1 + 2M, d_model]
             x = x + self.pos_emb[:, :x.shape[1], :]
 
             for blk in self.attn_blocks:
                 x = blk(x)
 
-            # server reps are last M tokens
-            server_h = x[:, -self.M:, :]         # [B, M, d_model]
-            server_h = self.actor_ln(server_h)
-            logits = self.actor_head(server_h).squeeze(-1)  # [B, M] (action_dim assumed == M)
+            # x: [B, 1 + 2M, d_model]
+            prompt_h = x[:, 0:1, :]                     # [B, 1, d]
+            server_block = x[:, 1:1 + 2 * self.M, :]    # [B, 2M, d]
+            dyn_h = server_block[:, 0::2, :]            # [B, M, d]
+            stat_h = server_block[:, 1::2, :]           # [B, M, d]
 
-            pooled = x.mean(dim=1)               # [B, d_model]
-            value = self.critic_mlp(pooled)      # [B, 1]
+            prompt_h_exp = prompt_h.expand(-1, self.M, -1)   # [B, M, d]
+
+            actor_in = torch.cat([prompt_h_exp, dyn_h, stat_h], dim=-1)   # [B, M, 3d]
+            actor_in = self.actor_ln(actor_in)
+            logits = self.actor_head(actor_in).squeeze(-1)   # [B, M]
+
+            # Critic pools over all tokens (prompt + both channels of all servers)
+            pooled = x.mean(dim=1)                        # [B, d]
+            critic_in = torch.cat([prompt_h.squeeze(1), pooled], dim=-1)  # [B, 2d]
+            value = self.critic_mlp(critic_in)
 
         # apply action mask on logits (best practice)
         if action_mask is not None:
@@ -831,7 +1244,6 @@ class PPOAgent:
         self.optimizer = torch.optim.Adam(
             self.network.parameters(),
             lr=Config.LEARNING_RATE,
-            # weight_decay=Config.WEIGHT_DECAY
         )
 
         self.state_dim = state_dim
@@ -1075,11 +1487,16 @@ class PPOAgent:
             getattr(Config, "USE_EM_EXACT_MATCH", False)
         )
 
-        util = state_tensor[:M].detach().cpu().numpy().astype(np.float64)
+        F = 4
+        sf = state_tensor.view(M, F)
+
+        util = sf[:, 0].detach().cpu().numpy().astype(np.float64)
+        mu = sf[:, 1].detach().cpu().numpy().astype(np.float64)
+        price_in = sf[:, 2].detach().cpu().numpy().astype(np.float64)
+        price_out = sf[:, 3].detach().cpu().numpy().astype(np.float64)
+
         cap = np.asarray(Config.SERVER_CAPACITIES, dtype=np.float64)
         q_len = util * cap
-
-        mu = state_tensor[M:2*M].detach().cpu().numpy().astype(np.float64)
         mu = np.maximum(mu, 1e-6)
 
         if include_quality_state and state_tensor.numel() >= 3 * M:
@@ -1209,7 +1626,8 @@ class PPOAgent:
 
         if getattr(Config, "JSQ", False):
             M = len(Config.MODEL_NAMES)
-            u = np.asarray(state[:M], dtype=np.float32)
+            sf = np.asarray(state, dtype=np.float32).reshape(M, 4)
+            u = sf[:, 0]
             C = np.asarray(Config.SERVER_CAPACITIES, dtype=np.float32)
             q = u * C
 
@@ -1278,8 +1696,15 @@ class PPOAgent:
     def update_new(self, trajectories):
         """
         PPO update on ACTIVE intervals only (N_t > 0), with:
-          - fair reward normalization: 1/M if N_t >= M, else 1/N_t
-          - interval importance weight rho_t = exp(mean_i (new_logp_i - old_logp_i))
+        - fair reward normalization: 1/M if N_t >= M, else 1/N_t
+        - interval importance weight rho_t = exp(mean_i (new_logp_i - old_logp_i))
+        
+        Bug fixes applied:
+        [FIX #1] Single-interval advantage no longer zeroed by mean subtraction
+        [FIX #2] Entropy aggregated per-interval to match policy_loss scale
+        [FIX #3] Critic trained on ALL steps (broadcast interval return)
+        [FIX #4] approx_kl uses Schulman v3 estimator (always >= 0)
+        [NOTE ] KL term removed from loss (approx_kl is monitoring only now)
         """
         states_np = np.array([t["state"] for t in trajectories], dtype=np.float32)
         actions_np = np.array([t["action"] for t in trajectories], dtype=np.int64)
@@ -1315,6 +1740,12 @@ class PPOAgent:
         slot_to_indices = {}
         for i, ts in enumerate(time_slots.tolist()):
             slot_to_indices.setdefault(int(ts), []).append(i)
+            
+        arrivals_per_interval = {ts: len(idxs) for ts, idxs in sorted(slot_to_indices.items())}
+        total_arrivals = sum(arrivals_per_interval.values())
+        print(f"[Arrivals] intervals={len(arrivals_per_interval)} "
+            f"total={total_arrivals} "
+            f"per_slot={arrivals_per_interval}")
 
         interval_indices = []
         first_indices = []
@@ -1337,41 +1768,16 @@ class PPOAgent:
 
             avg_rewards.append(r_t.mean())
             min_rewards.append(r_t.min())
-            term_values_old.append(values[idxs[0]])
-
-            # server_means = []
-            # if Nt >= M:
-            #     floor = r_t.min().detach()
-            #     for m in range(M):
-            #         mask = (a_t == m)
-            #         if mask.any():
-            #             server_means.append(r_t[mask].mean())
-            #         else:
-            #             server_means.append(floor)
-            #     server_means = torch.stack(server_means)
-            #     tr = log_mean_exp(server_means, denom=M)
-            # else:
-            #     N = Nt
-            #     floor = r_t.min().detach()
-            #     for m in range(M):
-            #         mask = (a_t == m)
-            #         if mask.any():
-            #             server_means.append(r_t[mask].mean())
-            #             N -= 1
-            #         elif N > 0:
-            #             server_means.append(floor)
-            #             N -= 1
-            #     if len(server_means) == 0:
-            #         continue
-            #     server_means = torch.stack(server_means)
-            #     tr = log_mean_exp(server_means, denom=Nt)
-
-            # term_rewards.append(tr)
+            # term_values_old.append(values[idxs[0]])
+            # Use interval-level value baseline.
+            # Since all prompts in the same interval share the same telemetry state s_t,
+            # average prompt-conditioned values to reduce dependence on the first prompt.
+            term_values_old.append(values[idxs].mean())
 
             # Fair reward with controllable padding
             F_frac = float(getattr(Config, "FAIR", 1.0))
             F_frac = max(0.0, min(1.0, F_frac))
-            
+
             # effective group size: historically you used denom=M if Nt>=M else denom=Nt
             # i.e. G = min(Nt, M)
             G = min(Nt, M)
@@ -1380,31 +1786,44 @@ class PPOAgent:
                 floor = r_t.min().detach()
             else:
                 floor = torch.tensor(
-                            - Config.BETA - Config.REWARD_GAMMA,
+                            # - Config.BETA - Config.REWARD_GAMMA,
+                            -1,
                             device=Config.DEVICE,
                             dtype=r_t.dtype
                         )
-            
+
             # collect mean reward for each USED server (deterministic order by server id)
-            used_means = []
+            used_server_terms = []
+
             for m in range(M):
                 mask = (a_t == m)
+
                 if mask.any():
-                    used_means.append(r_t[mask].mean())
-            
-            if len(used_means) == 0:
-                continue  # should not happen if Nt>0, but keep safe
-            
-            K = len(used_means)                 # number of used servers
-            missing = max(0, G - K)             # how many "slots" are missing
+                    r_m = r_t[mask]  # rewards of prompts routed to server m
+
+                    # Old:
+                    server_term = r_m.mean()
+
+                    # New:
+                    # tilted aggregation inside this server, using the same Config.T
+                    # server_term = log_mean_exp(r_m, denom=r_m.numel())
+
+                    used_server_terms.append(server_term)
+
+            if len(used_server_terms) == 0:
+                continue
+
+            K = len(used_server_terms)
+            missing = max(0, G - K)
             pad = int(math.floor(F_frac * missing))
-            
-            # add floor padding (P terms)
+
             if pad > 0:
-                used_means.extend([floor] * pad)
-            
-            server_means = torch.stack(used_means)          # length = K + pad
-            tr = log_mean_exp(server_means, denom=server_means.numel())
+                used_server_terms.extend([floor] * pad)
+
+            server_terms = torch.stack(used_server_terms)
+
+            # Tilted aggregation across servers, also using the same Config.T
+            tr = log_mean_exp(server_terms, denom=server_terms.numel())
             term_rewards.append(tr)
 
         if len(term_rewards) == 0:
@@ -1431,14 +1850,42 @@ class PPOAgent:
         term_adv = self.compute_gae(term_rewards, term_values_old, dones=dones)
         term_ret = term_adv + term_values_old
 
-        term_adv = (term_adv - term_adv.mean()) / (term_adv.std() + 1e-5)
+        # ====================================================================
+        # [FIX #1] Single-interval advantage zeroing bug
+        # --------------------------------------------------------------------
+        # OLD code:
+        #   if term_adv.numel() > 1:
+        #       term_adv = (term_adv - term_adv.mean()) / (term_adv.std(unbiased=False) + 1e-5)
+        #   else:
+        #       term_adv = term_adv - term_adv.mean()   # <-- BUG: single element = 0
+        #
+        # When EPISODE_TIME_INTERVAL / INTERVAL_LENGTH == 1, there is only ONE
+        # interval per episode, so term_adv.numel() == 1. Old "else" branch
+        # subtracted the mean from itself, making advantage exactly 0, which
+        # makes policy_loss always 0 -> policy never updates.
+        # ====================================================================
+        if term_adv.numel() > 1:
+            term_adv = (term_adv - term_adv.mean()) / (term_adv.std(unbiased=False) + 1e-5)
+        # else: keep term_adv as-is (do NOT subtract mean when only 1 element)
+        # NOTE: Still recommend EPISODE_TIME_INTERVAL >> INTERVAL_LENGTH so we
+        # have multiple intervals for meaningful advantage normalization.
+
+        # ====================================================================
+        # [FIX #3 - Prep] Build per-step -> interval-position mapping.
+        # Used so critic can regress every step's value to its interval return.
+        # ====================================================================
+        step_to_interval_pos = torch.zeros(len(trajectories), device=Config.DEVICE, dtype=torch.long)
+        for pos, idxs in enumerate(interval_indices):
+            step_to_interval_pos[idxs] = pos
 
         total_policy_loss = 0.0
         total_value_loss = 0.0
         total_entropy_loss = 0.0
         approx_kl = torch.tensor(0.0, device=Config.DEVICE)
+        
+        actual_updates = 0
 
-        for _ in range(Config.PPO_EPOCHS):
+        for epoch in range(Config.PPO_EPOCHS):
             if getattr(Config, "USE_MERGE_TO_TRAIN", False):
                 _, new_log_probs, entropy, new_values, dist, _queue_scores = self.network.get_action_and_value_queue(
                     states, states_np, prompts, action_masks, actions, service_rate=service_rate
@@ -1450,6 +1897,7 @@ class PPOAgent:
                     states, prompts, action_masks, actions
                 )
 
+            # ---- Interval-level rho_t (your method, unchanged) ----
             rhos = []
             for idxs in interval_indices:
                 rho_t = torch.exp((new_log_probs[idxs] - old_log_probs[idxs]).mean())
@@ -1459,30 +1907,115 @@ class PPOAgent:
             surr1 = rhos * term_adv
             surr2 = torch.clamp(rhos, 1.0 - Config.CLIP_EPSILON, 1.0 + Config.CLIP_EPSILON) * term_adv
             policy_loss = -torch.min(surr1, surr2).mean()
+            
+            # # ---- per-step ----
+            # step_adv = torch.zeros(len(trajectories), device=Config.DEVICE)
+            # for pos, idxs in enumerate(interval_indices):
+            #     step_adv[idxs] = term_adv[pos]  
 
-            v_pred = new_values.squeeze(-1)[first_indices_t]
-            value_loss = F.mse_loss(v_pred, term_ret.detach())
-            entropy_loss = -entropy.mean()
+            # rho_step = torch.exp(new_log_probs - old_log_probs)   # [N_total]
 
-            kls = []
-            for idxs in interval_indices:
-                kl_t = (old_log_probs[idxs] - new_log_probs[idxs]).mean()
-                kls.append(kl_t)
-            approx_kl = torch.stack(kls).mean()
-            approx_kl = torch.clamp(approx_kl, min=0.0)
+            # surr1 = rho_step * step_adv
+            # surr2 = torch.clamp(rho_step, 1.0 - Config.CLIP_EPSILON, 1.0 + Config.CLIP_EPSILON) * step_adv
+            # policy_loss = -torch.min(surr1, surr2).mean()
 
+            # ================================================================
+            # [FIX #3] Critic trained on ALL steps, not just interval-first steps
+            # ----------------------------------------------------------------
+            # OLD code:
+            #   v_pred = new_values.squeeze(-1)[first_indices_t]
+            #   value_loss = F.mse_loss(v_pred, term_ret.detach())
+            #
+            # Old version only used 1 step per interval as critic target,
+            # wasting ~99% of value predictions. Since interval state is frozen
+            # but prompts differ, V(s_t, prompt_i) can still learn prompt
+            # difficulty. We regress every step's value to its interval's
+            # return (broadcast). Semantics preserved: target is still the
+            # interval-level return.
+            # ================================================================
+            # step_ret = term_ret[step_to_interval_pos]                 # [N_total]
+            # v_pred_all = new_values.squeeze(-1)                       # [N_total]
+            # value_loss = F.mse_loss(v_pred_all, step_ret.detach())
+            
+            # v_pred = new_values.squeeze(-1)[first_indices_t]
+            # value_loss = F.mse_loss(v_pred, term_ret.detach())
+            v_all = new_values.squeeze(-1)  # [N_total]
+
+            v_interval = torch.stack([
+                v_all[idxs].mean()
+                for idxs in interval_indices
+            ])  # [num_intervals]
+
+            value_loss = F.mse_loss(v_interval, term_ret.detach())
+
+            # ================================================================
+            # [FIX #2] Entropy scale aligned with policy_loss (per-interval mean)
+            # ----------------------------------------------------------------
+            # OLD code:
+            #   entropy_loss = -entropy.mean()   # mean over N_total steps
+            #
+            # policy_loss averages over N_intervals, so old entropy_loss was
+            # effectively diluted by avg_steps_per_interval (often 20-100x).
+            # With ENTROPY_COEF=0.001, effective entropy pressure was ~1e-5,
+            # far too weak to prevent collapse.
+            # ================================================================
+            # entropy_per_interval = torch.stack(
+            #     [entropy[idxs].mean() for idxs in interval_indices]
+            # )
+            # entropy_loss = -entropy_per_interval.mean()
+            entropy_loss = -entropy.mean()   # mean over N_total steps
+
+            # ================================================================
+            # [FIX #4] approx_kl uses Schulman v3 estimator (always >= 0)
+            # ----------------------------------------------------------------
+            # OLD code:
+            #   kls = []
+            #   for idxs in interval_indices:
+            #       kl_t = (old_log_probs[idxs] - new_log_probs[idxs]).mean()
+            #       kls.append(kl_t)
+            #   approx_kl = torch.stack(kls).mean()
+            #   approx_kl = torch.clamp(approx_kl, min=0.0)
+            #
+            # Old used (old - new).mean() which is 1st-order KL approximation.
+            # It can go negative due to finite-sample noise; clamping to 0
+            # hides the issue. Use Schulman v3: ((ratio - 1) - log_ratio),
+            # always >= 0 and unbiased. Compute under no_grad (monitoring only).
+            # ================================================================
+            with torch.no_grad():
+                log_ratio_step = new_log_probs - old_log_probs
+                ratio_step = torch.exp(log_ratio_step)
+                approx_kl_step = (ratio_step - 1.0) - log_ratio_step
+                approx_kl = torch.stack(
+                    [approx_kl_step[idxs].mean() for idxs in interval_indices]
+                ).mean()
+
+            # ================================================================
+            # [NOTE] KL_COEF * approx_kl removed from loss.
+            # Reason: approx_kl is now no_grad (monitoring only). PPO already
+            # controls trust region via the clip on rho_t. If you want an
+            # explicit KL penalty, build a differentiable KL separately.
+            # ================================================================
             loss = (
                 float(getattr(Config, "POLICY_COEF", 1.0)) * policy_loss
                 + float(getattr(Config, "VALUE_COEF", 0.5)) * value_loss
                 + float(getattr(Config, "ENTROPY_COEF", 0.0)) * entropy_loss
-                + float(getattr(Config, "KL_COEF", 0.0)) * approx_kl
             )
-
+            
+            if bool(getattr(Config, "USE_TARGET_KL_STOP", False)):
+                target_kl = float(getattr(Config, "TARGET_KL", 0.02))
+                if float(approx_kl.detach().cpu().item()) > target_kl:
+                    print(
+                        f"[PPO] early stop at epoch {epoch}: "
+                        f"approx_kl={float(approx_kl.detach().cpu().item()):.6f} > target_kl={target_kl}"
+                    )
+                    break
+                
             self.optimizer.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.network.parameters(), Config.MAX_GRAD_NORM)
             self.optimizer.step()
-
+            
+            actual_updates += 1
             total_policy_loss += float(policy_loss.item())
             total_value_loss += float(value_loss.item())
             total_entropy_loss += float(entropy_loss.item())
@@ -1506,10 +2039,11 @@ class PPOAgent:
         route_dist = {i: int(sum(1 for a in actions_list if a == i)) for i in range(M)}
         mean_min_reward = float(torch.stack(min_rewards).mean().item()) if len(min_rewards) else 0.0
 
+        den = max(actual_updates, 1)
         return {
-            "policy_loss": total_policy_loss / Config.PPO_EPOCHS,
-            "value_loss": total_value_loss / Config.PPO_EPOCHS,
-            "entropy_loss": total_entropy_loss / Config.PPO_EPOCHS,
+            "policy_loss": total_policy_loss / den,
+            "value_loss": total_value_loss / den,
+            "entropy_loss": total_entropy_loss / den,
             "rewards_returns": return_trajectory,
             "term_rewards_returns": term_return_trajectory,
             "min_rewards": mean_min_reward,
@@ -1518,7 +2052,257 @@ class PPOAgent:
             "route distribution": route_dist,
             "entropy of route distribution": ent_usage,
             "approx_kl": float(approx_kl.detach().cpu().item()),
+            "actual_updates": actual_updates,
+            "early_stopped_kl": int(actual_updates < Config.PPO_EPOCHS),
         }
+
+    # def update_new(self, trajectories):
+    #     """
+    #     PPO update on ACTIVE intervals only (N_t > 0), with:
+    #       - fair reward normalization: 1/M if N_t >= M, else 1/N_t
+    #       - interval importance weight rho_t = exp(mean_i (new_logp_i - old_logp_i))
+    #     """
+    #     states_np = np.array([t["state"] for t in trajectories], dtype=np.float32)
+    #     actions_np = np.array([t["action"] for t in trajectories], dtype=np.int64)
+    #     old_log_probs_np = np.array([t["log_prob"] for t in trajectories], dtype=np.float32)
+    #     rewards_np = np.array([t["reward"] for t in trajectories], dtype=np.float32)
+    #     values_np = np.array([t["value"] for t in trajectories], dtype=np.float32)
+
+    #     prompts = [t["prompt"] for t in trajectories]
+    #     service_rate = [t["service_rate"] for t in trajectories]
+    #     time_slots_np = np.array([t["time_slot"] for t in trajectories], dtype=np.int64)
+
+    #     states = torch.as_tensor(states_np, device=Config.DEVICE)
+    #     actions = torch.as_tensor(actions_np, device=Config.DEVICE)
+    #     old_log_probs = torch.as_tensor(old_log_probs_np, device=Config.DEVICE)
+    #     rewards = torch.as_tensor(rewards_np, device=Config.DEVICE)
+    #     values = torch.as_tensor(values_np, device=Config.DEVICE)
+    #     time_slots = torch.as_tensor(time_slots_np, device=Config.DEVICE)
+
+    #     action_masks = None
+    #     if "action_mask" in trajectories[0] and trajectories[0]["action_mask"] is not None:
+    #         action_masks_np = np.array([t["action_mask"] for t in trajectories], dtype=np.float32)
+    #         action_masks = torch.as_tensor(action_masks_np, device=Config.DEVICE)
+
+    #     M = len(Config.MODEL_NAMES)
+    #     beta = float(Config.T)
+
+    #     def log_mean_exp(x: torch.Tensor, denom: int):
+    #         denom = max(int(denom), 1)
+    #         if abs(beta) < 1e-8:
+    #             return x.mean()
+    #         return (torch.logsumexp(beta * x, dim=0) - math.log(denom)) / beta
+
+    #     slot_to_indices = {}
+    #     for i, ts in enumerate(time_slots.tolist()):
+    #         slot_to_indices.setdefault(int(ts), []).append(i)
+
+    #     interval_indices = []
+    #     first_indices = []
+    #     term_rewards = []
+    #     term_values_old = []
+    #     avg_rewards = []
+    #     min_rewards = []
+
+    #     for ts in sorted(slot_to_indices.keys()):
+    #         idxs = torch.tensor(slot_to_indices[ts], device=Config.DEVICE, dtype=torch.long)
+    #         Nt = int(idxs.numel())
+    #         if Nt == 0:
+    #             continue
+
+    #         interval_indices.append(idxs)
+    #         first_indices.append(int(idxs[0].item()))
+
+    #         r_t = rewards[idxs]
+    #         a_t = actions[idxs]
+
+    #         avg_rewards.append(r_t.mean())
+    #         min_rewards.append(r_t.min())
+    #         term_values_old.append(values[idxs[0]])
+
+    #         # server_means = []
+    #         # if Nt >= M:
+    #         #     floor = r_t.min().detach()
+    #         #     for m in range(M):
+    #         #         mask = (a_t == m)
+    #         #         if mask.any():
+    #         #             server_means.append(r_t[mask].mean())
+    #         #         else:
+    #         #             server_means.append(floor)
+    #         #     server_means = torch.stack(server_means)
+    #         #     tr = log_mean_exp(server_means, denom=M)
+    #         # else:
+    #         #     N = Nt
+    #         #     floor = r_t.min().detach()
+    #         #     for m in range(M):
+    #         #         mask = (a_t == m)
+    #         #         if mask.any():
+    #         #             server_means.append(r_t[mask].mean())
+    #         #             N -= 1
+    #         #         elif N > 0:
+    #         #             server_means.append(floor)
+    #         #             N -= 1
+    #         #     if len(server_means) == 0:
+    #         #         continue
+    #         #     server_means = torch.stack(server_means)
+    #         #     tr = log_mean_exp(server_means, denom=Nt)
+
+    #         # term_rewards.append(tr)
+
+    #         # Fair reward with controllable padding
+    #         F_frac = float(getattr(Config, "FAIR", 1.0))
+    #         F_frac = max(0.0, min(1.0, F_frac))
+            
+    #         # effective group size: historically you used denom=M if Nt>=M else denom=Nt
+    #         # i.e. G = min(Nt, M)
+    #         G = min(Nt, M)
+
+    #         if Config.FAIR_REWARD_MIN_FLOOR:
+    #             floor = r_t.min().detach()
+    #         else:
+    #             floor = torch.tensor(
+    #                         - Config.BETA - Config.REWARD_GAMMA,
+    #                         device=Config.DEVICE,
+    #                         dtype=r_t.dtype
+    #                     )
+            
+    #         # collect mean reward for each USED server (deterministic order by server id)
+    #         used_means = []
+    #         for m in range(M):
+    #             mask = (a_t == m)
+    #             if mask.any():
+    #                 used_means.append(r_t[mask].mean())
+            
+    #         if len(used_means) == 0:
+    #             continue  # should not happen if Nt>0, but keep safe
+            
+    #         K = len(used_means)                 # number of used servers
+    #         missing = max(0, G - K)             # how many "slots" are missing
+    #         pad = int(math.floor(F_frac * missing))
+            
+    #         # add floor padding (P terms)
+    #         if pad > 0:
+    #             used_means.extend([floor] * pad)
+            
+    #         server_means = torch.stack(used_means)          # length = K + pad
+    #         tr = log_mean_exp(server_means, denom=server_means.numel())
+    #         term_rewards.append(tr)
+
+    #     if len(term_rewards) == 0:
+    #         return {
+    #             "policy_loss": 0.0,
+    #             "value_loss": 0.0,
+    #             "entropy_loss": 0.0,
+    #             "rewards_returns": float(self.cumulated_return(rewards)[0].item()) if rewards.numel() > 0 else 0.0,
+    #             "term_rewards_returns": 0.0,
+    #             "min_rewards": 0.0,
+    #             "server_usage_percentage": {m: 0.0 for m in range(M)},
+    #             "cumulated_avg_rewards": 0.0,
+    #             "route distribution": {i: 0 for i in range(M)},
+    #             "entropy of route distribution": 0.0,
+    #             "approx_kl": 0.0,
+    #         }
+
+    #     term_rewards = torch.stack(term_rewards)
+    #     term_values_old = torch.stack(term_values_old)
+    #     first_indices_t = torch.tensor(first_indices, device=Config.DEVICE, dtype=torch.long)
+
+    #     dones = torch.zeros_like(term_rewards)
+    #     dones[-1] = 1
+    #     term_adv = self.compute_gae(term_rewards, term_values_old, dones=dones)
+    #     term_ret = term_adv + term_values_old
+
+    #     if term_adv.numel() > 1:
+    #         term_adv = (term_adv - term_adv.mean()) / (term_adv.std(unbiased=False) + 1e-5)
+    #     else:
+    #         term_adv = term_adv - term_adv.mean() 
+
+    #     total_policy_loss = 0.0
+    #     total_value_loss = 0.0
+    #     total_entropy_loss = 0.0
+    #     approx_kl = torch.tensor(0.0, device=Config.DEVICE)
+
+    #     for _ in range(Config.PPO_EPOCHS):
+    #         if getattr(Config, "USE_MERGE_TO_TRAIN", False):
+    #             _, new_log_probs, entropy, new_values, dist, _queue_scores = self.network.get_action_and_value_queue(
+    #                 states, states_np, prompts, action_masks, actions, service_rate=service_rate
+    #             )
+    #         else:
+    #             if not Config.MASK:
+    #                 action_masks = None
+    #             _, new_log_probs, entropy, new_values, dist = self.network.get_action_and_value(
+    #                 states, prompts, action_masks, actions
+    #             )
+
+    #         rhos = []
+    #         for idxs in interval_indices:
+    #             rho_t = torch.exp((new_log_probs[idxs] - old_log_probs[idxs]).mean())
+    #             rhos.append(rho_t)
+    #         rhos = torch.stack(rhos)
+
+    #         surr1 = rhos * term_adv
+    #         surr2 = torch.clamp(rhos, 1.0 - Config.CLIP_EPSILON, 1.0 + Config.CLIP_EPSILON) * term_adv
+    #         policy_loss = -torch.min(surr1, surr2).mean()
+
+    #         v_pred = new_values.squeeze(-1)[first_indices_t]
+    #         value_loss = F.mse_loss(v_pred, term_ret.detach())
+    #         entropy_loss = -entropy.mean()
+
+    #         kls = []
+    #         for idxs in interval_indices:
+    #             kl_t = (old_log_probs[idxs] - new_log_probs[idxs]).mean()
+    #             kls.append(kl_t)
+    #         approx_kl = torch.stack(kls).mean()
+    #         approx_kl = torch.clamp(approx_kl, min=0.0)
+
+    #         loss = (
+    #             float(getattr(Config, "POLICY_COEF", 1.0)) * policy_loss
+    #             + float(getattr(Config, "VALUE_COEF", 0.5)) * value_loss
+    #             + float(getattr(Config, "ENTROPY_COEF", 0.0)) * entropy_loss
+    #             + float(getattr(Config, "KL_COEF", 0.0)) * approx_kl
+    #         )
+
+    #         self.optimizer.zero_grad(set_to_none=True)
+    #         loss.backward()
+    #         torch.nn.utils.clip_grad_norm_(self.network.parameters(), Config.MAX_GRAD_NORM)
+    #         self.optimizer.step()
+
+    #         total_policy_loss += float(policy_loss.item())
+    #         total_value_loss += float(value_loss.item())
+    #         total_entropy_loss += float(entropy_loss.item())
+
+    #     term_return_trajectory = float(self.cumulated_return(term_rewards)[0].item())
+    #     return_trajectory = float(self.cumulated_return(rewards)[0].item())
+
+    #     avg_rewards_t = torch.stack(avg_rewards) if len(avg_rewards) else torch.tensor(0.0, device=Config.DEVICE)
+    #     avg_rewards_returns = float(self.cumulated_return(avg_rewards_t)[0].item()) if avg_rewards_t.numel() > 0 else 0.0
+
+    #     actions_list = actions_np.tolist()
+    #     server_usage_percentage = {m: 0.0 for m in range(M)}
+    #     for a in actions_list:
+    #         server_usage_percentage[int(a)] += 1.0
+    #     for m in server_usage_percentage:
+    #         server_usage_percentage[m] /= max(len(actions_list), 1)
+
+    #     probs_usage = np.array([server_usage_percentage[m] for m in range(M)], dtype=np.float64)
+    #     ent_usage = float(-(probs_usage * np.log(probs_usage + 1e-12)).sum())
+
+    #     route_dist = {i: int(sum(1 for a in actions_list if a == i)) for i in range(M)}
+    #     mean_min_reward = float(torch.stack(min_rewards).mean().item()) if len(min_rewards) else 0.0
+
+    #     return {
+    #         "policy_loss": total_policy_loss / Config.PPO_EPOCHS,
+    #         "value_loss": total_value_loss / Config.PPO_EPOCHS,
+    #         "entropy_loss": total_entropy_loss / Config.PPO_EPOCHS,
+    #         "rewards_returns": return_trajectory,
+    #         "term_rewards_returns": term_return_trajectory,
+    #         "min_rewards": mean_min_reward,
+    #         "server_usage_percentage": server_usage_percentage,
+    #         "cumulated_avg_rewards": avg_rewards_returns,
+    #         "route distribution": route_dist,
+    #         "entropy of route distribution": ent_usage,
+    #         "approx_kl": float(approx_kl.detach().cpu().item()),
+    #     }
 
     def compute_gae(self, rewards, values, dones=None):
         advantages = torch.zeros_like(rewards)

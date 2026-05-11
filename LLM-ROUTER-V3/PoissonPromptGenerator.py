@@ -33,7 +33,11 @@ class PoissonPromptGenerator:
         qa_max_context_chars: int = 2500,
         force_final_tag: bool = True,
         final_tag: str = "final",
+        shuffle_dataset: bool = True,
+        dataset_seed: int = 42,
     ):
+        self.shuffle_dataset = bool(shuffle_dataset)
+        self.dataset_seed = int(dataset_seed)
         self.arrival_rate = float(arrival_rate)
         self.prompt_queue = prompt_queue
         self.max_queue_size = int(max_queue_size)
@@ -53,8 +57,8 @@ class PoissonPromptGenerator:
         self.total_generated = 0
         self.start_time = None
 
-        np.random.seed(12)
-        random.seed(12)
+        np.random.seed(42)
+        random.seed(42)
 
         self.dataset = None
         self.dataset_index = 0
@@ -79,6 +83,11 @@ class PoissonPromptGenerator:
 
             # Convert to list for fast indexing in a background thread
             self.dataset = list(ds)
+
+            if self.shuffle_dataset:
+                rng = random.Random(self.dataset_seed)
+                rng.shuffle(self.dataset)
+                print(f"Shuffled dataset with seed={self.dataset_seed}")
 
             print(f"Loaded {len(self.dataset)} samples from {dataset_name} (config={dataset_config}, split={dataset_split})")
         except Exception as e:
@@ -109,6 +118,61 @@ class PoissonPromptGenerator:
         if max_chars is None or max_chars <= 0:
             return s
         return s[:max_chars]
+
+    @staticmethod
+    def _choice_label(i: int) -> str:
+        return ["A", "B", "C", "D", "E", "F"][int(i)]
+
+    def _is_mmlu_sample(self, sample: Dict[str, Any]) -> bool:
+        return (
+            isinstance(sample, dict)
+            and isinstance(sample.get("question"), str)
+            and isinstance(sample.get("choices"), (list, tuple))
+            and sample.get("answer") is not None
+        )
+
+    def _mmlu_gold_letter(self, sample: Dict[str, Any]) -> str:
+        ans = sample.get("answer")
+
+        if isinstance(ans, (int, np.integer)):
+            return self._choice_label(int(ans))
+
+        if isinstance(ans, str):
+            s = ans.strip()
+            if s.isdigit():
+                return self._choice_label(int(s))
+            if len(s) == 1 and s.upper() in ["A", "B", "C", "D", "E", "F"]:
+                return s.upper()
+
+        return str(ans).strip()
+
+    def _build_mmlu_prompt(self, sample: Dict[str, Any]) -> str:
+        question = str(sample.get("question", "")).strip()
+        choices = list(sample.get("choices", []))
+        subject = str(sample.get("subject", "")).replace("_", " ").strip()
+
+        choice_lines = []
+        for i, c in enumerate(choices):
+            choice_lines.append(f"{self._choice_label(i)}. {str(c).strip()}")
+
+        subject_line = f"Subject: {subject}\n" if subject else ""
+
+        tag = self.final_tag
+        if self.force_final_tag:
+            suffix = (
+                f"\nLet's think step by step and return only one option letter inside <{tag}>...</{tag}>.\n"
+                f"The answer must be one of A, B, C, or D.\n"
+            )
+        else:
+            suffix = "\nReturn only one option letter. Do not explain.\n"
+
+        return (
+            f"{subject_line}"
+            f"Question: {question}\n"
+            f"Choices:\n"
+            + "\n".join(choice_lines)
+            + f"\nAnswer:{suffix}"
+        )
 
     def _extract_question(self, sample: Dict[str, Any]) -> str:
         # Alpaca-style
@@ -236,6 +300,32 @@ class PoissonPromptGenerator:
                 seen.add(x)
         return uniq
 
+    # def _build_prompt(self, question: str, context: str) -> str:
+    #     style = (self.prompt_style or "instruction").lower().strip()
+
+    #     if (not self.qa_include_context) or (not context):
+    #         context = ""
+
+    #     suffix = ""
+    #     if self.force_final_tag:
+    #         tag = self.final_tag
+    #         suffix = (f"Firstly, give your thought and then return the final answer in the following tag format:<{tag}></{tag}>\n")
+
+    #     if style in {"instruction", "alpaca"}:
+    #         if context:
+    #             return f"Instruction: {question}\nInput: {context}\nResponse:" + suffix
+    #         return f"Instruction: {question}\nResponse:" + suffix
+
+    #     if style == "plain":
+    #         if context:
+    #             return f"Question: {question}\nContext: {context}\nAnswer:" + suffix
+    #         return f"Question: {question}\nAnswer:" + suffix
+
+    #     # default fallback
+    #     if context:
+    #         return f"Instruction: {question}\nInput: {context}\nResponse:" + suffix
+    #     return f"Instruction: {question}\nResponse:" + suffix
+    
     def _build_prompt(self, question: str, context: str) -> str:
         style = (self.prompt_style or "instruction").lower().strip()
 
@@ -245,23 +335,27 @@ class PoissonPromptGenerator:
         suffix = ""
         if self.force_final_tag:
             tag = self.final_tag
-            suffix = ("\nFirstly, give your thought and then return the final answer in the following XML tag format:\n"
-                      f"<{tag}>FINAL_ANSWER</{tag}>")
+            suffix = (
+                f"\nOutput the final answer inside "
+                f"<{tag}>...</{tag}>.\n"
+                f"Do not output an empty tag.\n"
+                f"Do not output placeholders like FINAL_ANSWER.\n"
+                # f"Do not output your thought process inside the tag.\n"
+            )
 
         if style in {"instruction", "alpaca"}:
             if context:
-                return f"Instruction: {question}\nInput: {context}\nResponse:" + suffix
-            return f"Instruction: {question}\nResponse:" + suffix
+                return f"Instruction: {question}\nInput: {context}\nResponse:{suffix}"
+            return f"Instruction: {question}\nResponse:{suffix}"
 
         if style == "plain":
             if context:
-                return f"Question: {question}\nContext: {context}\nAnswer:" + suffix
-            return f"Question: {question}\nAnswer:" + suffix
+                return f"Question: {question}\nContext: {context}\nAnswer:{suffix}"
+            return f"Question: {question}\nAnswer:{suffix}"
 
-        # default fallback
         if context:
-            return f"Instruction: {question}\nInput: {context}\nResponse:" + suffix
-        return f"Instruction: {question}\nResponse:" + suffix
+            return f"Instruction: {question}\nInput: {context}\nResponse:{suffix}"
+        return f"Instruction: {question}\nResponse:{suffix}"
 
     # -------------------------
     # Core API
@@ -269,24 +363,51 @@ class PoissonPromptGenerator:
     def get_next_prompt(self) -> Dict[str, Any]:
         """Get next prompt + ground-truth output from dataset."""
         if not self.dataset:
-            return {"prompt": "Instruction: Explain artificial intelligence.\nResponse:", "output": ""}
+            return {
+                "prompt": "Instruction: Explain artificial intelligence.\nResponse:",
+                "output": "",
+            }
 
         sample = self.dataset[self.dataset_index]
         self.dataset_index = (self.dataset_index + 1) % len(self.dataset)
 
         if not isinstance(sample, dict):
-            # HF datasets always yield dicts; be safe
             sample = {"text": str(sample)}
 
+        # =========================================================
+        # MMLU special case:
+        # fields: question, choices, answer, subject
+        # output should be only A/B/C/D
+        # =========================================================
+        if self._is_mmlu_sample(sample):
+            prompt = self._build_mmlu_prompt(sample)
+            output = self._mmlu_gold_letter(sample)
+            question = str(sample.get("question", "")).strip()
+            choices = sample.get("choices", [])
+            subject = str(sample.get("subject", "")).strip()
+
+            return {
+                "prompt": prompt,
+                "output": output,
+                "instruction": question,
+                "input": "\n".join(
+                    f"{self._choice_label(i)}. {str(c).strip()}"
+                    for i, c in enumerate(choices)
+                ),
+                "dataset": self.dataset_name,
+                "subject": subject,
+                "mmlu_answer": output,
+            }
+
+        # =========================================================
+        # Generic QA / Alpaca path
+        # =========================================================
         question = self._extract_question(sample)
         context = self._extract_context(sample)
         golds = self._extract_gold_answers(sample)
 
         prompt = self._build_prompt(question, context)
 
-        # For compatibility with your trainer/env logic:
-        # - output can be a string or a list; environment.match_quality_score supports lists via _as_list().
-        output: Any
         if len(golds) == 0:
             output = ""
         elif len(golds) == 1:

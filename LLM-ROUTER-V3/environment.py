@@ -16,6 +16,7 @@ import json
 import hashlib
 from collections import Counter
 from difflib import SequenceMatcher
+from together import Together
 
 from typing import List, Dict, Tuple, Optional, Any
 from dataclasses import dataclass
@@ -24,6 +25,8 @@ from config import Config
 from queueMonitor import QueueUpdateMonitor
 import torch.multiprocessing as mp
 import os
+import traceback
+from datetime import datetime
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
@@ -39,7 +42,7 @@ import anthropic
 from google import genai
 from google.genai import types
 from openai import OpenAI
-from mistralai import Mistral
+from mistralai.client import Mistral
 
 # Optional: these exist only on newer Transformers versions.
 try:
@@ -198,6 +201,52 @@ def contains_score(pred: Optional[str], gold: Any) -> float:
             break
     return best
 
+_CHOICE_LETTER_RE = re.compile(r"^\s*([A-Da-d])\s*([\.\)\]:：]|$|\s+$)")
+
+def _extract_choice_letter(x: Any) -> str:
+    if x is None:
+        return ""
+
+    s = str(x).strip()
+    if not s:
+        return ""
+
+    # gold may be 0/1/2/3
+    if s.isdigit():
+        idx = int(s)
+        if 0 <= idx < 4:
+            return ["A", "B", "C", "D"][idx]
+
+    # direct A/B/C/D
+    if len(s) == 1 and s.upper() in ["A", "B", "C", "D"]:
+        return s.upper()
+
+    # "A.", "A)", "A: ..."
+    m = _CHOICE_LETTER_RE.match(s)
+    if m:
+        return m.group(1).upper()
+
+    # "answer is A", "Final answer: A"
+    m = re.search(r"(answer|final)\s*(is|:|-)?\s*([A-Da-d])\b", s, flags=re.I)
+    if m:
+        return m.group(3).upper()
+
+    return ""
+
+
+def mmlu_choice_score(pred: Optional[str], gold: Any) -> float:
+    pred_letter = _extract_choice_letter(pred)
+
+    if not pred_letter:
+        return 0.0
+
+    for g in _as_list(gold):
+        gold_letter = _extract_choice_letter(g)
+        if pred_letter == gold_letter:
+            return 1.0
+
+    return 0.0
+
 
 def match_quality_score(pred: Optional[str], gold: Any) -> float:
     """Compute a match score for reward."""
@@ -205,13 +254,15 @@ def match_quality_score(pred: Optional[str], gold: Any) -> float:
         pred = extract_final_answer(pred)
 
     metric = getattr(Config, "EM_METRIC", "f1")
-    if metric == "em":
+    if metric == "mmlu":
+        score = mmlu_choice_score(pred, gold)
+    elif metric == "em":
         score = exact_match_score(pred, gold)
     elif metric == "ratio":
         score = sequence_ratio_score(pred, gold)
     elif metric == "contains":
         score = contains_score(pred, gold)
-    else:  # default: token F1
+    else:
         score = token_f1_score(pred, gold)
 
     if getattr(Config, "EM_BINARIZE", False):
@@ -246,7 +297,7 @@ class Request:
 def _is_mistral_api_name(model_name: str) -> bool:
     """True for Mistral API model IDs (no HF repo slash)."""
     m = (model_name or "").lower()
-    return ("/" not in m) and any(k in m for k in ("mistral", "mixtral", "ministral", "magistral"))
+    return ("/" not in m) and any(k in m for k in ("mistral", "mixtral", "ministral", "magistral", "codestral"))
 
 
 def _is_mistral3_hf_model(model_name: str) -> bool:
@@ -261,6 +312,33 @@ def _is_mistral3_hf_model(model_name: str) -> bool:
         return cfg.__class__.__name__ in ("Mistral3Config", "Ministral3Config")
     except Exception:
         return False
+
+def _is_together_api_name(model_name: str) -> bool:
+    """True for Together-served remote models explicitly prefixed as together/<provider>/<model>."""
+    return (model_name or "").lower().startswith("together/")
+
+
+def _strip_together_prefix(model_name: str) -> str:
+    """Convert together/<provider>/<model> -> <provider>/<model>."""
+    if _is_together_api_name(model_name):
+        return model_name.split("together/", 1)[1]
+    return model_name
+
+
+def _get_openai_like_text_response(client, model_name: str, prompt: str) -> str:
+    kwargs = dict(
+        model=model_name,
+        messages=[{"role": "user", "content": prompt}],
+        max_completion_tokens=getattr(Config, "GEN_MAX_NEW_TOKENS", 256),
+        temperature=getattr(Config, "GEN_TEMPERATURE", 0.7),
+        top_p=getattr(Config, "GEN_TOP_P", 0.95),
+    )
+
+    if model_name.startswith("gpt-5.4"):
+        kwargs["reasoning_effort"] = "none"
+
+    response = client.chat.completions.create(**kwargs)
+    return response.choices[0].message.content
 
 
 def _build_hf_inputs(tokenizer, model, prompt: str) -> Dict[str, torch.Tensor]:
@@ -401,12 +479,16 @@ def server_worker_process(
         tokenizer = None
         model = None
         client = None  # for Mistral API branch
+        together_client = None
 
         # -----------------------------
         # Model / tokenizer init
         # -----------------------------
-        if "t5" in model_name.lower():
+        if "t5" in model_name.lower() and (not _is_together_api_name(model_name)):
             model = _load_hf_seq2seq(model_name)
+
+        elif _is_together_api_name(model_name):
+            together_client = Together(api_key=os.environ["TOGETHER_API_KEY"])
 
         elif any(k in model_name.lower() for k in ("gpt", "o1", "o3")):
             model = OpenAI()
@@ -418,7 +500,7 @@ def server_worker_process(
             model = anthropic.Anthropic()
 
         elif _is_mistral_api_name(model_name):
-            client = Mistral(api_key=os.environ["MISTRAL_API_KEY"])
+            client = Mistral(api_key=os.environ["MISTRAL_API_KEY"], timeout_ms=120000)
 
         else:
             # -----------------------------
@@ -492,22 +574,32 @@ def server_worker_process(
                     # -----------------------------
                     # API models
                     # -----------------------------
-                    if any(k in model_name.lower() for k in ("gpt", "o1", "o3")):
-                        resp = model.responses.create(
-                            model=model_name,
-                            input=request.prompt,
-                            max_output_tokens=getattr(Config, "GEN_MAX_NEW_TOKENS", 256),
+                    if _is_together_api_name(model_name):
+                        response = together_client.chat.completions.create(
+                            model=_strip_together_prefix(model_name),
+                            messages=[{"role": "user", "content": request.prompt}],
+                            max_tokens=getattr(Config, "GEN_MAX_NEW_TOKENS", 256),
+                            temperature=getattr(Config, "GEN_TEMPERATURE", getattr(Config, "TEMPERATURE", 0.7)),
+                            top_p=getattr(Config, "GEN_TOP_P", 0.7),
+                            reasoning={"enabled": False},
                         )
-                        response_text = resp.output_text
+                        response_text = response.choices[0].message.content
+
+                    elif any(k in model_name.lower() for k in ("gpt", "o1", "o3")):
+                        response_text = _get_openai_like_text_response(
+                            model,
+                            model_name,
+                            request.prompt,
+                        )
 
                     elif "gemini" in model_name.lower():
                         mname = model_name
-                        if mname == "gemini-1.5-flash-001":
-                            mname = "gemini-1.5-flash"
-                        elif mname == "gemini-2.0-flash-exp":
-                            mname = "gemini-2.0-flash-lite"
-                        elif mname == "gemini-1.5-flash-8b-001":
-                            mname = "gemini-1.5-flash-8b"
+                        # if mname == "gemini-1.5-flash-001":
+                        #     mname = "gemini-1.5-flash"
+                        # elif mname == "gemini-2.0-flash-exp":
+                        #     mname = "gemini-2.0-flash-lite"
+                        # elif mname == "gemini-1.5-flash-8b-001":
+                        #     mname = "gemini-1.5-flash-8b"
                         msg = model.models.generate_content(
                             model=mname,
                             contents=request.prompt,
@@ -519,14 +611,14 @@ def server_worker_process(
 
                     elif _is_mistral_api_name(model_name):
                         api_model = model_name
-                        if model_name == "mistral-7b-instruct-v0.2":
-                            api_model = "open-mistral-7b"
-                        elif model_name == "mistral-medium":
-                            api_model = "mistral-medium-latest"
-                        elif model_name == "mistral-small-24b-instruct-2501":
-                            api_model = "mistral-small-2501"
-                        elif model_name == "mixtral-8x7b-instruct-v0.1":
-                            api_model = "open-mixtral-8x7b"
+                        # if model_name == "mistral-7b-instruct-v0.2":
+                        #     api_model = "open-mistral-7b"
+                        # elif model_name == "mistral-medium":
+                        #     api_model = "mistral-medium-latest"
+                        # elif model_name == "mistral-small-24b-instruct-2501":
+                        #     api_model = "mistral-small-2501"
+                        # elif model_name == "mixtral-8x7b-instruct-v0.1":
+                        #     api_model = "open-mixtral-8x7b"
 
                         chat_response = client.chat.complete(
                             model=api_model,
@@ -676,9 +768,25 @@ def server_worker_process(
                     response_queue.put([request, queue_state_added, queue_state_final])
 
                 except Exception as e:
-                    import traceback
-                    print(f"Error processing request {request.id}: {repr(e)}")
-                    traceback.print_exc()
+                    err_msg = (
+                        f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+                        f"[Server {server_id} | {model_name}] "
+                        f"Error processing request {request.id}: {repr(e)}\n"
+                    )
+                    tb_msg = traceback.format_exc()
+
+                    print(err_msg.strip())
+                    print(tb_msg)
+
+                    log_dir = "logs"
+                    os.makedirs(log_dir, exist_ok=True)
+                    log_file = os.path.join(log_dir, "error_log.txt")
+
+                    with open(log_file, "a", encoding="utf-8") as f:
+                        f.write(err_msg)
+                        f.write(tb_msg)
+                        f.write("\n" + "=" * 80 + "\n\n")
+
                     request.status = "failed"
                     request.completion_time = time.time()
                     raw_lat = max(float(request.completion_time - request.arrival_time), 0.0)
@@ -695,7 +803,6 @@ def server_worker_process(
 
     except Exception as e:
         print(f"Server {server_id} error: {repr(e)}")
-        import traceback
         traceback.print_exc()
 
     print(f"Server {server_id} shutting down")
@@ -786,10 +893,13 @@ class QualityScorer:
 
     def compute_quality_score_real(self, prompt: str, model_name: str) -> float:
         coefs = self.quality_model.get_coefficients(prompt)
+        if _is_together_api_name(model_name):
+            model_name = _strip_together_prefix(model_name)
         if "/" in model_name:
-            model_name = model_name.split("/")[1].lower()
+            model_name = model_name.split("/")[-1].lower()
         all_coefs = {
-            (m.split("/")[1].lower() if "/" in m else m): coefs.get(m.split("/")[1].lower() if "/" in m else m)
+            ((_strip_together_prefix(m).split("/")[-1].lower()) if "/" in _strip_together_prefix(m) else _strip_together_prefix(m)): 
+            coefs.get((_strip_together_prefix(m).split("/")[-1].lower()) if "/" in _strip_together_prefix(m) else _strip_together_prefix(m))
             for m in Config.MODEL_NAMES
         }
         score = coefs.get(model_name)
@@ -798,7 +908,10 @@ class QualityScorer:
 
     def compute_quality_score_all(self, prompt: str) -> float:
         coefs = self.quality_model.get_coefficients(prompt)
-        all_coefs = {m: coefs.get(m.split("/")[1].lower() if "/" in m else m) for m in Config.MODEL_NAMES}
+        all_coefs = {
+            m: coefs.get((_strip_together_prefix(m).split("/")[-1].lower()) if "/" in _strip_together_prefix(m) else _strip_together_prefix(m))
+            for m in Config.MODEL_NAMES
+        }
         min_score = min(all_coefs.values())
         max_score = max(all_coefs.values())
         normalized_scores = {
@@ -1052,14 +1165,49 @@ def response_collector_worker(
                             resp_for_price = request.response.get("response_text_raw") or ""
                         else:
                             resp_for_price = request.response.get("response_text") or ""
+                            
+                    prompt_tokens = _rough_token_count(request.prompt)
+                    resp_tokens = _rough_token_count(resp_for_price)
 
                     num = (
-                        Config.PRICE[request.server_id][0] * len(request.prompt)
-                        + Config.PRICE[request.server_id][1] * len(resp_for_price)
+                        Config.PRICE[request.server_id][0] * prompt_tokens
+                        + Config.PRICE[request.server_id][1] * resp_tokens
                     )
-                    den = (0.000002 * Config.GEN_MAX_NEW_TOKENS)
+
+                    all_server_real_costs = [
+                        p_in * prompt_tokens
+                        for p_in, p_out in Config.PRICE
+                    ]
+
+                    min_num = float(np.min(all_server_real_costs))
+
+                    all_server_ref_costs = [
+                        p_in * prompt_tokens + p_out * Config.GEN_MAX_NEW_TOKENS
+                        for p_in, p_out in Config.PRICE
+                    ]
+
+                    den = float(np.percentile(all_server_ref_costs, 90))
+
+                    eps = 1e-12
+                    price_before = (num - min_num) / max(den - min_num, eps)
+                    price_before = math.sqrt(max(price_before, 0.0))
                     
-                    price_before = num / den
+                    # prompt_tokens = _rough_token_count(request.prompt)
+                    # resp_tokens = _rough_token_count(resp_for_price)
+
+                    # price_in, price_out = Config.PRICE[request.server_id]
+
+                    # num = price_in * prompt_tokens + price_out * resp_tokens
+
+                    # all_server_costs = [
+                    #     p_in * prompt_tokens + p_out * resp_tokens
+                    #     for p_in, p_out in Config.PRICE
+                    # ]
+
+                    # den = float(np.percentile(all_server_costs, 80))
+                    # den = max(den, 1e-12)
+
+                    # price_before = math.sqrt(num / den)
 
                     price_raw = float(max(min(price_before, 1.0), 0.0))
                     request.price_raw = price_raw
@@ -1133,6 +1281,26 @@ def response_collector_worker(
             print(f"Error in response collector: {e}")
             continue
 
+def _to_text(x: Any) -> str:
+    """Convert str/list/dict/None to a safe string."""
+    if x is None:
+        return ""
+    if isinstance(x, str):
+        return x
+    if isinstance(x, (list, tuple)):
+        return " ".join(_to_text(v) for v in x if v is not None)
+    if isinstance(x, dict):
+        # Common API-style response objects
+        for k in ["text", "content", "response_text", "response_text_raw", "answer", "value"]:
+            if k in x:
+                return _to_text(x.get(k))
+        return json.dumps(x, ensure_ascii=False)
+    return str(x)
+
+
+def _rough_token_count(x: Any) -> int:
+    """Whitespace token count, robust to list/dict/None."""
+    return len(_to_text(x).split())
 
 class EnhancedRouterEnvironment:
     """Environment for LLM request routing with parallel processing"""
@@ -1170,6 +1338,8 @@ class EnhancedRouterEnvironment:
             qa_max_context_chars=getattr(Config, "QA_MAX_CONTEXT_CHARS", 2500),
             force_final_tag=getattr(Config, "QA_FORCE_FINAL_TAG", True),
             final_tag=getattr(Config, "FINAL_ANSWER_TAG", "final"),
+            shuffle_dataset=getattr(Config, "SHUFFLE_DATASET", True),
+            dataset_seed=getattr(Config, "DATASET_SEED", 42),
         )
         self.prompt_generator.start()
 
