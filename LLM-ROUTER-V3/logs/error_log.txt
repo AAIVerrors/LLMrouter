@@ -1,0 +1,815 @@
+[2026-05-11 05:44:31] [Server 5 | ministral-3b-2512] Error processing request 34: SDKError(message='API error occurred: Status 500. Body: {"object":"error","message":"Service unavailable.","type":"internal_server_error","param":null,"code":"1000","raw_status_code":500}', status_code=500, body='{"object":"error","message":"Service unavailable.","type":"internal_server_error","param":null,"code":"1000","raw_status_code":500}', headers=Headers({'date': 'Sun, 10 May 2026 19:44:31 GMT', 'content-type': 'application/json', 'content-length': '131', 'connection': 'keep-alive', 'x-content-type-options': 'nosniff', 'mistral-correlation-id': '019e136b-77f8-7366-a778-d273084a02ca', 'x-kong-request-id': '019e136b-77f8-7366-a778-d273084a02ca', 'x-envoy-upstream-service-time': '192', 'server': 'cloudflare', 'access-control-allow-origin': '*', 'x-kong-upstream-latency': '193', 'x-kong-proxy-latency': '15', 'strict-transport-security': 'max-age=15552000; includeSubDomains; preload', 'cf-cache-status': 'DYNAMIC', 'cf-ray': '9f9b705ef818486c-SYD', 'alt-svc': 'h3=":443"; ma=86400'}), raw_response=<Response [500 Internal Server Error]>)
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 623, in server_worker_process
+    chat_response = client.chat.complete(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/chat.py", line 290, in complete
+    raise errors.SDKError("API error occurred", http_res, http_res_text)
+mistralai.client.errors.sdkerror.SDKError: API error occurred: Status 500. Body: {"object":"error","message":"Service unavailable.","type":"internal_server_error","param":null,"code":"1000","raw_status_code":500}
+
+================================================================================
+
+[2026-05-11 06:37:18] [Server 1 | mistral-large-2512] Error processing request 1: RemoteProtocolError('Server disconnected without sending a response.')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 231, in _receive_event
+    raise RemoteProtocolError(msg)
+httpcore.RemoteProtocolError: Server disconnected without sending a response.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 623, in server_worker_process
+    chat_response = client.chat.complete(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/chat.py", line 262, in complete
+    http_res = self.do_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 306, in do_request
+    http_res = do()
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 274, in do
+    raise e
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 269, in do
+    http_res = client.send(req, stream=stream)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.RemoteProtocolError: Server disconnected without sending a response.
+
+================================================================================
+
+[2026-05-11 06:41:53] [Server 5 | ministral-3b-2512] Error processing request 18: RemoteProtocolError('Server disconnected without sending a response.')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 231, in _receive_event
+    raise RemoteProtocolError(msg)
+httpcore.RemoteProtocolError: Server disconnected without sending a response.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 623, in server_worker_process
+    chat_response = client.chat.complete(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/chat.py", line 262, in complete
+    http_res = self.do_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 306, in do_request
+    http_res = do()
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 274, in do
+    raise e
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 269, in do
+    http_res = client.send(req, stream=stream)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.RemoteProtocolError: Server disconnected without sending a response.
+
+================================================================================
+
+[2026-05-11 06:43:10] [Server 0 | mistral-small-2603] Error processing request 23: RemoteProtocolError('Server disconnected without sending a response.')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 231, in _receive_event
+    raise RemoteProtocolError(msg)
+httpcore.RemoteProtocolError: Server disconnected without sending a response.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 623, in server_worker_process
+    chat_response = client.chat.complete(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/chat.py", line 262, in complete
+    http_res = self.do_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 306, in do_request
+    http_res = do()
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 274, in do
+    raise e
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 269, in do
+    http_res = client.send(req, stream=stream)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.RemoteProtocolError: Server disconnected without sending a response.
+
+================================================================================
+
+[2026-05-11 17:30:16] [Server 1 | mistral-large-2512] Error processing request 8: RemoteProtocolError('Server disconnected without sending a response.')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 231, in _receive_event
+    raise RemoteProtocolError(msg)
+httpcore.RemoteProtocolError: Server disconnected without sending a response.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 623, in server_worker_process
+    chat_response = client.chat.complete(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/chat.py", line 262, in complete
+    http_res = self.do_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 306, in do_request
+    http_res = do()
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 274, in do
+    raise e
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 269, in do
+    http_res = client.send(req, stream=stream)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.RemoteProtocolError: Server disconnected without sending a response.
+
+================================================================================
+
+[2026-05-11 17:46:48] [Server 2 | mistral-medium-2508] Error processing request 0: RemoteProtocolError('Server disconnected without sending a response.')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 231, in _receive_event
+    raise RemoteProtocolError(msg)
+httpcore.RemoteProtocolError: Server disconnected without sending a response.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 623, in server_worker_process
+    chat_response = client.chat.complete(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/chat.py", line 262, in complete
+    http_res = self.do_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 306, in do_request
+    http_res = do()
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 274, in do
+    raise e
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 269, in do
+    http_res = client.send(req, stream=stream)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.RemoteProtocolError: Server disconnected without sending a response.
+
+================================================================================
+
+[2026-05-11 17:53:43] [Server 5 | ministral-3b-2512] Error processing request 34: RemoteProtocolError('Server disconnected without sending a response.')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 231, in _receive_event
+    raise RemoteProtocolError(msg)
+httpcore.RemoteProtocolError: Server disconnected without sending a response.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 623, in server_worker_process
+    chat_response = client.chat.complete(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/chat.py", line 262, in complete
+    http_res = self.do_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 306, in do_request
+    http_res = do()
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 274, in do
+    raise e
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 269, in do
+    http_res = client.send(req, stream=stream)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.RemoteProtocolError: Server disconnected without sending a response.
+
+================================================================================
+
+[2026-05-11 22:13:36] [Server 0 | mistral-small-2603] Error processing request 3: RemoteProtocolError('Server disconnected without sending a response.')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 231, in _receive_event
+    raise RemoteProtocolError(msg)
+httpcore.RemoteProtocolError: Server disconnected without sending a response.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 623, in server_worker_process
+    chat_response = client.chat.complete(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/chat.py", line 262, in complete
+    http_res = self.do_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 306, in do_request
+    http_res = do()
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 274, in do
+    raise e
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 269, in do
+    http_res = client.send(req, stream=stream)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.RemoteProtocolError: Server disconnected without sending a response.
+
+================================================================================
+
+[2026-05-11 22:26:43] [Server 0 | mistral-small-2603] Error processing request 74: RemoteProtocolError('Server disconnected without sending a response.')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 231, in _receive_event
+    raise RemoteProtocolError(msg)
+httpcore.RemoteProtocolError: Server disconnected without sending a response.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 623, in server_worker_process
+    chat_response = client.chat.complete(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/chat.py", line 262, in complete
+    http_res = self.do_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 306, in do_request
+    http_res = do()
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 274, in do
+    raise e
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 269, in do
+    http_res = client.send(req, stream=stream)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.RemoteProtocolError: Server disconnected without sending a response.
+
+================================================================================
+
+[2026-05-11 22:29:36] [Server 5 | ministral-3b-2512] Error processing request 7: RemoteProtocolError('Server disconnected without sending a response.')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 231, in _receive_event
+    raise RemoteProtocolError(msg)
+httpcore.RemoteProtocolError: Server disconnected without sending a response.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 623, in server_worker_process
+    chat_response = client.chat.complete(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/chat.py", line 262, in complete
+    http_res = self.do_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 306, in do_request
+    http_res = do()
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 274, in do
+    raise e
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 269, in do
+    http_res = client.send(req, stream=stream)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.RemoteProtocolError: Server disconnected without sending a response.
+
+================================================================================
+
+[2026-05-11 22:40:41] [Server 0 | mistral-small-2603] Error processing request 71: RemoteProtocolError('Server disconnected without sending a response.')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 231, in _receive_event
+    raise RemoteProtocolError(msg)
+httpcore.RemoteProtocolError: Server disconnected without sending a response.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 623, in server_worker_process
+    chat_response = client.chat.complete(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/chat.py", line 262, in complete
+    http_res = self.do_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 306, in do_request
+    http_res = do()
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 274, in do
+    raise e
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 269, in do
+    http_res = client.send(req, stream=stream)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.RemoteProtocolError: Server disconnected without sending a response.
+
+================================================================================
+
+[2026-05-11 22:49:33] [Server 4 | ministral-8b-2512] Error processing request 0: RemoteProtocolError('Server disconnected without sending a response.')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 231, in _receive_event
+    raise RemoteProtocolError(msg)
+httpcore.RemoteProtocolError: Server disconnected without sending a response.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 623, in server_worker_process
+    chat_response = client.chat.complete(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/chat.py", line 262, in complete
+    http_res = self.do_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 306, in do_request
+    http_res = do()
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 274, in do
+    raise e
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 269, in do
+    http_res = client.send(req, stream=stream)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.RemoteProtocolError: Server disconnected without sending a response.
+
+================================================================================
+
+[2026-05-12 02:15:58] [Server 3 | magistral-medium-2509] Error processing request 46: RemoteProtocolError('Server disconnected without sending a response.')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 231, in _receive_event
+    raise RemoteProtocolError(msg)
+httpcore.RemoteProtocolError: Server disconnected without sending a response.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 623, in server_worker_process
+    chat_response = client.chat.complete(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/chat.py", line 262, in complete
+    http_res = self.do_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 306, in do_request
+    http_res = do()
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 274, in do
+    raise e
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 269, in do
+    http_res = client.send(req, stream=stream)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.RemoteProtocolError: Server disconnected without sending a response.
+
+================================================================================
+
+[2026-05-12 02:15:58] [Server 2 | mistral-medium-2508] Error processing request 47: RemoteProtocolError('Server disconnected without sending a response.')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 231, in _receive_event
+    raise RemoteProtocolError(msg)
+httpcore.RemoteProtocolError: Server disconnected without sending a response.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 623, in server_worker_process
+    chat_response = client.chat.complete(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/chat.py", line 262, in complete
+    http_res = self.do_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 306, in do_request
+    http_res = do()
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 274, in do
+    raise e
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 269, in do
+    http_res = client.send(req, stream=stream)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.RemoteProtocolError: Server disconnected without sending a response.
+
+================================================================================
+
+[2026-05-12 02:16:41] [Server 3 | magistral-medium-2509] Error processing request 1: RemoteProtocolError('Server disconnected without sending a response.')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 231, in _receive_event
+    raise RemoteProtocolError(msg)
+httpcore.RemoteProtocolError: Server disconnected without sending a response.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 623, in server_worker_process
+    chat_response = client.chat.complete(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/chat.py", line 262, in complete
+    http_res = self.do_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 306, in do_request
+    http_res = do()
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 274, in do
+    raise e
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 269, in do
+    http_res = client.send(req, stream=stream)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.RemoteProtocolError: Server disconnected without sending a response.
+
+================================================================================
+
+[2026-05-12 02:25:58] [Server 5 | ministral-3b-2512] Error processing request 1: RemoteProtocolError('Server disconnected without sending a response.')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 231, in _receive_event
+    raise RemoteProtocolError(msg)
+httpcore.RemoteProtocolError: Server disconnected without sending a response.
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 623, in server_worker_process
+    chat_response = client.chat.complete(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/chat.py", line 262, in complete
+    http_res = self.do_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 306, in do_request
+    http_res = do()
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 274, in do
+    raise e
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 269, in do
+    http_res = client.send(req, stream=stream)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.RemoteProtocolError: Server disconnected without sending a response.
+
+================================================================================
+
+[2026-05-12 16:38:42] [Server 4 | ministral-8b-2512] Error processing request 53: SDKError(message='API error occurred: Status 500. Body: {"object":"error","message":"Service unavailable.","type":"internal_server_error","param":null,"code":"3000","raw_status_code":500}', status_code=500, body='{"object":"error","message":"Service unavailable.","type":"internal_server_error","param":null,"code":"3000","raw_status_code":500}', headers=Headers({'date': 'Tue, 12 May 2026 06:38:42 GMT', 'content-type': 'application/json', 'content-length': '131', 'connection': 'keep-alive', 'x-content-type-options': 'nosniff', 'mistral-correlation-id': '019e1ae8-aa41-7184-b717-31e6f138a191', 'x-kong-request-id': '019e1ae8-aa41-7184-b717-31e6f138a191', 'x-envoy-upstream-service-time': '6506', 'server': 'cloudflare', 'access-control-allow-origin': '*', 'x-kong-upstream-latency': '6506', 'x-kong-proxy-latency': '13', 'strict-transport-security': 'max-age=15552000; includeSubDomains; preload', 'cf-cache-status': 'DYNAMIC', 'cf-ray': '9fa76be2bb25faf9-SYD', 'alt-svc': 'h3=":443"; ma=86400'}), raw_response=<Response [500 Internal Server Error]>)
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 623, in server_worker_process
+    chat_response = client.chat.complete(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/chat.py", line 290, in complete
+    raise errors.SDKError("API error occurred", http_res, http_res_text)
+mistralai.client.errors.sdkerror.SDKError: API error occurred: Status 500. Body: {"object":"error","message":"Service unavailable.","type":"internal_server_error","param":null,"code":"3000","raw_status_code":500}
+
+================================================================================
+

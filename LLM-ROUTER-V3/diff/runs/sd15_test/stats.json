@@ -1,0 +1,57 @@
+{
+  "config": {
+    "model_id": "stable-diffusion-v1-5/stable-diffusion-v1-5",
+    "prompt": "a red fox in snow, cinematic, highly detailed",
+    "negative_prompt": "",
+    "output_dir": "runs/sd15_test",
+    "height": 512,
+    "width": 512,
+    "num_inference_steps": 50,
+    "guidance_scale": 7.5,
+    "seed": 123,
+    "device": "cuda",
+    "dtype": "float16",
+    "initial_block": 8,
+    "block_min": 1,
+    "block_max": 16,
+    "tau_lo": 0.02,
+    "tau_hi": 0.08,
+    "use_tau_schedule": true,
+    "verify_substeps": 2,
+    "reject_mode": "one_step_fallback",
+    "save_intermediate_stats": true
+  },
+  "baseline_stats": {
+    "unet_calls": 50.0,
+    "wall_time_sec": 2.644713157787919
+  },
+  "spec_stats": {
+    "unet_calls": 48.0,
+    "accepted_blocks": 8.0,
+    "rejected_blocks": 6.0,
+    "accepted_steps": 44.0,
+    "rejected_steps": 56.0,
+    "num_drafts": 14.0,
+    "wall_time_sec": 1.8655402548611164,
+    "accept_rate": 0.5714285714285714,
+    "final_block_size": 16.0
+  },
+  "summary": {
+    "final_rel_error_vs_baseline": 0.2307915863129782,
+    "baseline_unet_calls": 50.0,
+    "spec_unet_calls": 48.0,
+    "unet_call_ratio_spec_over_base": 0.96,
+    "baseline_time_sec": 2.644713157787919,
+    "spec_time_sec": 1.8655402548611164,
+    "time_ratio_spec_over_base": 0.7053847217297033,
+    "unet_calls": 48.0,
+    "accepted_blocks": 8.0,
+    "rejected_blocks": 6.0,
+    "accepted_steps": 44.0,
+    "rejected_steps": 56.0,
+    "num_drafts": 14.0,
+    "wall_time_sec": 1.8655402548611164,
+    "accept_rate": 0.5714285714285714,
+    "final_block_size": 16.0
+  }
+}

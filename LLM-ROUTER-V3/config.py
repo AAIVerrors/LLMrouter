@@ -889,7 +889,7 @@ class Config:
     ENV_DEFER_LAT_PRICE_REWARD_WHEN_MINMAX = True
 
     LAMBDA = 5  # Capacity penalty weight (increased to strongly discourage invalid actions)
-    MAX_LAT = 30
+    MAX_LAT = 60
     FAIR_REWARD_MIN_FLOOR = False # True the missing server will be set min rewards, False will use the floor reward -Beta-REWARD_GAMMA
     
     # PPO hyperparameters - tuned for the routing problem
@@ -899,14 +899,14 @@ class Config:
     CLIP_EPSILON = 0.2    # Slightly reduced for more conservative updates
     POLICY_COEF = 1       # Policy loss weight
     VALUE_COEF = 0.5      # Reduced value function weight
-    ENTROPY_COEF = 0.00   # Increased entropy for more exploration
+    ENTROPY_COEF = 0.001   # Increased entropy for more exploration
     KL_COEF = 0.00
-    MAX_GRAD_NORM = 1
-    PPO_EPOCHS = 4     # Increased for more thorough updates
+    MAX_GRAD_NORM = 0.5
+    PPO_EPOCHS = 2     # Increased for more thorough updates
     BATCH_SIZE = 1      # Increased batch size
     TARGET_KL = 0.03
     USE_TARGET_KL_STOP = True
-    # WEIGHT_DECAY = 1e-5
+    # WEIGHT_DECAY = 1e-5cond
     USE_SERVERWISE_MLP = False
     
     USE_CLIP_FUSION_ROUTER = True
@@ -919,7 +919,7 @@ class Config:
     
     EPISODE_COMPLETION_TIMEOUT = 180
     
-    SERVICE_RATE_EMA_ALPHA = 1.0
+    SERVICE_RATE_EMA_ALPHA = 0.1
     SERVICE_RATE_MIN_SAMPLES = 1
     SERVICE_RATE_MIN = 1e-4
     SERVICE_RATE_MAX = 5.0
@@ -1032,7 +1032,7 @@ class Config:
 
     # Drop action
     INVALID_ROUTE_PENALTY = 1   # try 0.5 ~ 2.0 depending how hard you want to avoid full servers
-    FAIL_LATENCY_CAP = 30.0       # just for logging; failed branch uses penalty not latency
+    FAIL_LATENCY_CAP = 60.0       # just for logging; failed branch uses penalty not latency
     REWARD_CLIP = -1             # optional, set <=0 to disable
 
     MASK = False

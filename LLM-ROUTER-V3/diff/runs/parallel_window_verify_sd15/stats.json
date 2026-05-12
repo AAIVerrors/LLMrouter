@@ -1,0 +1,88 @@
+{
+  "config": {
+    "model_id": "stable-diffusion-v1-5/stable-diffusion-v1-5",
+    "prompt": "a red fox in snow, cinematic, highly detailed",
+    "negative_prompt": "",
+    "output_dir": "runs/parallel_window_verify_sd15",
+    "height": 512,
+    "width": 512,
+    "num_inference_steps": 512,
+    "num_macro_steps": 16,
+    "verify_window_size": 16,
+    "guidance_scale": 7.5,
+    "seed": 123,
+    "device": "cuda",
+    "dtype": "float16",
+    "tau": 0.05,
+    "save_images": true
+  },
+  "baseline_stats": {
+    "unet_calls": 512.0,
+    "wall_time_sec": 37.456201419234276
+  },
+  "decode_stats": {
+    "unet_calls": 48.0,
+    "draft_unet_calls": 16.0,
+    "batched_verify_unet_calls": 32.0,
+    "accepted_blocks": 16.0,
+    "rejected_blocks": 0.0,
+    "fallback_exact_blocks": 0.0,
+    "num_windows": 1.0,
+    "macro_block_size": 32.0,
+    "wall_time_sec": 33.30923009105027,
+    "total_committed_blocks": 16.0,
+    "accept_rate_over_attempted_windows": 1.0
+  },
+  "window_records": [
+    {
+      "window_index": 0,
+      "start_macro_idx": 0,
+      "num_blocks_in_window": 16,
+      "draft_unet_calls": 16.0,
+      "verify_unet_calls": 32.0,
+      "block_errors": [
+        0.007942335680127144,
+        0.005537022370845079,
+        0.004457511007785797,
+        0.003483195323497057,
+        0.003682865295559168,
+        0.00449253199622035,
+        0.004931821953505278,
+        0.004512382205575705,
+        0.0034373351372778416,
+        0.003923956770449877,
+        0.003831480396911502,
+        0.0038946494460105896,
+        0.004158528987318277,
+        0.004289524629712105,
+        0.005395154003053904,
+        0.021516775712370872
+      ],
+      "accepted_prefix": 16,
+      "advance_mode": "accepted_prefix",
+      "next_macro_idx": 16
+    }
+  ],
+  "summary": {
+    "baseline_unet_calls": 512.0,
+    "windowed_draft_unet_calls": 16.0,
+    "windowed_parallel_verify_unet_calls": 32.0,
+    "total_windowed_unet_calls": 48.0,
+    "call_ratio_total_over_baseline": 0.09375,
+    "baseline_time_sec": 37.456201419234276,
+    "windowed_total_time_sec": 33.30923009105027,
+    "time_ratio_total_over_baseline": 0.8892847867361563,
+    "final_rel_error_vs_baseline": 0.11617361609695431,
+    "unet_calls": 48.0,
+    "draft_unet_calls": 16.0,
+    "batched_verify_unet_calls": 32.0,
+    "accepted_blocks": 16.0,
+    "rejected_blocks": 0.0,
+    "fallback_exact_blocks": 0.0,
+    "num_windows": 1.0,
+    "macro_block_size": 32.0,
+    "wall_time_sec": 33.30923009105027,
+    "total_committed_blocks": 16.0,
+    "accept_rate_over_attempted_windows": 1.0
+  }
+}
