@@ -151,8 +151,11 @@ class RouterNetwork(nn.Module):
 
         # Attention mode
         self.use_attn = bool(getattr(Config, "USE_ATTN_ROUTER", False))
-        # Per-server feature dim (util, mu, price_in, price_out)
-        self.server_feat_dim = 4
+        # Per-server feature dim (util, slot_count, mu, price_in, price_out)
+        self.server_feat_dim = (
+            int(getattr(Config, "SERVER_DYN_DIM", 1))
+            + int(getattr(Config, "SERVER_STAT_DIM", 3))
+        )
         
         if self.use_clip_fusion:
             self.M = int(action_dim)
@@ -614,6 +617,8 @@ class RouterNetwork(nn.Module):
 
         # prompt embedding
         p = self.encode_prompt(prompt)  # [N, prompt_dim]
+        # 在 forward 里, p = self.encode_prompt(prompt) 之后
+        # print(f"[Prompt TEXT] {repr(prompt)}")
         if p.dim() == 1:
             p = p.unsqueeze(0)
 
@@ -1243,8 +1248,9 @@ class PPOAgent:
             self.network = RouterNetwork(state_dim, action_dim).to(Config.DEVICE)
         self.optimizer = torch.optim.Adam(
             self.network.parameters(),
-            lr=Config.LEARNING_RATE,
+            lr=Config.LEARNING_RATE
         )
+        self.scheduler = None 
 
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -1487,13 +1493,16 @@ class PPOAgent:
             getattr(Config, "USE_EM_EXACT_MATCH", False)
         )
 
-        F = 4
+        F = int(getattr(self.network, "server_feat_dim", 5))
         sf = state_tensor.view(M, F)
 
-        util = sf[:, 0].detach().cpu().numpy().astype(np.float64)
-        mu = sf[:, 1].detach().cpu().numpy().astype(np.float64)
-        price_in = sf[:, 2].detach().cpu().numpy().astype(np.float64)
-        price_out = sf[:, 3].detach().cpu().numpy().astype(np.float64)
+        # Layout: [util, slot_count, mu, price_in, price_out]  (F=5)
+        # Fallback for F=4 legacy: [util, mu, price_in, price_out]
+        dyn_dim = int(getattr(Config, "SERVER_DYN_DIM", 1))
+        util      = sf[:, 0].detach().cpu().numpy().astype(np.float64)
+        mu        = sf[:, dyn_dim].detach().cpu().numpy().astype(np.float64)
+        price_in  = sf[:, dyn_dim + 1].detach().cpu().numpy().astype(np.float64)
+        price_out = sf[:, dyn_dim + 2].detach().cpu().numpy().astype(np.float64)
 
         cap = np.asarray(Config.SERVER_CAPACITIES, dtype=np.float64)
         q_len = util * cap
@@ -1786,8 +1795,8 @@ class PPOAgent:
                 floor = r_t.min().detach()
             else:
                 floor = torch.tensor(
-                            # - Config.BETA - Config.REWARD_GAMMA,
-                            -1,
+                            - Config.BETA - Config.REWARD_GAMMA,
+                            # -1,
                             device=Config.DEVICE,
                             dtype=r_t.dtype
                         )

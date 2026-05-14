@@ -49,8 +49,8 @@ class EnhancedLLMRouterTrainer:
         # USE_UTIL=True  -> util(M)
         # USE_UTIL=False -> load(M) + capacity(M) = 2M
         # ---- State dimension for flat *interleaved* per-server features ----
-        # Per-server features: util, mu, (optional q), price_in, price_out
-        per_server_dim = 2 + (1 if include_quality_state else 0) + 2
+        # Per-server features: util, slot_count, mu, (optional q), price_in, price_out
+        per_server_dim = 2 + 1 + (1 if include_quality_state else 0) + 2
         state_dim = M * per_server_dim
         action_dim = M
         self.agent = PPOAgent(state_dim, action_dim)
@@ -335,39 +335,51 @@ class EnhancedLLMRouterTrainer:
         M = len(Config.SERVER_CAPACITIES)
         include_quality_state = bool(getattr(Config, 'INCLUDE_QUALITY_IN_STATE', True)) and not bool(getattr(Config, 'USE_EM_EXACT_MATCH', False))
 
-        def build_state(loads):
+        _slot_count_norm = max(
+            float(Config.POISSON_ARRIVAL_RATE) * float(Config.INTERVAL_LENGTH), 1.0
+        )
+
+        def build_state(loads, slot_counts=None):
             """Build **flat** state vector with per-server interleaved features.
 
             Per-server layout (concatenated for i=0..M-1):
-              [ util_i, mu_i, price_in_i, price_out_i ]   (F = 4)
+              [ util_i, slot_count_i, mu_i, price_in_i, price_out_i ]   (F = 5)
+
+            slot_count_i: number of times server i was selected in the current
+                          time slot, normalized by expected arrivals per slot
+                          (POISSON_ARRIVAL_RATE * INTERVAL_LENGTH).
 
             Returns:
-              np.ndarray of shape [M * 4]
+              np.ndarray of shape [M * 5]
             """
             M = len(Config.SERVER_CAPACITIES)
 
-            PRICE_SCALE = 1e6  
+            PRICE_SCALE = 1e6
 
             # prices are tuples: (input_price, output_price)
-            price_in = [float(a[0]) * PRICE_SCALE for a in Config.PRICE]   
-            price_out = [float(a[1]) * PRICE_SCALE for a in Config.PRICE]   
+            price_in = [float(a[0]) * PRICE_SCALE for a in Config.PRICE]
+            price_out = [float(a[1]) * PRICE_SCALE for a in Config.PRICE]
 
             feats_flat = []
             for i in range(M):
                 cap = float(Config.SERVER_CAPACITIES[i])
                 load = float(loads[i])
                 util = load / max(cap, 1.0)
+                sc = float(slot_counts[i]) / _slot_count_norm if slot_counts is not None else 0.0
                 mu = float(self.last_service_rate[i])
 
-                feats_flat.extend([util, mu, price_in[i], price_out[i]])
+                feats_flat.extend([util, sc, mu, price_in[i], price_out[i]])
 
             # sanity check
-            expected_len = M * 4
+            expected_len = M * 5
             if len(feats_flat) != expected_len:
-                raise ValueError(f"build_state length mismatch: got {len(feats_flat)}, expected {expected_len} (M={M}, F=4).")
+                raise ValueError(f"build_state length mismatch: got {len(feats_flat)}, expected {expected_len} (M={M}, F=5).")
 
-            return np.array(feats_flat, dtype=np.float32)   # [M * 4]
-        state = build_state(self.env.reset())
+            return np.array(feats_flat, dtype=np.float32)   # [M * 5]
+
+        M = len(Config.SERVER_CAPACITIES)
+        slot_counts = np.zeros(M, dtype=np.float32)
+        state = build_state(self.env.reset(), slot_counts)
         self.env.clean_prompt_queue()
         
         # state = [self.env.reset()[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + [1] * len(Config.SERVER_CAPACITIES) + price
@@ -410,12 +422,19 @@ class EnhancedLLMRouterTrainer:
 
             if Config.NAIVE_PPO:
                 current_loads = self.env.get_state()
-                state = build_state(current_loads)
+                state = build_state(current_loads, slot_counts)
             else:
                 if current != current_time_slot:
                     current_loads = self.env.get_state()
-                    state = build_state(current_loads)
+                    slot_counts[:] = 0.0
+                    state = build_state(current_loads, slot_counts)
                     current = current_time_slot
+                else:
+                    # Same slot: refresh only the dynamic slot_count column
+                    state = build_state(
+                        [state[i * 5] * float(Config.SERVER_CAPACITIES[i]) for i in range(M)],
+                        slot_counts,
+                    )
 
             action_mask = self.env.get_action_mask()
 
@@ -430,6 +449,7 @@ class EnhancedLLMRouterTrainer:
             )
 
             robin_counter = next_counter
+            slot_counts[action] += 1.0
 
             next_state, done = self.env.step(action, prompt, ground_truth)
             queue_length = next_state.tolist()
@@ -761,7 +781,9 @@ class EnhancedLLMRouterTrainer:
                 training_metrics = None
                 print(f"Training agent (episode {episode})...")
                 training_metrics = self.train_step(episode, self.trajectory_dir)
-                
+                if self.agent.scheduler is not None:
+                    self.agent.scheduler.step()
+
                 if training_metrics:
                     print(f"   Policy Loss: {training_metrics['policy_loss']:.6f}")
                     print(f"   Value Loss: {training_metrics['value_loss']:.6f}")

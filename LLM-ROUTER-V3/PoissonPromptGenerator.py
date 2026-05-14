@@ -336,11 +336,11 @@ class PoissonPromptGenerator:
         if self.force_final_tag:
             tag = self.final_tag
             suffix = (
-                f"\nOutput the final answer inside "
+                f"\nThink first and then output the final answer inside "
                 f"<{tag}>...</{tag}>.\n"
                 f"Do not output an empty tag.\n"
                 f"Do not output placeholders like FINAL_ANSWER.\n"
-                # f"Do not output your thought process inside the tag.\n"
+                f"Do not output your thought process inside the tag.\n"
             )
 
         if style in {"instruction", "alpaca"}:

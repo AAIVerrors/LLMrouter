@@ -1,19 +1,13 @@
-from PoissonPromptGenerator import PoissonPromptGenerator
-from queue import Queue
+from sentence_transformers import SentenceTransformer
+import torch, torch.nn.functional as F
 
-g = PoissonPromptGenerator(
-    arrival_rate=1,
-    prompt_queue=Queue(),
-    max_queue_size=10,
-    dataset_name="cais/mmlu",
-    dataset_config="all",
-    dataset_split="validation",
-    prompt_style="mmlu",
-    qa_include_context=False,
-    force_final_tag=True,
-    final_tag="final",
-)
-
-x = g.get_next_prompt()
-print(x["prompt"])
-print("gold:", x["output"])
+m = SentenceTransformer("BAAI/bge-base-en-v1.5")
+qs = [
+    "Are both The Brothers Creeggan and The Postal Service American bands?",
+    "How did Fionn mac Cumhaill win the leadership of the Fianna?",
+    "Which magazine was started first, The Delineator or Woman's World?",
+    "Who has more scope of profession, Patricia Rozema or John Korty?",
+    "What year did the Swiss Bank Corporation merge with UBS?",
+]
+e = F.normalize(torch.tensor(m.encode(qs)), dim=-1)
+print(e @ e.T)
