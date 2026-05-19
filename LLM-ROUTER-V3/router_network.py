@@ -227,7 +227,7 @@ class RouterNetwork(nn.Module):
             # Learnable temperature (CLIP parameterization)
             init_temp = float(getattr(Config, "CLIP_INIT_TEMP", 0.07))
             self.log_temp = nn.Parameter(torch.tensor(math.log(1.0 / init_temp)))
-            self.log_temp_max = math.log(100.0)  # clamp upper bound
+            self.log_temp_max = math.log(5.0)  # clamp upper bound
 
             # ---- Critic: pooled MLP over [prompt_q, mean(servers)] ----
             self.critic_mlp = make_mlp(2 * d_model, d_model, 1, depth=3, dropout=attn_drop)
@@ -466,6 +466,25 @@ class RouterNetwork(nn.Module):
         else:
             return last_linear(self.actor), last_linear(self.critic)
 
+    @staticmethod
+    def _strip_to_question(text: str) -> str:
+        """只用于路由 embedding:把 boilerplate 剥掉,只留裸 question。
+        生成走的是完整 prompt(在 env.step 里),不受这个影响。"""
+        if not isinstance(text, str):
+            return text
+        t = text
+        # 取 "Question:" 之后的部分
+        if "Question:" in t:
+            t = t.split("Question:", 1)[1]
+        # 砍掉 answer / 格式说明 boilerplate
+        for stop in ("\nAnswer:", "\nChoices:", "\nOutput the final answer"):
+            idx = t.find(stop)
+            if idx != -1:
+                t = t[:idx]
+        t = t.strip()
+        # 安全兜底:万一剥空了,退回原文
+        return t if t else text.strip()
+
     @torch.no_grad()
     def _encode_prompts(self, prompts):
         # normalize to list[str]
@@ -489,15 +508,20 @@ class RouterNetwork(nn.Module):
         else:
             prompts = [str(prompts)]
 
+        # ---- ADD: strip boilerplate, 只让 bge-base 看到裸 question ----
+        prompts = [self._strip_to_question(p) for p in prompts]
+        # ---- 临时验证用,确认后删掉 ----
+        print(f"[Routing TEXT] {prompts[:2]}")
+
         emb = self.prompt_encoder.encode(
             prompts,
             convert_to_numpy=True,
             show_progress_bar=False,
-        )  # (N, emb_dim) numpy array
+            normalize_embeddings=True,
+        )
 
         emb = np.asarray(emb, dtype=np.float32)
-        return torch.from_numpy(emb)       # CPU tensor (no autograd through encoder)
-
+        return torch.from_numpy(emb)
     # def encode_prompt(self, prompts):
     #     """Return prompt embedding tensor of shape [N, prompt_dim].
 
@@ -621,6 +645,22 @@ class RouterNetwork(nn.Module):
         # print(f"[Prompt TEXT] {repr(prompt)}")
         if p.dim() == 1:
             p = p.unsqueeze(0)
+
+        # ---- 临时诊断: 确认 strip 之后 cos 掉下来了, 验证完删掉 ----
+        with torch.no_grad():
+            pn = F.normalize(p, dim=-1)
+            if pn.shape[0] > 1:
+                # update_new: 整个 episode 的 prompt 两两 cos
+                cos = pn @ pn.T
+                off = cos[~torch.eye(pn.shape[0], dtype=bool, device=pn.device)]
+                print(f"[Prompt] batch cos: mean={off.mean():.3f} max={off.max():.3f}")
+            else:
+                # get_action: 单 prompt, 跟上一个比
+                cur = pn.squeeze(0)
+                if hasattr(self, "_prev_prompt_emb"):
+                    cos_prev = float((cur * self._prev_prompt_emb).sum())
+                    print(f"[Prompt] cos vs previous: {cos_prev:.3f}")
+                self._prev_prompt_emb = cur.detach().clone()
 
         # match batch size
         if p.shape[0] == 1 and B > 1:
@@ -1246,9 +1286,49 @@ class PPOAgent:
             self.network = LLMRouterNetwork(state_dim, action_dim).to(Config.DEVICE)
         else:
             self.network = RouterNetwork(state_dim, action_dim).to(Config.DEVICE)
+        # self.optimizer = torch.optim.Adam(
+        #     self.network.parameters(),
+        #     lr=Config.LEARNING_RATE
+        # )
+        actor_lr = float(getattr(Config, "ACTOR_LEARNING_RATE", Config.LEARNING_RATE))
+        critic_lr = float(getattr(Config, "CRITIC_LEARNING_RATE", Config.LEARNING_RATE))
+
+        critic_params = []
+        actor_params = []
+
+        for name, param in self.network.named_parameters():
+            if not param.requires_grad:
+                continue
+
+            # Critic/value-specific modules
+            if (
+                "critic" in name
+                or "value" in name
+                or "server_critic" in name
+                or "critic_mlp" in name
+                or "critic_head" in name
+            ):
+                critic_params.append(param)
+            else:
+                actor_params.append(param)
+
+        param_groups = []
+
+        if actor_params:
+            param_groups.append({
+                "params": actor_params,
+                "lr": actor_lr,
+            })
+
+        if critic_params:
+            param_groups.append({
+                "params": critic_params,
+                "lr": critic_lr,
+            })
+
         self.optimizer = torch.optim.Adam(
-            self.network.parameters(),
-            lr=Config.LEARNING_RATE
+            param_groups,
+            eps=1e-5,
         )
         self.scheduler = None 
 

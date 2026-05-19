@@ -248,22 +248,90 @@ def mmlu_choice_score(pred: Optional[str], gold: Any) -> float:
     return 0.0
 
 
+# def match_quality_score(pred: Optional[str], gold: Any) -> float:
+#     """Compute a match score for reward."""
+#     if getattr(Config, "EXTRACT_FINAL_ANSWER", True):
+#         pred = extract_final_answer(pred)
+
+#     metric = getattr(Config, "EM_METRIC", "f1")
+#     if metric == "mmlu":
+#         score = mmlu_choice_score(pred, gold)
+#     elif metric == "em":
+#         score = exact_match_score(pred, gold)
+#     elif metric == "ratio":
+#         score = sequence_ratio_score(pred, gold)
+#     elif metric == "contains":
+#         score = contains_score(pred, gold)
+#     else:
+#         score = token_f1_score(pred, gold)
+
+#     if getattr(Config, "EM_BINARIZE", False):
+#         thr = float(getattr(Config, "EM_THRESHOLD", 0.5))
+#         score = float(score >= thr)
+
+#     return float(max(min(score, 1.0), 0.0))
+
+_NUM_RE = re.compile(r"[-+]?\d[\d,]*(?:\.\d+)?")
+
+def _normalize_number_string(x: Any) -> str:
+    s = str(x or "").strip()
+    if getattr(Config, "EXTRACT_FINAL_ANSWER", True):
+        s = extract_final_answer(s)
+    s = s.replace(",", "")
+    nums = _NUM_RE.findall(s)
+    if not nums:
+        return _normalize_answer(s)
+    v = nums[-1].replace(",", "")
+    try:
+        f = float(v)
+        if abs(f - round(f)) < 1e-9:
+            return str(int(round(f)))
+        return ("%.10f" % f).rstrip("0").rstrip(".")
+    except Exception:
+        return v
+
+
+def numeric_exact_score(pred: Optional[str], gold: Any) -> float:
+    pred_n = _normalize_number_string(pred)
+    for g in _as_list(gold):
+        if pred_n == _normalize_number_string(g):
+            return 1.0
+    return 0.0
+
+
+# Replace your current match_quality_score with this version.
 def match_quality_score(pred: Optional[str], gold: Any) -> float:
-    """Compute a match score for reward."""
+    """Compute a match score for reward.
+
+    Supports mixed dataset gold objects emitted by PoissonPromptGenerator_mixed.py:
+      gold = {"answers": ..., "metric": "f1" | "em" | "mmlu" | "number" | ...}
+    """
+    metric = getattr(Config, "EM_METRIC", "f1")
+    gold_answers = gold
+
+    if isinstance(gold, dict):
+        metric = str(gold.get("metric", metric)).lower()
+        gold_answers = (
+            gold.get("answers")
+            if "answers" in gold
+            else gold.get("answer", gold.get("gold", gold.get("target", "")))
+        )
+
     if getattr(Config, "EXTRACT_FINAL_ANSWER", True):
         pred = extract_final_answer(pred)
 
-    metric = getattr(Config, "EM_METRIC", "f1")
-    if metric == "mmlu":
-        score = mmlu_choice_score(pred, gold)
+    if metric in {"mmlu", "choice", "multiple_choice"}:
+        score = mmlu_choice_score(pred, gold_answers)
+    elif metric in {"number", "numeric", "gsm8k", "math"}:
+        score = numeric_exact_score(pred, gold_answers)
     elif metric == "em":
-        score = exact_match_score(pred, gold)
+        score = exact_match_score(pred, gold_answers)
     elif metric == "ratio":
-        score = sequence_ratio_score(pred, gold)
+        score = sequence_ratio_score(pred, gold_answers)
     elif metric == "contains":
-        score = contains_score(pred, gold)
+        score = contains_score(pred, gold_answers)
     else:
-        score = token_f1_score(pred, gold)
+        score = token_f1_score(pred, gold_answers)
 
     if getattr(Config, "EM_BINARIZE", False):
         thr = float(getattr(Config, "EM_THRESHOLD", 0.5))
@@ -1340,6 +1408,11 @@ class EnhancedRouterEnvironment:
             final_tag=getattr(Config, "FINAL_ANSWER_TAG", "final"),
             shuffle_dataset=getattr(Config, "SHUFFLE_DATASET", True),
             dataset_seed=getattr(Config, "DATASET_SEED", 42),
+            mixed_datasets=(
+                getattr(Config, "MIXED_DATASETS", None)
+                if getattr(Config, "USE_MIXED_DATASET", False)
+                else None
+            ),
         )
         self.prompt_generator.start()
 

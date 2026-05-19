@@ -9,14 +9,12 @@ class Config:
         "ministral-14b-2512",
         "ministral-8b-2512",
         "ministral-3b-2512",
+        "magistral-medium-2509",
 
-        # OpenAI API
-        # "gpt-5.4-nano",
-        # "gpt-5.4-mini",
-        # "gpt-4o-mini-2024-07-18",
-        "gpt-4.1-2025-04-14",
-        "gpt-4.1-mini-2025-04-14",
-        "gpt-4.1-nano-2025-04-14",
+        # Together AI stable models
+        "together/meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        "together/Qwen/Qwen2.5-7B-Instruct-Turbo",
+        "together/meta-llama/Meta-Llama-3-8B-Instruct-Lite",
     ]
 
     PRICE = [
@@ -27,14 +25,12 @@ class Config:
         (0.00000020, 0.00000020),  # ministral-14b-2512
         (0.00000015, 0.00000015),  # ministral-8b-2512
         (0.00000010, 0.00000010),  # ministral-3b-2512
+        (0.00000200, 0.00000500),  # magistral-medium-2509
 
-        # OpenAI API
-        # (0.00000020, 0.00000125),  # gpt-5.4-nano
-        # (0.00000075, 0.00000450),  # gpt-5.4-mini
-        # (0.00000015, 0.00000060),  # gpt-4o-mini-2024-07-18
-        (0.00000200, 0.00000800),  # gpt-4.1-2025-04-14
-        (0.00000040, 0.00000160),  # gpt-4.1-mini-2025-04-14
-        (0.00000010, 0.00000040),  # gpt-4.1-nano-2025-04-14
+        # Together AI
+        (0.00000088, 0.00000088),  # Llama-3.3-70B-Instruct-Turbo
+        (0.00000030, 0.00000030),  # Qwen2.5-7B-Instruct-Turbo
+        (0.00000010, 0.00000010),  # Meta-Llama-3-8B-Instruct-Lite
     ]
 
     SERVICE_RATE = [
@@ -45,17 +41,15 @@ class Config:
         0.386185,  # ministral-14b-2512
         0.363996,  # ministral-8b-2512
         0.349045,  # ministral-3b-2512
+        0.174436,  # magistral-medium-2509
 
-        # OpenAI API
-        # 0.650000,  # gpt-5.4-nano
-        # 0.400000,  # gpt-5.4-mini
-        # 0.408349,  # gpt-4o-mini-2024-07-18
-        0.266312,  # gpt-4.1-2025-04-14
-        0.460004,  # gpt-4.1-mini-2025-04-14
-        0.736517,  # gpt-4.1-nano-2025-04-14
+        # Together AI, conservative initial estimates
+        0.120000,  # Llama-3.3-70B-Instruct-Turbo
+        0.300000,  # Qwen2.5-7B-Instruct-Turbo
+        0.400000,  # Meta-Llama-3-8B-Instruct-Lite
     ]
 
-    SERVER_CAPACITIES = [50] * 9
+    SERVER_CAPACITIES = [100] * 10
 
     USE_UTIL = True  # in the state use load/capability or load + capability
 
@@ -65,6 +59,7 @@ class Config:
     #   - "hotpotqa/hotpot_qa"   (set DATASET_CONFIG to "distractor" or "fullwiki")
     #   - "squad"
     #   - "cais/mmlu" - DATASET_CONFIG = "all" - DATASET_SPLIT = "auxiliary_train[:20000]"
+    #   - "mixed" - "None" - "Train"
     DATASET_NAME = "cais/mmlu"
     DATASET_CONFIG = "all"    # Optional HF config name (e.g., HotpotQA: "distractor" / "fullwiki")
     DATASET_SPLIT = "auxiliary_train[:20000]"     # "train" / "validation" / "test" (must exist in the dataset)
@@ -72,13 +67,57 @@ class Config:
     SHUFFLE_DATASET = True
     DATASET_SEED = 42
 
+    # Add this inside class Config
+    USE_MIXED_DATASET = False
+
+    MIXED_DATASETS = [
+        # Multi-hop QA, needs context; metric uses token F1
+        {
+            "name": "hotpotqa/hotpot_qa",
+            "config": "distractor",
+            "split": "train",
+            "weight": 0.25,
+            "metric": "f1",
+            "task_type": "multihop_qa",
+            "max_samples": 20000,
+        },
+        # Reading comprehension / easier QA, metric uses token F1
+        {
+            "name": "squad",
+            "config": None,
+            "split": "train[:10000]",
+            "weight": 0.25,
+            "metric": "f1",
+            "task_type": "qa",
+        },
+        # Multiple-choice knowledge/reasoning, metric checks A/B/C/D
+        {
+            "name": "cais/mmlu",
+            "config": "all",
+            "split": "auxiliary_train[:10000]",
+            "weight": 0.25,
+            "metric": "mmlu",
+            "task_type": "mmlu",
+        },
+        # Math reasoning, metric extracts exact final number
+        {
+            "name": "openai/gsm8k",
+            "config": "main",
+            "split": "train[:5000]",
+            "weight": 0.25,
+            "metric": "number",
+            "task_type": "math",
+        },
+    ]
+
+
     # Prompt encoder settings (RouterNetwork)
     # Any SentenceTransformer model name, e.g., 'all-MiniLM-L6-v2', 'all-mpnet-base-v2', etc.
     PROMPT_MODEL = "BAAI/bge-base-en-v1.5"
 
     # If False: use raw SentenceTransformer embedding directly (no projection).
     # If True: learn a small projection emb_dim -> PROMPT_DIM.
-    USE_PROMPT_PROJECTION = True
+    USE_PROMPT_PROJECTION = False
     PROMPT_DIM = 128
 
 
@@ -118,7 +157,6 @@ class Config:
     ROUTER_LLM_CRITIC_DEPTH = 4
     ROUTER_LLM_CRITIC_DROPOUT = 0.0
 
-
     # LLM policy training controls (important for memory)
     # ROUTER_LLM_FREEZE_BASE = True      # True => train only actor/critic heads
     # ROUTER_LLM_DTYPE = "float16"       # "float16" / "bfloat16" / "float32"
@@ -132,7 +170,7 @@ class Config:
     # QA prompt formatting (applies to QA-style datasets and also safe for Alpaca)
     QA_INCLUDE_CONTEXT = True  # include question context (e.g., passage) in the prompt
     QA_MAX_CONTEXT_DOCS = 10      # For datasets with multiple context documents (e.g., HotpotQA)
-    QA_MAX_CONTEXT_CHARS = 4096  # Hard cap to avoid overly long prompts
+    QA_MAX_CONTEXT_CHARS = 2048  # Hard cap to avoid overly long prompts
 
     # Scoring: extract a final answer span before EM/F1 (prevents explanations from lowering scores)
     EXTRACT_FINAL_ANSWER = True
@@ -171,20 +209,22 @@ class Config:
     ENV_DEFER_LAT_PRICE_REWARD_WHEN_MINMAX = True
 
     LAMBDA = 5  # Capacity penalty weight (increased to strongly discourage invalid actions)
-    MAX_LAT = 10
+    MAX_LAT = 20
     FAIR_REWARD_MIN_FLOOR = False # True the missing server will be set min rewards, False will use the floor reward -Beta-REWARD_GAMMA
     
     # PPO hyperparameters - tuned for the routing problem
-    LEARNING_RATE = 3e-4 # Reduced for more stable learning
+    LEARNING_RATE = 1e-4 # Reduced for more stable learning
     GAMMA = 0.99          # Slightly reduced discount factor
     GAE_LAMBDA = 0.95      # Reduced for less variance in advantage estimation
-    CLIP_EPSILON = 0.2    # Slightly reduced for more conservative updates
+    CLIP_EPSILON = 0.5    # Slightly reduced for more conservative updates
     POLICY_COEF = 1       # Policy loss weight
-    VALUE_COEF = 0.1      # Reduced value function weight
-    ENTROPY_COEF = 0.00   # Increased entropy for more exploration
+    VALUE_COEF = 0.2      # Reduced value function weight
+    ENTROPY_COEF = 0.0   # Increased entropy for more exploration
+    ACTOR_LEARNING_RATE = 1e-4
+    CRITIC_LEARNING_RATE = 1e-3
     KL_COEF = 0.00
     MAX_GRAD_NORM = 1
-    PPO_EPOCHS = 4     # Increased for more thorough updates
+    PPO_EPOCHS = 2     # Increased for more thorough updates
     BATCH_SIZE = 1      # Increased batch size
     TARGET_KL = 0.02
     USE_TARGET_KL_STOP = False
@@ -193,7 +233,7 @@ class Config:
     USE_CLIP_FUSION_ROUTER = True
     ATTN_D_MODEL  = 256
     ATTN_N_HEADS  = 4
-    ATTN_N_LAYERS = 4     
+    ATTN_N_LAYERS = 2     
     ATTN_FF_MULT  = 4
     ATTN_DROPOUT  = 0.0
     CLIP_INIT_TEMP = 0.2   # CLIP 默认；如果初期 entropy 太低就调大到 0.5 或 1.0
@@ -205,7 +245,7 @@ class Config:
     SERVICE_RATE_MIN = 1e-4
     SERVICE_RATE_MAX = 5.0
 
-    
+
     # Neural network settings
     HIDDEN_DIM = 512
     
@@ -224,7 +264,7 @@ class Config:
     PLOT_INTERVAL = 50    # Plot progress every 50 episodes
     
     # Router QA generation controls (keeps answers short & deterministic)
-    GEN_MAX_NEW_TOKENS = 256         # hard cap on answer length
+    GEN_MAX_NEW_TOKENS = 128         # hard cap on answer length
     GEN_MIN_NEW_TOKENS = 0
     GEN_TEMPERATURE = 0.1         
     GEN_TOP_P = 1
@@ -272,13 +312,13 @@ class Config:
     FINAL_EVAL_EPISODES = 10  # Number of episodes for final evaluation
     
     # Poisson prompt generation settings
-    POISSON_ARRIVAL_RATE = 6  # Average arrival rate of prompts per second
+    POISSON_ARRIVAL_RATE = 3  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
-    EPISODE_TIME_INTERVAL = 30 # How many intervals in current episode
+    EPISODE_TIME_INTERVAL = 10 # How many intervals in current episode
     
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)
-    INTERVAL_LENGTH = 1 # The length of interval
+    INTERVAL_LENGTH = 2 # The length of interval
     MAX_EPISODES = 200   # Increased for more training
     
     # Queue score settings
@@ -287,9 +327,9 @@ class Config:
     MERGE_ALPHA = 0 # Alpha for merging action probabilities (0.5 for equal weighting)
 
     # Drop action
-    INVALID_ROUTE_PENALTY = 1   # try 0.5 ~ 2.0 depending how hard you want to avoid full servers
-    FAIL_LATENCY_CAP = 10.0       # just for logging; failed branch uses penalty not latency
-    REWARD_CLIP = -1             # optional, set <=0 to disable
+    INVALID_ROUTE_PENALTY = 2   # try 0.5 ~ 2.0 depending how hard you want to avoid full servers
+    FAIL_LATENCY_CAP = 20.0       # just for logging; failed branch uses penalty not latency
+    REWARD_CLIP = -2             # optional, set <=0 to disable
 
     MASK = False
 
