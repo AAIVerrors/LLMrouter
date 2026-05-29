@@ -247,7 +247,7 @@ class PoissonPromptGenerator:
         tag = self.final_tag
         if self.force_final_tag:
             suffix = (
-                f"\nThink briefly and return only one option letter inside <{tag}>...</{tag}>.\n"
+                f"\nThink and return only one option letter inside <{tag}>...</{tag}>.\n"
                 f"The answer must be one of A, B, C, or D.\n"
             )
         else:

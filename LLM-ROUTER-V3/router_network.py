@@ -4,6 +4,11 @@ import torch.nn.functional as F
 from torch.distributions import Categorical
 import numpy as np
 from sentence_transformers import SentenceTransformer
+try:
+    from transformers import AutoTokenizer, AutoModel
+except Exception:
+    AutoTokenizer = None
+    AutoModel = None
 from config import Config
 import torch.multiprocessing as mp
 from environment import QualityScorer
@@ -75,28 +80,35 @@ class AttnBlock(nn.Module):
         )
         self.ln2 = nn.LayerNorm(d_model)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, key_padding_mask: torch.Tensor | None = None) -> torch.Tensor:
         # x: [B, T, d_model]
-        h, _ = self.mha(x, x, x, need_weights=False)
+        # key_padding_mask: [B, T], True means the token is padding and should be ignored.
+        h, _ = self.mha(x, x, x, key_padding_mask=key_padding_mask, need_weights=False)
         x = self.ln1(x + h)
         x = self.ln2(x + self.ff(x))
         return x
 
 
+
 class RouterNetwork(nn.Module):
     """
-    Two modes:
-      - If Config.USE_ATTN_ROUTER=True: Transformer-style attention over tokens:
-          [PROMPT] (+[GLOBAL]) + [SERVER_1..SERVER_M]
-        Actor outputs 1 logit per server token.
-        Critic pools tokens.
-      - Else: your original MLP trunk.
+    RouterNetwork with a token-level prompt encoder for USE_CLIP_FUSION_ROUTER=True.
 
-    Prompt encoder:
-      - Config.PROMPT_MODEL chooses SentenceTransformer model.
-      - Config.USE_PROMPT_PROJECTION:
-          False => use raw SentenceTransformer embedding (no projection)
-          True  => apply a learned projection emb_dim -> prompt_dim
+    Key change:
+      - Old CLIP fusion path:
+          prompt text -> SentenceTransformer pooled embedding [B, H]
+          -> prompt_tower(...).unsqueeze(1) -> [B, 1, d]
+        This compresses the whole prompt into one token.
+
+      - New LLaVA-style fusion path:
+          prompt text -> AutoTokenizer + AutoModel
+          -> last_hidden_state [B, L, H]
+          -> prompt_token_proj -> [B, L, d]
+          -> concat [ROUTE] + prompt tokens + server tokens
+          -> lightweight fusion Transformer
+          -> actor_head(server_h) -> logits [B, M]
+
+    Non-CLIP branches are kept compatible with your old SentenceTransformer pooled embedding path.
     """
     def __init__(
         self,
@@ -111,59 +123,86 @@ class RouterNetwork(nn.Module):
         freeze_prompt_encoder: bool = True,
     ):
         super().__init__()
-        self.state_dim = state_dim
-        self.action_dim = action_dim
-        # self.prompt_dim is set below (after deciding projection)
-        
+
+        # self.actor_log_temp = nn.Parameter(torch.zeros(1))
+
+        self.state_dim = int(state_dim)
+        self.action_dim = int(action_dim)
         self.use_clip_fusion = bool(getattr(Config, "USE_CLIP_FUSION_ROUTER", False))
+        self.use_attn = bool(getattr(Config, "USE_ATTN_ROUTER", False))
 
-        # Prompt encoder (optionally frozen)
-        self.prompt_encoder = SentenceTransformer(getattr(Config, 'PROMPT_MODEL', prompt_model))
-        self.prompt_encoder.eval()
-        if freeze_prompt_encoder:
-            for p in self.prompt_encoder.parameters():
-                p.requires_grad = False
-
-        # Prompt embedding + optional projection
-        # SentenceTransformer outputs emb_dim (model-specific, e.g. 384 for all-MiniLM-L6-v2).
-        self.prompt_emb_dim = int(getattr(self.prompt_encoder, "get_sentence_embedding_dimension", lambda: 384)())
-
-        # If False: use raw SentenceTransformer embedding directly (NO projection).
-        # If True: learn a small projection emb_dim -> prompt_dim.
-        self.use_prompt_projection = bool(getattr(Config, "USE_PROMPT_PROJECTION", False))
-        if self.use_prompt_projection:
-            # emb_dim -> hidden_dim -> prompt_dim
-            self.prompt_projection = nn.Sequential(
-                nn.Linear(self.prompt_emb_dim, hidden_dim),
-                nn.GELU(),
-                nn.Dropout(dropout),
-                nn.Linear(hidden_dim, prompt_dim),
-            )
-            self.prompt_dim = int(prompt_dim)
-        else:
-            self.prompt_projection = None
-            self.prompt_dim = int(self.prompt_emb_dim)
-
-        # Feature flags used by queue-score mix branch too
         self.include_quality_state = bool(getattr(Config, "INCLUDE_QUALITY_IN_STATE", True)) and not bool(
             getattr(Config, "USE_EM_EXACT_MATCH", False)
         )
 
-        # Attention mode
-        self.use_attn = bool(getattr(Config, "USE_ATTN_ROUTER", False))
-        # Per-server feature dim (util, slot_count, mu, price_in, price_out)
         self.server_feat_dim = (
             int(getattr(Config, "SERVER_DYN_DIM", 1))
             + int(getattr(Config, "SERVER_STAT_DIM", 3))
         )
-        
+
+        # =========================================================
+        # Prompt encoder
+        # =========================================================
+        if self.use_clip_fusion:
+            # Token-level encoder: do NOT pool the prompt into one vector.
+            if AutoTokenizer is None or AutoModel is None:
+                raise ImportError("transformers is required for token-level prompt encoding. Please install `transformers`.")
+
+            self.prompt_model_name = getattr(Config, "PROMPT_MODEL", prompt_model)
+
+            self.prompt_tokenizer = AutoTokenizer.from_pretrained(
+                self.prompt_model_name,
+                trust_remote_code=True,
+            )
+
+            self.prompt_encoder = AutoModel.from_pretrained(
+                self.prompt_model_name,
+                trust_remote_code=True,
+            )
+            self.prompt_encoder.eval()
+
+            if freeze_prompt_encoder:
+                for p in self.prompt_encoder.parameters():
+                    p.requires_grad = False
+
+            self.prompt_emb_dim = int(getattr(self.prompt_encoder.config, "hidden_size", 768))
+            self.prompt_dim = self.prompt_emb_dim
+            self.prompt_projection = None
+            self.use_prompt_projection = False
+
+        else:
+            # Old pooled sentence embedding path for non-CLIP branches.
+            self.prompt_encoder = SentenceTransformer(getattr(Config, "PROMPT_MODEL", prompt_model))
+            self.prompt_encoder.eval()
+            if freeze_prompt_encoder:
+                for p in self.prompt_encoder.parameters():
+                    p.requires_grad = False
+
+            self.prompt_emb_dim = int(getattr(self.prompt_encoder, "get_sentence_embedding_dimension", lambda: 384)())
+
+            self.use_prompt_projection = bool(getattr(Config, "USE_PROMPT_PROJECTION", False))
+            if self.use_prompt_projection:
+                self.prompt_projection = nn.Sequential(
+                    nn.Linear(self.prompt_emb_dim, hidden_dim),
+                    nn.GELU(),
+                    nn.Dropout(dropout),
+                    nn.Linear(hidden_dim, prompt_dim),
+                )
+                self.prompt_dim = int(prompt_dim)
+            else:
+                self.prompt_projection = None
+                self.prompt_dim = int(self.prompt_emb_dim)
+
+        # =========================================================
+        # LLaVA-style branch: token-level prompt + server tokens -> fusion Transformer
+        # =========================================================
         if self.use_clip_fusion:
             self.M = int(action_dim)
 
-            d_model   = int(getattr(Config, "ATTN_D_MODEL", 256))
-            n_heads   = int(getattr(Config, "ATTN_N_HEADS", 8))
-            n_layers  = int(getattr(Config, "ATTN_N_LAYERS", 2))   # server self-attn 层数
-            ff_mult   = int(getattr(Config, "ATTN_FF_MULT", 4))
+            d_model = int(getattr(Config, "ATTN_D_MODEL", 256))
+            n_heads = int(getattr(Config, "ATTN_N_HEADS", 8))
+            n_layers = int(getattr(Config, "ATTN_N_LAYERS", 2))
+            ff_mult = int(getattr(Config, "ATTN_FF_MULT", 4))
             attn_drop = float(getattr(Config, "ATTN_DROPOUT", dropout))
 
             if d_model % n_heads != 0:
@@ -171,109 +210,98 @@ class RouterNetwork(nn.Module):
 
             self.d_model = d_model
 
-            # ---- Dual-channel server features (same as before) ----
-            self.dyn_feat_dim  = int(getattr(Config, "SERVER_DYN_DIM", 1))   # util
-            self.stat_feat_dim = int(getattr(Config, "SERVER_STAT_DIM", 3))  # mu, p_in, p_out
-            self.server_feat_dim = self.dyn_feat_dim + self.stat_feat_dim    # = 4
+            # Per-server layout:
+            #   [util, slot_count, mu, price_in, price_out]
+            self.dyn_feat_dim = int(getattr(Config, "SERVER_DYN_DIM", 2))
+            self.stat_feat_dim = int(getattr(Config, "SERVER_STAT_DIM", 3))
+            self.server_feat_dim = self.dyn_feat_dim + self.stat_feat_dim
 
-            self.server_dyn_proj  = nn.Linear(self.dyn_feat_dim,  d_model)
+            # Dynamic/static server channel projections
+            self.server_dyn_proj = nn.Linear(self.dyn_feat_dim, d_model)
             self.server_stat_proj = nn.Linear(self.stat_feat_dim, d_model)
 
-            self.dyn_type_emb  = nn.Parameter(torch.zeros(1, 1, d_model))
+            self.dyn_type_emb = nn.Parameter(torch.zeros(1, 1, d_model))
             self.stat_type_emb = nn.Parameter(torch.zeros(1, 1, d_model))
-            nn.init.normal_(self.dyn_type_emb,  std=0.02)
+            nn.init.normal_(self.dyn_type_emb, std=0.02)
             nn.init.normal_(self.stat_type_emb, std=0.02)
 
-            # Position embedding for 2M server tokens
             self.server_pos_emb = nn.Parameter(torch.zeros(1, 2 * self.M, d_model))
             nn.init.normal_(self.server_pos_emb, std=0.02)
 
-            # ---- Server tower: self-attention so servers see each other ----
+            # Server self-attention: servers see other servers before looking at prompt.
             self.server_self_attn = nn.ModuleList([
                 AttnBlock(d_model, n_heads, ff_mult, attn_drop)
                 for _ in range(n_layers)
             ])
 
-            # ---- Prompt tower: small MLP P -> d_model ----
-            self.prompt_tower = nn.Sequential(
-                nn.LayerNorm(self.prompt_dim),
-                nn.Linear(self.prompt_dim, d_model),
+            # Token-level prompt projection: [B, L, H] -> [B, L, d_model]
+            self.prompt_token_proj = nn.Sequential(
+                nn.LayerNorm(self.prompt_emb_dim),
+                nn.Linear(self.prompt_emb_dim, d_model),
                 nn.GELU(),
                 nn.Dropout(dropout),
                 nn.Linear(d_model, d_model),
+                nn.LayerNorm(d_model),
             )
 
-            # ---- Cross-attention: prompt (Q) attends to servers (K,V) ----
-            self.cross_attn_ln_q  = nn.LayerNorm(d_model)
-            self.cross_attn_ln_kv = nn.LayerNorm(d_model)
-            self.cross_attn = nn.MultiheadAttention(
-                embed_dim=d_model, num_heads=n_heads,
-                dropout=attn_drop, batch_first=True,
-            )
-            self.cross_attn_ff = nn.Sequential(
-                nn.Linear(d_model, ff_mult * d_model),
+            # ---- LLaVA-style fusion transformer ----
+            # Treat server states as structured "routing tokens" and project them into
+            # the same d_model space as prompt tokens. Then concatenate:
+            #   [ROUTE] + prompt_tokens + server_tokens
+            # and let a lightweight Transformer perform joint prompt-server interaction.
+            self.route_token = nn.Parameter(torch.zeros(1, 1, d_model))
+            self.route_type_emb = nn.Parameter(torch.zeros(1, 1, d_model))
+            self.prompt_type_emb = nn.Parameter(torch.zeros(1, 1, d_model))
+            self.server_type_emb = nn.Parameter(torch.zeros(1, 1, d_model))
+            nn.init.normal_(self.route_token, std=0.02)
+            nn.init.normal_(self.route_type_emb, std=0.02)
+            nn.init.normal_(self.prompt_type_emb, std=0.02)
+            nn.init.normal_(self.server_type_emb, std=0.02)
+
+            fusion_layers = int(getattr(Config, "LLAVA_FUSION_LAYERS", 2))
+            self.fusion_blocks = nn.ModuleList([
+                AttnBlock(d_model, n_heads, ff_mult, attn_drop)
+                for _ in range(fusion_layers)
+            ])
+            self.fusion_ln = nn.LayerNorm(d_model)
+
+            # Fuse dynamic and static channels into one server representation.
+            self.server_fuse = nn.Sequential(
+                nn.LayerNorm(2 * d_model),
+                nn.Linear(2 * d_model, d_model),
                 nn.GELU(),
                 nn.Dropout(dropout),
-                nn.Linear(ff_mult * d_model, d_model),
+                nn.Linear(d_model, d_model),
+                nn.LayerNorm(d_model),
             )
-            self.cross_attn_ln_out = nn.LayerNorm(d_model)
 
-            # ---- Actor heads: CLIP-style dot product per channel ----
-            # Project prompt-conditioned query and server keys into a shared space
-            self.actor_q_proj    = nn.Linear(d_model, d_model)
-            self.actor_k_dyn     = nn.Linear(d_model, d_model)
-            self.actor_k_stat    = nn.Linear(d_model, d_model)
+            # Actor reads one prompt-conditioned server_h per server.
+            self.actor_head = make_actor_mlp(
+                in_dim=2 * d_model,
+                hidden_dim=d_model,
+                out_dim=1,
+                depth=3,
+                dropout=attn_drop,
+            )
+            
+            # Critic attention pooling over servers.
+            # route_h tells the critic which server states are important for this prompt/state.
+            self.critic_server_score = nn.Sequential(
+                nn.LayerNorm(2 * d_model),
+                nn.Linear(2 * d_model, d_model),
+                nn.GELU(),
+                nn.Dropout(attn_drop),
+                nn.Linear(d_model, 1),
+            )
 
-            # Learnable temperature (CLIP parameterization)
-            init_temp = float(getattr(Config, "CLIP_INIT_TEMP", 0.07))
-            self.log_temp = nn.Parameter(torch.tensor(math.log(1.0 / init_temp)))
-            self.log_temp_max = math.log(5.0)  # clamp upper bound
-
-            # ---- Critic: pooled MLP over [prompt_q, mean(servers)] ----
-            self.critic_mlp = make_mlp(2 * d_model, d_model, 1, depth=3, dropout=attn_drop)
-
-        # if self.use_attn:
-        #     self.M = int(action_dim)  # typically == len(Config.MODEL_NAMES)
-
-        #     d_model = int(getattr(Config, "ATTN_D_MODEL", 256))
-        #     n_heads = int(getattr(Config, "ATTN_N_HEADS", 8))
-        #     n_layers = int(getattr(Config, "ATTN_N_LAYERS", 4))
-        #     ff_mult = int(getattr(Config, "ATTN_FF_MULT", 4))
-        #     attn_drop = float(getattr(Config, "ATTN_DROPOUT", dropout))
-        #     self.use_global_token = bool(getattr(Config, "ATTN_USE_GLOBAL_TOKEN", True))
-
-        #     if d_model % n_heads != 0:
-        #         raise ValueError(f"ATTN_D_MODEL ({d_model}) must be divisible by ATTN_N_HEADS ({n_heads}).")
-
-        #     self.d_model = d_model
-
-        #     # Flat, per-server interleaved state layout:
-        #     #   state_flat = concat_i [util_i, mu_i, price_in_i, price_out_i]
-        #     # So per-server feature dim F = 4.
-        #     self.has_quality = False
-        #     self.has_price = True
-        #     self.global_dim = 0
-        #     self.server_feat_dim = 4
-
-        #     self.server_feat_proj = nn.Linear(self.server_feat_dim, d_model)
-        #     self.prompt_token_proj = nn.Linear(self.prompt_dim, d_model)
-        #     self.global_token_proj = nn.Linear(self.global_dim, d_model) if (self.use_global_token and self.global_dim > 0) else None
-
-        #     # learned positional embedding
-        #     max_tokens = 1 + (1 if self.global_token_proj is not None else 0) + self.M
-        #     self.pos_emb = nn.Parameter(torch.zeros(1, max_tokens, d_model))
-        #     nn.init.normal_(self.pos_emb, mean=0.0, std=0.02)
-
-        #     self.attn_blocks = nn.ModuleList(
-        #         [AttnBlock(d_model=d_model, n_heads=n_heads, ff_mult=ff_mult, dropout=attn_drop) for _ in range(n_layers)]
-        #     )
-
-        #     # Actor: per-server logit head
-        #     self.actor_ln = nn.LayerNorm(d_model)
-        #     self.actor_head = nn.Linear(d_model, 1)
-
-        #     # Critic: pooled tokens -> value
-        #     self.critic_mlp = make_mlp(d_model, d_model, 1, depth=3, dropout=attn_drop)
+            # Critic pools token-level prompt and server representations.
+            self.critic_mlp = make_mlp(
+                2 * d_model,
+                d_model,
+                1,
+                depth=3,
+                dropout=attn_drop,
+            )
 
         elif self.use_attn:
             self.M = int(action_dim)
@@ -290,24 +318,13 @@ class RouterNetwork(nn.Module):
 
             self.d_model = d_model
 
-            # ================================================================
-            # [CHANNEL] Dual-channel per-server tokens.
-            # Flat per-server layout (must match trainer.build_state):
-            #   [util_i, mu_i, price_in_i, price_out_i]
-            # -> dynamic: [util_i]              (1 dim, changes every decision)
-            # -> static:  [mu_i, pin_i, pout_i] (3 dims, constant)
-            # Each server becomes TWO tokens so attention can't dilute util
-            # inside a joint linear projection.
-            # ================================================================
             self.dyn_feat_dim = int(getattr(Config, "SERVER_DYN_DIM", 1))
             self.stat_feat_dim = int(getattr(Config, "SERVER_STAT_DIM", 3))
-            self.server_feat_dim = self.dyn_feat_dim + self.stat_feat_dim   # = 4
+            self.server_feat_dim = self.dyn_feat_dim + self.stat_feat_dim
 
-            # Independent projections for each channel
             self.server_dyn_proj = nn.Linear(self.dyn_feat_dim, d_model)
             self.server_stat_proj = nn.Linear(self.stat_feat_dim, d_model)
 
-            # Type embeddings so attention can distinguish the two channels
             self.dyn_type_emb = nn.Parameter(torch.zeros(1, 1, d_model))
             self.stat_type_emb = nn.Parameter(torch.zeros(1, 1, d_model))
             nn.init.normal_(self.dyn_type_emb, mean=0.0, std=0.02)
@@ -315,13 +332,11 @@ class RouterNetwork(nn.Module):
 
             self.prompt_token_proj = nn.Linear(self.prompt_dim, d_model)
 
-            # No global token in this layout
             self.global_token_proj = None
             self.has_quality = False
             self.has_price = True
             self.global_dim = 0
 
-            # Position embedding: 1 prompt + 2*M server tokens
             max_tokens = 1 + 2 * self.M
             self.pos_emb = nn.Parameter(torch.zeros(1, max_tokens, d_model))
             nn.init.normal_(self.pos_emb, mean=0.0, std=0.02)
@@ -330,35 +345,26 @@ class RouterNetwork(nn.Module):
                 [AttnBlock(d_model=d_model, n_heads=n_heads, ff_mult=ff_mult, dropout=attn_drop) for _ in range(n_layers)]
             )
 
-            # Actor reads from DYNAMIC tokens only (one logit per server)
-            self.actor_ln = nn.LayerNorm(3 * d_model)   
+            self.actor_ln = nn.LayerNorm(3 * d_model)
             self.actor_head = make_actor_mlp(
-                in_dim=3 * d_model,                   
+                in_dim=3 * d_model,
                 hidden_dim=d_model,
                 out_dim=1,
                 depth=3,
                 dropout=0,
             )
 
-            # Critic pools over all tokens
             self.critic_mlp = make_mlp(2 * d_model, d_model, 1, depth=3, dropout=attn_drop)
-        
+
         else:
-            self.M = int(action_dim)  # number of servers/actions
-            # If True: keep **flat** input externally, but internally reshape to [B,M,F]
-            # and use a shared per-server MLP to output one logit per server (like attention router semantics).
+            self.M = int(action_dim)
             self.use_serverwise_mlp = bool(getattr(Config, "USE_SERVERWISE_MLP", True))
 
             if self.use_serverwise_mlp:
                 trunk_in = self.server_feat_dim + self.prompt_dim
 
-                # separately normalize server features and prompt embedding
                 self.server_feat_ln = nn.LayerNorm(self.server_feat_dim)
                 self.prompt_ln = nn.LayerNorm(self.prompt_dim)
-                # self.server_feat_ln = nn.Identity()
-                # self.prompt_ln = nn.Identity()
-                print(self.server_feat_ln)
-                print(self.prompt_ln)
 
                 self.server_mlp = make_mlp(
                     trunk_in,
@@ -383,15 +389,7 @@ class RouterNetwork(nn.Module):
                     depth=head_depth,
                     dropout=dropout,
                 )
-            # else:
-            #     # Original flat MLP trunk
-            #     trunk_in = state_dim + self.prompt_dim
-            #     self.in_ln = nn.LayerNorm(trunk_in)
-            #     self.trunk = make_mlp(trunk_in, hidden_dim, hidden_dim, depth=trunk_depth, dropout=dropout)
-            #     self.actor = make_mlp(hidden_dim, hidden_dim, action_dim, depth=head_depth, dropout=dropout)
-            #     self.critic = make_mlp(hidden_dim, hidden_dim, 1, depth=head_depth, dropout=dropout)
             else:
-                # Original flat MLP trunk
                 trunk_in = state_dim + self.prompt_dim
                 self.state_ln = nn.LayerNorm(state_dim)
                 self.prompt_ln = nn.LayerNorm(self.prompt_dim)
@@ -401,43 +399,24 @@ class RouterNetwork(nn.Module):
 
         self._init_weights()
 
-    # def _init_weights(self):
-    #     for m in self.modules():
-    #         if isinstance(m, nn.Linear):
-    #             nn.init.xavier_uniform_(m.weight,1)
-    #             if m.bias is not None:
-    #                 nn.init.zeros_(m.bias)
-    
-    # def _init_weights(self):
-    #     for m in self.modules():
-    #         if isinstance(m, nn.Linear):
-    #             nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
-    #             if m.bias is not None:
-    #                 nn.init.zeros_(m.bias)
-                    
-    #     actor_out, critic_out = self._get_output_layers()
-
-    #     if actor_out is not None:
-    #         nn.init.orthogonal_(actor_out.weight, gain=0.01)
-    #         if actor_out.bias is not None:
-    #             nn.init.zeros_(actor_out.bias)
-
-    #     if critic_out is not None:
-    #         nn.init.orthogonal_(critic_out.weight, gain=1.0)
-    #         if critic_out.bias is not None:
-    #             nn.init.zeros_(critic_out.bias)
-    
     def _init_weights(self):
+        # Do not touch pretrained prompt_encoder weights.
+        pretrained_ids = set()
+        if hasattr(self, "prompt_encoder"):
+            pretrained_ids = {id(p) for p in self.prompt_encoder.parameters()}
+
         for m in self.modules():
             if isinstance(m, nn.Linear):
+                if id(m.weight) in pretrained_ids:
+                    continue
                 nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
-                if m.bias is not None:
+                if m.bias is not None and id(m.bias) not in pretrained_ids:
                     nn.init.zeros_(m.bias)
 
         actor_out, critic_out = self._get_output_layers()
 
         if actor_out is not None:
-            nn.init.orthogonal_(actor_out.weight, gain=1)  
+            nn.init.orthogonal_(actor_out.weight, gain=0.5)
             if actor_out.bias is not None:
                 nn.init.zeros_(actor_out.bias)
 
@@ -445,7 +424,7 @@ class RouterNetwork(nn.Module):
             nn.init.orthogonal_(critic_out.weight, gain=1.0)
             if critic_out.bias is not None:
                 nn.init.zeros_(critic_out.bias)
-                
+
     def _get_output_layers(self):
         def last_linear(module):
             if isinstance(module, nn.Linear):
@@ -457,8 +436,7 @@ class RouterNetwork(nn.Module):
             return None
 
         if getattr(self, "use_clip_fusion", False):
-            # Actor "output" is the projection layers; critic is critic_mlp
-            return last_linear(self.actor_k_dyn), last_linear(self.critic_mlp)
+            return last_linear(self.actor_head), last_linear(self.critic_mlp)
         elif self.use_attn:
             return last_linear(self.actor_head), last_linear(self.critic_mlp)
         elif getattr(self, "use_serverwise_mlp", False):
@@ -466,52 +444,146 @@ class RouterNetwork(nn.Module):
         else:
             return last_linear(self.actor), last_linear(self.critic)
 
+    # =========================================================
+    # Prompt preprocessing
+    # =========================================================
     @staticmethod
-    def _strip_to_question(text: str) -> str:
-        """只用于路由 embedding:把 boilerplate 剥掉,只留裸 question。
-        生成走的是完整 prompt(在 env.step 里),不受这个影响。"""
-        if not isinstance(text, str):
-            return text
-        t = text
-        # 取 "Question:" 之后的部分
-        if "Question:" in t:
-            t = t.split("Question:", 1)[1]
-        # 砍掉 answer / 格式说明 boilerplate
-        for stop in ("\nAnswer:", "\nChoices:", "\nOutput the final answer"):
-            idx = t.find(stop)
-            if idx != -1:
-                t = t[:idx]
-        t = t.strip()
-        # 安全兜底:万一剥空了,退回原文
-        return t if t else text.strip()
-
-    @torch.no_grad()
-    def _encode_prompts(self, prompts):
-        # normalize to list[str]
+    def _normalize_prompt_list(prompts):
         if isinstance(prompts, str):
-            prompts = [prompts]
+            return [prompts]
         elif isinstance(prompts, (int, float)):
-            prompts = [str(prompts)]
+            return [str(prompts)]
         elif isinstance(prompts, torch.Tensor):
             if prompts.dim() == 0:
-                prompts = [str(prompts.item())]
-            else:
-                prompts = [
-                    str(x.item()) if (isinstance(x, torch.Tensor) and x.dim() == 0) else str(x)
-                    for x in prompts
-                ]
+                return [str(prompts.item())]
+            return [
+                str(x.item()) if (isinstance(x, torch.Tensor) and x.dim() == 0) else str(x)
+                for x in prompts
+            ]
         elif isinstance(prompts, list):
-            prompts = [
-                p if isinstance(p, str) else (str(p.item()) if isinstance(p, torch.Tensor) and p.dim() == 0 else str(p))
+            return [
+                p if isinstance(p, str) else (
+                    str(p.item()) if isinstance(p, torch.Tensor) and p.dim() == 0 else str(p)
+                )
                 for p in prompts
             ]
         else:
-            prompts = [str(prompts)]
+            return [str(prompts)]
 
-        # ---- ADD: strip boilerplate, 只让 bge-base 看到裸 question ----
-        prompts = [self._strip_to_question(p) for p in prompts]
-        # ---- 临时验证用,确认后删掉 ----
-        print(f"[Routing TEXT] {prompts[:2]}")
+    @staticmethod
+    def _make_routing_text(text: str) -> str:
+        """
+        Routing-only text.
+
+        Keep useful task/question/choice information, remove final-answer boilerplate.
+        The generation model still receives the original full prompt elsewhere.
+        """
+        raw = str(text).strip()
+
+        # Remove output-format instruction, but keep choices/options.
+        for stop in (
+            "\nOutput the final answer",
+            "\nPlease output",
+            "\nFinal answer",
+            "\nReturn only",
+        ):
+            idx = raw.find(stop)
+            if idx != -1:
+                raw = raw[:idx].strip()
+
+        # MMLU / multiple-choice format: keep question + choices.
+        if "Question:" in raw:
+            q = raw.split("Question:", 1)[1].strip()
+            ans_idx = q.find("\nAnswer:")
+            if ans_idx != -1:
+                q = q[:ans_idx].strip()
+            return "Task: multiple_choice\n" + q
+
+        # Explicit QA context format. Do not feed full context into router;
+        # keep question and context stats.
+        for marker in ("\nContext:", "\ncontext:", "\nContext :", "Context:"):
+            if marker in raw:
+                question, context = raw.split(marker, 1)
+                question = question.strip()
+                context = context.strip()
+                return (
+                    "Task: qa_with_context\n"
+                    f"Question: {question}\n"
+                    f"Context stats: chars={len(context)}"
+                )
+
+        # Long reading-comprehension passage without explicit Context marker.
+        # Keep the tail because the actual question is usually near the end.
+        if len(raw) > 900:
+            return (
+                "Task: reading_comprehension\n"
+                f"Question/context_tail: {raw[-700:].strip()}\n"
+                f"Text stats: chars={len(raw)}"
+            )
+
+        return raw
+
+    @staticmethod
+    def _strip_to_question(text: str) -> str:
+        """Compatibility for old pooled embedding branches."""
+        if not isinstance(text, str):
+            return str(text)
+        return RouterNetwork._make_routing_text(text)
+
+    # @torch.no_grad()
+    def encode_prompt_tokens(self, prompts):
+        """
+        Token-level prompt encoding for USE_CLIP_FUSION_ROUTER=True.
+
+        Returns:
+          prompt_tokens: [B, L, d_model]
+          prompt_mask:   [B, L] bool, True = valid token
+        """
+        prompts = self._normalize_prompt_list(prompts)
+        prompts = [self._make_routing_text(p) for p in prompts]
+
+        if bool(getattr(Config, "ROUTER_DEBUG_TEXT", False)):
+            print(f"[Routing TEXT] {prompts[:2]}")
+
+        enc = self.prompt_tokenizer(
+            prompts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=int(getattr(Config, "PROMPT_MAX_TOKENS", 512)),
+        )
+
+        device = next(self.parameters()).device
+        input_ids = enc["input_ids"].to(device, non_blocking=True)
+        attention_mask = enc["attention_mask"].to(device, non_blocking=True)
+
+        self.prompt_encoder.eval()
+
+        with torch.no_grad():
+            out = self.prompt_encoder(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                return_dict=True,
+            )
+
+        h = out.last_hidden_state.detach()
+
+        dtype = next(self.prompt_token_proj.parameters()).dtype
+        h = h.to(dtype=dtype)
+
+        prompt_tokens = self.prompt_token_proj(h)  # [B, L, d_model]
+        prompt_mask = attention_mask.bool()
+
+        return prompt_tokens, prompt_mask
+
+    @torch.no_grad()
+    def _encode_prompts(self, prompts):
+        """Old pooled SentenceTransformer embedding path for non-CLIP branches."""
+        prompts = self._normalize_prompt_list(prompts)
+        prompts = [self._make_routing_text(p) for p in prompts]
+
+        if bool(getattr(Config, "ROUTER_DEBUG_TEXT", False)):
+            print(f"[Routing TEXT] {prompts[:2]}")
 
         emb = self.prompt_encoder.encode(
             prompts,
@@ -522,82 +594,24 @@ class RouterNetwork(nn.Module):
 
         emb = np.asarray(emb, dtype=np.float32)
         return torch.from_numpy(emb)
-    # def encode_prompt(self, prompts):
-    #     """Return prompt embedding tensor of shape [N, prompt_dim].
-
-    #     - If Config.USE_PROMPT_PROJECTION=True: returns projected embedding (trainable).
-    #     - Else: returns raw SentenceTransformer embedding (frozen encoder by default).
-    #     """
-    #     emb_st = self._encode_prompts(prompts)  # [N, emb_dim] on CPU
-
-    #     # move to same device/dtype as the rest of the network
-    #     device = next(self.parameters()).device
-    #     dtype = next(self.parameters()).dtype
-    #     emb_st = emb_st.to(device=device, dtype=dtype, non_blocking=True)
-
-    #     if self.prompt_projection is None:
-    #         return emb_st  # [N, emb_dim]
-
-    #     return self.prompt_projection(emb_st)  # [N, prompt_dim]
 
     def encode_prompt(self, prompts):
-        emb_st = self._encode_prompts(prompts)  # [N, emb_dim] CPU
-    
+        """Return pooled prompt embedding tensor [B, prompt_dim] for non-CLIP branches."""
+        emb_st = self._encode_prompts(prompts)
+
         device = next(self.parameters()).device
         dtype = next(self.parameters()).dtype
         emb_st = emb_st.to(device=device, dtype=dtype, non_blocking=True)
-    
-        # ---- ADD THIS: L2 normalize to unit norm ----
-        # emb_st = emb_st / (emb_st.norm(p=2, dim=-1, keepdim=True) + 1e-12)
-    
+
         if self.prompt_projection is None:
             return emb_st
-    
+
         return self.prompt_projection(emb_st)
 
-
-    # def _build_server_tokens(self, state: torch.Tensor):
-    #     """
-    #     state: [B, state_dim]
-    #     returns:
-    #       server_tokens: [B, M, d_model]
-    #       global_token: [B, 1, d_model] or None
-    #     """
-    #     B = state.shape[0]
-
-
-    #     M = int(self.M)
-    #     F = int(self.server_feat_dim)
-
-    #     # Expect flat state: [B, M*F]
-    #     if state.dim() == 1:
-    #         state = state.unsqueeze(0)
-    #     B = state.shape[0]
-
-    #     if state.shape[1] != M * F:
-    #         raise ValueError(f"Flat state_dim mismatch in attention router: got {state.shape[1]}, expected {M*F} (M={M}, F={F})")
-
-    #     # Reshape to per-server features: [B, M, F] where F=4 => [util, mu, price_in, price_out]
-    #     server_feat = state.view(B, M, F)
-
-    #     server_tokens = self.server_feat_proj(server_feat)  # [B, M, d_model]
-
-    #     global_token = None  # no global token for this flat layout
-
-    #     return server_tokens, global_token
-    
+    # =========================================================
+    # Server token builder for old USE_ATTN_ROUTER branch
+    # =========================================================
     def _build_server_tokens(self, state: torch.Tensor):
-        """
-        [CHANNEL] Build dual-channel server tokens.
-
-        Expected flat state:
-        state = concat_i [util_i, mu_i, pin_i, pout_i]   (per-server F_total = 4)
-
-        Returns:
-        server_tokens: [B, 2M, d_model]
-                        interleaved: [dyn_0, stat_0, dyn_1, stat_1, ...]
-        global_token:  None
-        """
         if state.dim() == 1:
             state = state.unsqueeze(0)
         B = state.shape[0]
@@ -612,19 +626,17 @@ class RouterNetwork(nn.Module):
                 f"expected {M * F_total} (M={M}, F_dyn={F_dyn}, F_stat={F_stat})"
             )
 
-        server_feat = state.view(B, M, F_total)          # [B, M, F_total]
-        dyn_feat = server_feat[..., :F_dyn]              # [B, M, F_dyn]   (util)
-        stat_feat = server_feat[..., F_dyn:]             # [B, M, F_stat]  (mu, pin, pout)
+        server_feat = state.view(B, M, F_total)
+        dyn_feat = server_feat[..., :F_dyn]
+        stat_feat = server_feat[..., F_dyn:]
 
-        dyn_tok = self.server_dyn_proj(dyn_feat)         # [B, M, d_model]
-        stat_tok = self.server_stat_proj(stat_feat)      # [B, M, d_model]
+        dyn_tok = self.server_dyn_proj(dyn_feat)
+        stat_tok = self.server_stat_proj(stat_feat)
 
-        # Add type embedding to tell the channels apart
         dyn_tok = dyn_tok + self.dyn_type_emb
         stat_tok = stat_tok + self.stat_type_emb
 
-        # Interleave: [dyn_0, stat_0, dyn_1, stat_1, ...]
-        combined = torch.stack([dyn_tok, stat_tok], dim=2)   # [B, M, 2, d_model]
+        combined = torch.stack([dyn_tok, stat_tok], dim=2)
         server_tokens = combined.view(B, 2 * M, self.d_model)
 
         return server_tokens, None
@@ -632,128 +644,143 @@ class RouterNetwork(nn.Module):
     def forward(self, state, prompt, action_mask=None):
         """
         Returns:
-          logits: [B, action_dim]  (unnormalized)
+          logits: [B, action_dim]
           value:  [B, 1]
         """
+        if isinstance(state, np.ndarray):
+            state = torch.as_tensor(state, dtype=torch.float32, device=Config.DEVICE)
+
         if state.dim() == 1:
             state = state.unsqueeze(0)
         B = state.shape[0]
 
-        # prompt embedding
-        p = self.encode_prompt(prompt)  # [N, prompt_dim]
-        # 在 forward 里, p = self.encode_prompt(prompt) 之后
-        # print(f"[Prompt TEXT] {repr(prompt)}")
-        if p.dim() == 1:
-            p = p.unsqueeze(0)
+        if getattr(self, "use_clip_fusion", False):
+            prompt_tokens, prompt_mask = self.encode_prompt_tokens(prompt)
+        else:
+            p = self.encode_prompt(prompt)
+            if p.dim() == 1:
+                p = p.unsqueeze(0)
 
-        # ---- 临时诊断: 确认 strip 之后 cos 掉下来了, 验证完删掉 ----
-        with torch.no_grad():
-            pn = F.normalize(p, dim=-1)
-            if pn.shape[0] > 1:
-                # update_new: 整个 episode 的 prompt 两两 cos
-                cos = pn @ pn.T
-                off = cos[~torch.eye(pn.shape[0], dtype=bool, device=pn.device)]
-                print(f"[Prompt] batch cos: mean={off.mean():.3f} max={off.max():.3f}")
-            else:
-                # get_action: 单 prompt, 跟上一个比
-                cur = pn.squeeze(0)
-                if hasattr(self, "_prev_prompt_emb"):
-                    cos_prev = float((cur * self._prev_prompt_emb).sum())
-                    print(f"[Prompt] cos vs previous: {cos_prev:.3f}")
-                self._prev_prompt_emb = cur.detach().clone()
+            if p.shape[0] == 1 and B > 1:
+                p = p.expand(B, -1)
+            elif p.shape[0] != B:
+                p = p[:1].expand(B, -1)
 
-        # match batch size
-        if p.shape[0] == 1 and B > 1:
-            p = p.expand(B, -1)
-        elif p.shape[0] != B:
-            p = p[:1].expand(B, -1)
-        
         # =========================================================
-        # NEW: Two-tower + cross-attention fusion (CLIP-style head)
+        # Token-level LLaVA-style fusion router
         # =========================================================
         if getattr(self, "use_clip_fusion", False):
-            # ---- Server tower ----
             M = int(self.M)
-            F_dyn  = self.dyn_feat_dim
-            F_stat = self.stat_feat_dim
+            F_dyn = int(self.dyn_feat_dim)
+            F_stat = int(self.stat_feat_dim)
             F_total = F_dyn + F_stat
+
             if state.shape[1] != M * F_total:
                 raise ValueError(
-                    f"state_dim mismatch in CLIP fusion: got {state.shape[1]}, "
-                    f"expected {M * F_total}"
+                    f"state_dim mismatch in token-level fusion: got {state.shape[1]}, "
+                    f"expected {M * F_total} (M={M}, F_total={F_total})"
                 )
 
-            sf       = state.view(B, M, F_total)
-            dyn_in   = sf[..., :F_dyn]
-            stat_in  = sf[..., F_dyn:]
+            if prompt_tokens.shape[0] == 1 and B > 1:
+                prompt_tokens = prompt_tokens.expand(B, -1, -1)
+                prompt_mask = prompt_mask.expand(B, -1)
+            elif prompt_tokens.shape[0] != B:
+                prompt_tokens = prompt_tokens[:1].expand(B, -1, -1)
+                prompt_mask = prompt_mask[:1].expand(B, -1)
 
-            dyn_tok  = self.server_dyn_proj(dyn_in)   + self.dyn_type_emb   # [B,M,d]
-            stat_tok = self.server_stat_proj(stat_in) + self.stat_type_emb  # [B,M,d]
+            # ---- Server tower ----
+            sf = state.view(B, M, F_total)
+            dyn_in = sf[..., :F_dyn]
+            stat_in = sf[..., F_dyn:]
 
-            # Interleave [dyn_0, stat_0, dyn_1, stat_1, ...]
+            dyn_tok = self.server_dyn_proj(dyn_in) + self.dyn_type_emb
+            stat_tok = self.server_stat_proj(stat_in) + self.stat_type_emb
+
             server_tokens = torch.stack([dyn_tok, stat_tok], dim=2).view(B, 2 * M, self.d_model)
             server_tokens = server_tokens + self.server_pos_emb[:, :2 * M, :]
 
-            # Server self-attention (servers see each other)
             for blk in self.server_self_attn:
                 server_tokens = blk(server_tokens)
 
-            # Split back into dyn/stat channels
-            dyn_h  = server_tokens[:, 0::2, :]   # [B, M, d]
+            # ---- LLaVA-style joint fusion ----
+            # Build a single sequence:
+            #   [ROUTE] + prompt tokens + server tokens
+            # Prompt padding is masked; server tokens and route token are always valid.
+            route_tok = self.route_token.expand(B, -1, -1) + self.route_type_emb
+            prompt_tokens_f = prompt_tokens + self.prompt_type_emb
+            server_tokens_f = server_tokens + self.server_type_emb
+
+            fusion_x = torch.cat([route_tok, prompt_tokens_f, server_tokens_f], dim=1)
+
+            route_mask = torch.ones((B, 1), device=prompt_mask.device, dtype=torch.bool)
+            server_mask = torch.ones((B, 2 * M), device=prompt_mask.device, dtype=torch.bool)
+            fusion_valid_mask = torch.cat([route_mask, prompt_mask, server_mask], dim=1)
+            key_padding_mask = ~fusion_valid_mask
+
+            for blk in self.fusion_blocks:
+                fusion_x = blk(fusion_x, key_padding_mask=key_padding_mask)
+            fusion_x = self.fusion_ln(fusion_x)
+
+            route_h = fusion_x[:, 0, :]
+            prompt_len = prompt_tokens.shape[1]
+            server_tokens = fusion_x[:, 1 + prompt_len: 1 + prompt_len + 2 * M, :]
+
+            # ---- Split dyn/stat and fuse ----
+            dyn_h = server_tokens[:, 0::2, :]    # [B, M, d]
             stat_h = server_tokens[:, 1::2, :]   # [B, M, d]
 
-            # ---- Prompt tower ----
-            prompt_tok = self.prompt_tower(p).unsqueeze(1)   # [B, 1, d]
+            server_h = self.server_fuse(torch.cat([dyn_h, stat_h], dim=-1))  # [B, M, d]
 
-            # ---- Cross-attention: prompt asks servers ----
-            q  = self.cross_attn_ln_q(prompt_tok)
-            kv = self.cross_attn_ln_kv(server_tokens)
-            attended, _ = self.cross_attn(q, kv, kv, need_weights=False)   # [B,1,d]
-            prompt_q = prompt_tok + attended
-            prompt_q = prompt_q + self.cross_attn_ff(self.cross_attn_ln_out(prompt_q))
-            # prompt_q: [B, 1, d] -- prompt-conditioned query that has "seen" all servers
+            # ---- Actor: one logit per server ----
+            # logits = self.actor_head(server_h).squeeze(-1)  # [B, M]
+            route_expand = route_h.unsqueeze(1).expand(-1, M, -1)
+            actor_in = torch.cat([server_h, route_expand], dim=-1)
+            logits = self.actor_head(actor_in).squeeze(-1)
 
-            # ---- Actor: CLIP-style dot product, per channel ----
-            q_vec = F.normalize(self.actor_q_proj(prompt_q), dim=-1)         # [B,1,d]
-            k_dyn  = F.normalize(self.actor_k_dyn(dyn_h),    dim=-1)         # [B,M,d]
-            k_stat = F.normalize(self.actor_k_stat(stat_h),  dim=-1)         # [B,M,d]
+            # temp = torch.exp(self.actor_log_temp).clamp(min=0.1, max=10.0)
+            # logits = logits / temp
 
-            # clamp temperature for stability
-            log_temp = self.log_temp.clamp(max=self.log_temp_max)
-            scale = log_temp.exp()
+            # # ---- Critic: route token summarizes prompt-server interaction ----
+            # server_pool = server_h.mean(dim=1)
+            # critic_in = torch.cat([route_h, server_pool], dim=-1)
+            # value = self.critic_mlp(critic_in)
+            # ---- Critic: route-conditioned attention pooling over servers ----
+            # route_h:   [B, d]
+            # server_h: [B, M, d]
+            route_expand = route_h.unsqueeze(1).expand(-1, M, -1)  # [B, M, d]
 
-            logits_dyn  = (q_vec * k_dyn ).sum(-1) * scale   # [B, M]
-            logits_stat = (q_vec * k_stat).sum(-1) * scale   # [B, M]
-            logits = logits_dyn + logits_stat                # [B, M]
+            critic_score_in = torch.cat([server_h, route_expand], dim=-1)  # [B, M, 2d]
+            critic_scores = self.critic_server_score(critic_score_in).squeeze(-1)  # [B, M]
 
-            # ---- Critic: pooled MLP ----
-            server_pool = server_tokens.mean(dim=1)              # [B, d]
-            critic_in   = torch.cat([prompt_q.squeeze(1), server_pool], dim=-1)  # [B, 2d]
-            value = self.critic_mlp(critic_in)                   # [B, 1]
+            # Optional: if action_mask exists, do not pool invalid/full servers too much.
+            if action_mask is not None:
+                if isinstance(action_mask, np.ndarray):
+                    critic_mask = torch.as_tensor(action_mask, dtype=torch.float32, device=critic_scores.device)
+                else:
+                    critic_mask = action_mask.to(device=critic_scores.device, dtype=torch.float32)
 
+                if critic_mask.dim() == 1:
+                    critic_mask = critic_mask.unsqueeze(0)
+
+                if critic_mask.shape[0] == 1 and B > 1:
+                    critic_mask = critic_mask.expand(B, -1)
+
+                critic_scores = critic_scores.masked_fill(critic_mask <= 0, -1e9)
+
+            critic_weights = torch.softmax(critic_scores, dim=1)  # [B, M]
+            server_pool = torch.sum(critic_weights.unsqueeze(-1) * server_h, dim=1)  # [B, d]
+
+            critic_in = torch.cat([route_h, server_pool], dim=-1)  # [B, 2d]
+            value = self.critic_mlp(critic_in)
 
         elif not self.use_attn:
             if getattr(self, "use_serverwise_mlp", False):
-                # Flat state -> reshape to per-server features
                 F_dim = int(self.server_feat_dim)
                 M = int(self.M)
                 if state.shape[1] != M * F_dim:
-                    raise ValueError(f"Flat state_dim mismatch: got {state.shape[1]}, expected {M*F_dim} (M={M}, F={F_dim})")
-                s = state.view(B, M, F_dim)  # [B, M, F_dim]
+                    raise ValueError(f"Flat state_dim mismatch: got {state.shape[1]}, expected {M * F_dim} (M={M}, F={F_dim})")
 
-                # broadcast prompt to each server
-                # p_srv = p.unsqueeze(1).expand(B, M, p.shape[-1])  # [B, M, prompt_dim]
-                # x = torch.cat([s, p_srv], dim=-1)  # [B, M, F+prompt_dim]
-                # x = self.server_in_ln(x)
-
-                # h = self.server_mlp(x)  # [B, M, hidden_dim]
-                # logits = self.server_actor(h).squeeze(-1)  # [B, M]
-
-                # h_pool = h.mean(dim=1)  # [B, hidden_dim]
-                # value = self.server_critic(h_pool)  # [B, 1]
-                # s: [B, M, F]
-                # p: [B, prompt_dim]
-
+                s = state.view(B, M, F_dim)
                 s_norm = self.server_feat_ln(s)
 
                 p_norm = self.prompt_ln(p)
@@ -766,15 +793,7 @@ class RouterNetwork(nn.Module):
 
                 h_pool = h.mean(dim=1)
                 value = self.server_critic(h_pool)
-            # else:
-            #     # Original flat MLP trunk
-            #     x = torch.cat([state, p], dim=-1)  # [B, state_dim + prompt_dim]
-            #     x = self.in_ln(x)
-            #     h = self.trunk(x)                  # [B, hidden_dim]
-            #     logits = self.actor(h)             # [B, action_dim]
-            #     value = self.critic(h)             # [B, 1]
             else:
-                # Original flat MLP trunk with separate norms
                 s_norm = self.state_ln(state)
                 p_norm = self.prompt_ln(p)
                 x = torch.cat([s_norm, p_norm], dim=-1)
@@ -782,54 +801,33 @@ class RouterNetwork(nn.Module):
                 logits = self.actor(h)
                 value = self.critic(h)
         else:
-            # tokens = [PROMPT] (+[GLOBAL]) + [SERVERS]
-            prompt_tok = self.prompt_token_proj(p).unsqueeze(1)  # [B, 1, d_model]
-            server_tokens, global_token = self._build_server_tokens(state)  # [B, M, d_model], maybe [B,1,d]
+            prompt_tok = self.prompt_token_proj(p).unsqueeze(1)
+            server_tokens, global_token = self._build_server_tokens(state)
 
-            # if global_token is None:
-            #     x = torch.cat([prompt_tok, server_tokens], dim=1)  # [B, 1+M, d]
-            # else:
-            #     x = torch.cat([prompt_tok, global_token, server_tokens], dim=1)  # [B, 2+M, d]
-
-            # x = x + self.pos_emb[:, :x.shape[1], :]
-
-            # for blk in self.attn_blocks:
-            #     x = blk(x)
-
-            # # server reps are last M tokens
-            # server_h = x[:, -self.M:, :]         # [B, M, d_model]
-            # server_h = self.actor_ln(server_h)
-            # logits = self.actor_head(server_h).squeeze(-1)  # [B, M] (action_dim assumed == M)
-
-            # pooled = x.mean(dim=1)               # [B, d_model]
-            # value = self.critic_mlp(pooled)      # [B, 1]
-            
-            # [CHANNEL] server_tokens is [B, 2M, d_model] in dual-channel mode
-            x = torch.cat([prompt_tok, server_tokens], dim=1)  # [B, 1 + 2M, d_model]
+            x = torch.cat([prompt_tok, server_tokens], dim=1)
             x = x + self.pos_emb[:, :x.shape[1], :]
 
             for blk in self.attn_blocks:
                 x = blk(x)
 
-            # x: [B, 1 + 2M, d_model]
-            prompt_h = x[:, 0:1, :]                     # [B, 1, d]
-            server_block = x[:, 1:1 + 2 * self.M, :]    # [B, 2M, d]
-            dyn_h = server_block[:, 0::2, :]            # [B, M, d]
-            stat_h = server_block[:, 1::2, :]           # [B, M, d]
+            prompt_h = x[:, 0:1, :]
+            server_block = x[:, 1:1 + 2 * self.M, :]
+            dyn_h = server_block[:, 0::2, :]
+            stat_h = server_block[:, 1::2, :]
 
-            prompt_h_exp = prompt_h.expand(-1, self.M, -1)   # [B, M, d]
+            prompt_h_exp = prompt_h.expand(-1, self.M, -1)
 
-            actor_in = torch.cat([prompt_h_exp, dyn_h, stat_h], dim=-1)   # [B, M, 3d]
+            actor_in = torch.cat([prompt_h_exp, dyn_h, stat_h], dim=-1)
             actor_in = self.actor_ln(actor_in)
-            logits = self.actor_head(actor_in).squeeze(-1)   # [B, M]
+            logits = self.actor_head(actor_in).squeeze(-1)
 
-            # Critic pools over all tokens (prompt + both channels of all servers)
-            pooled = x.mean(dim=1)                        # [B, d]
-            critic_in = torch.cat([prompt_h.squeeze(1), pooled], dim=-1)  # [B, 2d]
+            pooled = x.mean(dim=1)
+            critic_in = torch.cat([prompt_h.squeeze(1), pooled], dim=-1)
             value = self.critic_mlp(critic_in)
 
-        # apply action mask on logits (best practice)
         if action_mask is not None:
+            if isinstance(action_mask, np.ndarray):
+                action_mask = torch.as_tensor(action_mask, dtype=torch.float32, device=logits.device)
             if action_mask.dim() == 1:
                 action_mask = action_mask.unsqueeze(0)
             if action_mask.shape[0] == 1 and B > 1:
@@ -841,7 +839,6 @@ class RouterNetwork(nn.Module):
     def get_action_and_value(self, state, prompt, action_mask=None, action=None):
         logits, value = self.forward(state, prompt, action_mask)
 
-        # stable: use logits directly (no manual softmax)
         dist = Categorical(logits=logits)
 
         if action is None:
@@ -849,17 +846,16 @@ class RouterNetwork(nn.Module):
 
         log_prob = dist.log_prob(action)
         entropy = dist.entropy()
-        dist_policy = dist.probs  # [B, action_dim] (or [action_dim] if B=1 and you squeeze elsewhere)
+        dist_policy = dist.probs
 
         return action, log_prob, entropy, value, dist_policy
 
     def safe_probs(self, probs: torch.Tensor):
-        # Clamp negatives, replace NaN/inf, and normalize
         probs = torch.clamp(probs, min=0)
         probs = torch.nan_to_num(probs, nan=0.0, posinf=0.0, neginf=0.0)
         probs_sum = probs.sum(dim=-1, keepdim=True)
         probs = torch.where(probs_sum > 0, probs / probs_sum, probs)
-        # If any row sums to zero, set uniform
+
         if probs.dim() == 1:
             if probs.sum() <= 0:
                 probs = torch.full_like(probs, 1.0 / probs.numel())
@@ -871,10 +867,6 @@ class RouterNetwork(nn.Module):
         return probs
 
     def get_action_and_value_queue(self, state, state_np, prompt, action_mask=None, action=None, service_rate=None):
-        """
-        Kept for backward compatibility. If you want to re-enable queue-score mixing,
-        compute queue_scores here and merge distributions. For now, return queue_scores=None.
-        """
         action, log_prob, entropy, value, dist_policy = self.get_action_and_value(state, prompt, action_mask, action)
         queue_scores = None
         return action, log_prob, entropy, value, dist_policy, queue_scores
@@ -893,31 +885,24 @@ class RouterNetwork(nn.Module):
         return self.get_queue_scores(state, service_rate, factor, epslon)
 
     def get_queue_scores(self, state, service_rate, factor=Config.QUEUE_SCORE_FACTOR, epslon=Config.QUEUE_EPSILON):
-        """
-        Queue heuristic score per server. Fixes old bug: self.num_servers was undefined.
-        """
         scores = []
         M = len(Config.SERVER_CAPACITIES)
 
-        # basic queue-only
         if not getattr(Config, "MIX_QUEUE_SCORE", False):
             for i, capacity in enumerate(Config.SERVER_CAPACITIES):
                 utilization = float(state[i])
                 load = utilization * float(capacity)
-                sr = max(float(service_rate[i]), 1e-4)  # avoid div0
+                sr = max(float(service_rate[i]), 1e-4)
                 score = sr / (load + epslon)
                 scores.append(score)
             return torch.FloatTensor(scores).to(Config.DEVICE)
 
-        # mixed queue + quality + price (if those blocks exist in state)
-        # state layout assumed: util(M), mu(M), [quality(M)], [price(M)], ...
         for i, capacity in enumerate(Config.SERVER_CAPACACITIES if hasattr(Config, "SERVER_CAPACACITIES") else Config.SERVER_CAPACITIES):
             utilization = float(state[i])
             load = utilization * float(capacity)
             sr = max(float(service_rate[i]), 1e-4)
             queue_score = sr / (load + epslon)
 
-            # offsets
             off_q = 2 * M
             if self.include_quality_state and len(state) >= off_q + M:
                 quality_score = float(state[off_q + i])
@@ -929,7 +914,6 @@ class RouterNetwork(nn.Module):
             if len(state) >= off_p + M:
                 price_score = float(state[off_p + i])
             else:
-                # fallback to Config.PRICE if not in state
                 try:
                     price_score = float(Config.PRICE[i])
                 except Exception:
@@ -943,7 +927,6 @@ class RouterNetwork(nn.Module):
             scores.append(mix_score)
 
         return torch.FloatTensor(scores).to(Config.DEVICE)
-
 
 
 # =========================================================
@@ -1330,7 +1313,37 @@ class PPOAgent:
             param_groups,
             eps=1e-5,
         )
-        self.scheduler = None 
+        
+        # ============================================================
+        # LR scheduler (episode-level decay)
+        # trainer calls self.agent.scheduler.step() once per episode,
+        # so the schedule unit is EPISODES.
+        # LambdaLR multiplies each param group's base lr by the same
+        # factor, preserving the actor:critic LR ratio.
+        # ============================================================
+        use_lr_decay = bool(getattr(Config, "USE_LR_DECAY", False))
+        if use_lr_decay:
+            decay_type = str(getattr(Config, "LR_DECAY_TYPE", "cosine")).lower()
+            min_ratio = float(getattr(Config, "LR_DECAY_MIN_RATIO", 0.1))
+            decay_eps = getattr(Config, "LR_DECAY_EPISODES", None)
+            if decay_eps is None:
+                decay_eps = int(getattr(Config, "MAX_EPISODES", 200))
+            decay_eps = max(1, int(decay_eps))
+
+            if decay_type == "linear":
+                def _lr_lambda(ep):
+                    progress = min(ep / decay_eps, 1.0)
+                    return 1.0 - (1.0 - min_ratio) * progress
+            else:  # cosine
+                def _lr_lambda(ep):
+                    progress = min(ep / decay_eps, 1.0)
+                    return min_ratio + (1.0 - min_ratio) * 0.5 * (1.0 + math.cos(math.pi * progress))
+
+            self.scheduler = torch.optim.lr_scheduler.LambdaLR(
+                self.optimizer, lr_lambda=_lr_lambda
+            )
+        else:
+            self.scheduler = None
 
         self.state_dim = state_dim
         self.action_dim = action_dim
@@ -1786,6 +1799,537 @@ class PPOAgent:
         """
         PPO update on ACTIVE intervals only (N_t > 0), with:
         - fair reward normalization: 1/M if N_t >= M, else 1/N_t
+        - interval importance weight rho_t = exp(mean_i(new_logp_i - old_logp_i))
+
+        Added:
+        - Config-controlled interval mini-batch PPO:
+            USE_PER_INTERVAL_MINIBATCH
+            PPO_INTERVAL_MINIBATCH_SIZE
+            PPO_SHUFFLE_INTERVALS
+
+        Important:
+        - Does NOT change your interval objective.
+        - Does NOT change rho formula.
+        - Does NOT change value target style.
+        - Does NOT change FAIR aggregation.
+        """
+        states_np = np.array([t["state"] for t in trajectories], dtype=np.float32)
+        actions_np = np.array([t["action"] for t in trajectories], dtype=np.int64)
+        old_log_probs_np = np.array([t["log_prob"] for t in trajectories], dtype=np.float32)
+        rewards_np = np.array([t["reward"] for t in trajectories], dtype=np.float32)
+        values_np = np.array([t["value"] for t in trajectories], dtype=np.float32)
+
+        prompts = [t["prompt"] for t in trajectories]
+        service_rate = [t["service_rate"] for t in trajectories]
+        time_slots_np = np.array([t["time_slot"] for t in trajectories], dtype=np.int64)
+
+        states = torch.as_tensor(states_np, device=Config.DEVICE)
+        actions = torch.as_tensor(actions_np, device=Config.DEVICE)
+        old_log_probs = torch.as_tensor(old_log_probs_np, device=Config.DEVICE)
+        rewards = torch.as_tensor(rewards_np, device=Config.DEVICE)
+        values = torch.as_tensor(values_np, device=Config.DEVICE)
+        time_slots = torch.as_tensor(time_slots_np, device=Config.DEVICE)
+
+        action_masks = None
+        if "action_mask" in trajectories[0] and trajectories[0]["action_mask"] is not None:
+            action_masks_np = np.array([t["action_mask"] for t in trajectories], dtype=np.float32)
+            action_masks = torch.as_tensor(action_masks_np, device=Config.DEVICE)
+
+        M = len(Config.MODEL_NAMES)
+        beta = float(Config.T)
+
+        def log_mean_exp(x: torch.Tensor, denom: int):
+            denom = max(int(denom), 1)
+            if abs(beta) < 1e-8:
+                return x.mean()
+            return (torch.logsumexp(beta * x, dim=0) - math.log(denom)) / beta
+
+        # ============================================================
+        # Build interval groups
+        # ============================================================
+        slot_to_indices = {}
+        for i, ts in enumerate(time_slots.tolist()):
+            slot_to_indices.setdefault(int(ts), []).append(i)
+
+        arrivals_per_interval = {
+            ts: len(idxs)
+            for ts, idxs in sorted(slot_to_indices.items())
+        }
+        total_arrivals = sum(arrivals_per_interval.values())
+        print(
+            f"[Arrivals] intervals={len(arrivals_per_interval)} "
+            f"total={total_arrivals} "
+            f"per_slot={arrivals_per_interval}"
+        )
+
+        interval_indices = []
+        first_indices = []
+        term_rewards = []
+        term_values_old = []
+        avg_rewards = []
+        min_rewards = []
+
+        for ts in sorted(slot_to_indices.keys()):
+            idxs = torch.tensor(slot_to_indices[ts], device=Config.DEVICE, dtype=torch.long)
+            Nt = int(idxs.numel())
+            if Nt == 0:
+                continue
+
+            interval_indices.append(idxs)
+            first_indices.append(int(idxs[0].item()))
+
+            r_t = rewards[idxs]
+            a_t = actions[idxs]
+
+            avg_rewards.append(r_t.mean())
+            min_rewards.append(r_t.min())
+
+            # Keep your current value baseline style:
+            # interval old value = mean of values inside this interval.
+            term_values_old.append(values[idxs].mean())
+
+            # ========================================================
+            # FAIR reward aggregation: keep your original logic
+            # ========================================================
+            F_frac = float(getattr(Config, "FAIR", 1.0))
+            F_frac = max(0.0, min(1.0, F_frac))
+
+            # Effective group size:
+            # historically denom=M if Nt>=M else denom=Nt, i.e. G=min(Nt, M)
+            G = min(Nt, M)
+
+            if Config.FAIR_REWARD_MIN_FLOOR:
+                floor = r_t.min().detach()
+            else:
+                floor = torch.tensor(
+                    -Config.BETA - Config.REWARD_GAMMA,
+                    device=Config.DEVICE,
+                    dtype=r_t.dtype,
+                )
+
+            used_server_terms = []
+            for m in range(M):
+                mask = (a_t == m)
+                if mask.any():
+                    r_m = r_t[mask]
+                    server_term = r_m.mean()
+                    used_server_terms.append(server_term)
+
+            if len(used_server_terms) == 0:
+                continue
+
+            K = len(used_server_terms)
+            missing = max(0, G - K)
+            pad = int(math.floor(F_frac * missing))
+
+            if pad > 0:
+                used_server_terms.extend([floor] * pad)
+
+            server_terms = torch.stack(used_server_terms)
+
+            # Tilted aggregation across used/padded server terms.
+            tr = log_mean_exp(server_terms, denom=server_terms.numel())
+            term_rewards.append(tr)
+
+        if len(term_rewards) == 0:
+            return {
+                "policy_loss": 0.0,
+                "value_loss": 0.0,
+                "entropy_loss": 0.0,
+                "rewards_returns": float(self.cumulated_return(rewards)[0].item()) if rewards.numel() > 0 else 0.0,
+                "term_rewards_returns": 0.0,
+                "min_rewards": 0.0,
+                "server_usage_percentage": {m: 0.0 for m in range(M)},
+                "cumulated_avg_rewards": 0.0,
+                "route distribution": {i: 0 for i in range(M)},
+                "entropy of route distribution": 0.0,
+                "approx_kl": 0.0,
+                "actual_updates": 0,
+                "early_stopped_kl": 0,
+            }
+
+        term_rewards = torch.stack(term_rewards)
+        term_values_old = torch.stack(term_values_old)
+        first_indices_t = torch.tensor(first_indices, device=Config.DEVICE, dtype=torch.long)
+
+        # ============================================================
+        # GAE on interval-level rewards
+        # ============================================================
+        dones = torch.zeros_like(term_rewards)
+        dones[-1] = 1
+
+        term_adv = self.compute_gae(term_rewards, term_values_old, dones=dones)
+        term_ret = term_adv + term_values_old
+
+        # Keep your single-interval fix:
+        # if only one interval, do not subtract itself.
+        if term_adv.numel() > 1:
+            term_adv = (term_adv - term_adv.mean()) / (term_adv.std(unbiased=False) + 1e-5)
+
+        # This mapping is not required for the current mean-value interval objective,
+        # but keeping it here does not change behavior and preserves compatibility.
+        step_to_interval_pos = torch.zeros(len(trajectories), device=Config.DEVICE, dtype=torch.long)
+        for pos, idxs in enumerate(interval_indices):
+            step_to_interval_pos[idxs] = pos
+
+        # ============================================================
+        # PPO update
+        # ============================================================
+        total_policy_loss = 0.0
+        total_value_loss = 0.0
+        total_entropy_loss = 0.0
+        approx_kl = torch.tensor(0.0, device=Config.DEVICE)
+
+        actual_updates = 0
+        early_stopped = False
+
+        use_interval_mb = bool(getattr(Config, "USE_PER_INTERVAL_MINIBATCH", False))
+        target_kl = float(getattr(Config, "TARGET_KL", 0.02))
+        use_kl_stop = bool(getattr(Config, "USE_TARGET_KL_STOP", False))
+
+        # Do not mutate original action_masks.
+        train_action_masks = action_masks if (Config.MASK and action_masks is not None) else None
+
+        # ============================================================
+        # Path A: original full-episode PPO update
+        # ============================================================
+        if not use_interval_mb:
+            for epoch in range(Config.PPO_EPOCHS):
+                if getattr(Config, "USE_MERGE_TO_TRAIN", False):
+                    _, new_log_probs, entropy, new_values, dist, _queue_scores = (
+                        self.network.get_action_and_value_queue(
+                            states,
+                            states_np,
+                            prompts,
+                            train_action_masks,
+                            actions,
+                            service_rate=service_rate,
+                        )
+                    )
+                else:
+                    _, new_log_probs, entropy, new_values, dist = (
+                        self.network.get_action_and_value(
+                            states,
+                            prompts,
+                            train_action_masks,
+                            actions,
+                        )
+                    )
+
+                # ----------------------------------------------------
+                # Interval-level rho_t, unchanged:
+                # rho_t = exp(mean_i(new_logp_i - old_logp_i))
+                # ----------------------------------------------------
+                rhos = []
+                for idxs in interval_indices:
+                    rho_t = torch.exp((new_log_probs[idxs] - old_log_probs[idxs]).mean())
+                    rhos.append(rho_t)
+                rhos = torch.stack(rhos)
+
+                surr1 = rhos * term_adv
+                surr2 = torch.clamp(
+                    rhos,
+                    1.0 - Config.CLIP_EPSILON,
+                    1.0 + Config.CLIP_EPSILON,
+                ) * term_adv
+
+                policy_loss = -torch.min(surr1, surr2).mean()
+
+                # ----------------------------------------------------
+                # Value loss, unchanged:
+                # interval value = mean value inside interval
+                # ----------------------------------------------------
+                v_all = new_values.squeeze(-1)
+                v_interval = torch.stack([
+                    v_all[idxs].mean()
+                    for idxs in interval_indices
+                ])
+
+                value_loss = F.mse_loss(v_interval, term_ret.detach())
+
+                # ----------------------------------------------------
+                # Entropy loss, unchanged style
+                # ----------------------------------------------------
+                entropy_loss = -entropy.mean()
+
+                # ----------------------------------------------------
+                # approx_kl monitor, unchanged estimator
+                # ----------------------------------------------------
+                with torch.no_grad():
+                    log_ratio_step = new_log_probs - old_log_probs
+                    ratio_step = torch.exp(log_ratio_step)
+                    approx_kl_step = (ratio_step - 1.0) - log_ratio_step
+                    approx_kl = torch.stack([
+                        approx_kl_step[idxs].mean()
+                        for idxs in interval_indices
+                    ]).mean()
+
+                if use_kl_stop and float(approx_kl.detach().cpu().item()) > target_kl:
+                    print(
+                        f"[PPO] early stop at epoch {epoch}: "
+                        f"approx_kl={float(approx_kl.detach().cpu().item()):.6f} "
+                        f"> target_kl={target_kl}"
+                    )
+                    early_stopped = True
+                    break
+
+                loss = (
+                    float(getattr(Config, "POLICY_COEF", 1.0)) * policy_loss
+                    + float(getattr(Config, "VALUE_COEF", 0.5)) * value_loss
+                    + float(getattr(Config, "ENTROPY_COEF", 0.0)) * entropy_loss
+                )
+
+                self.optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.network.parameters(), Config.MAX_GRAD_NORM)
+                self.optimizer.step()
+
+                actual_updates += 1
+                total_policy_loss += float(policy_loss.item())
+                total_value_loss += float(value_loss.item())
+                total_entropy_loss += float(entropy_loss.item())
+
+        # ============================================================
+        # Path B: interval mini-batch PPO update
+        # Same objective as full-episode path, only batches intervals.
+        # ============================================================
+        else:
+            num_intervals = len(interval_indices)
+
+            interval_mb_size = int(getattr(Config, "PPO_INTERVAL_MINIBATCH_SIZE", num_intervals))
+            interval_mb_size = max(1, min(interval_mb_size, num_intervals))
+
+            shuffle_intervals = bool(getattr(Config, "PPO_SHUFFLE_INTERVALS", True))
+
+            for epoch in range(Config.PPO_EPOCHS):
+                if early_stopped:
+                    break
+
+                if shuffle_intervals:
+                    interval_order = torch.randperm(num_intervals, device=Config.DEVICE)
+                else:
+                    interval_order = torch.arange(num_intervals, device=Config.DEVICE)
+
+                for mb_start in range(0, num_intervals, interval_mb_size):
+                    mb_pos = interval_order[mb_start: mb_start + interval_mb_size]
+                    mb_pos_list = [int(x) for x in mb_pos.detach().cpu().tolist()]
+
+                    # ------------------------------------------------
+                    # Collect all prompt steps belonging to selected intervals.
+                    # ------------------------------------------------
+                    step_idx_parts = []
+                    local_interval_indices = []
+
+                    cursor = 0
+                    for pos in mb_pos_list:
+                        idxs = interval_indices[pos].to(device=Config.DEVICE, dtype=torch.long)
+                        n_i = int(idxs.numel())
+
+                        if n_i <= 0:
+                            continue
+
+                        step_idx_parts.append(idxs)
+
+                        local_interval_indices.append(
+                            torch.arange(
+                                cursor,
+                                cursor + n_i,
+                                device=Config.DEVICE,
+                                dtype=torch.long,
+                            )
+                        )
+
+                        cursor += n_i
+
+                    if len(step_idx_parts) == 0:
+                        continue
+
+                    step_idx = torch.cat(step_idx_parts, dim=0)
+                    step_idx_cpu = step_idx.detach().cpu().tolist()
+
+                    mb_states = states[step_idx]
+                    mb_actions = actions[step_idx]
+                    mb_old_log_probs = old_log_probs[step_idx]
+                    mb_prompts = [prompts[i] for i in step_idx_cpu]
+
+                    if train_action_masks is not None:
+                        mb_action_masks = train_action_masks[step_idx]
+                    else:
+                        mb_action_masks = None
+
+                    # ------------------------------------------------
+                    # Forward only this interval mini-batch.
+                    # ------------------------------------------------
+                    if getattr(Config, "USE_MERGE_TO_TRAIN", False):
+                        mb_states_np = states_np[step_idx_cpu]
+                        mb_service_rate = [service_rate[i] for i in step_idx_cpu]
+
+                        _, new_log_probs, entropy, new_values, dist, _queue_scores = (
+                            self.network.get_action_and_value_queue(
+                                mb_states,
+                                mb_states_np,
+                                mb_prompts,
+                                mb_action_masks,
+                                mb_actions,
+                                service_rate=mb_service_rate,
+                            )
+                        )
+                    else:
+                        _, new_log_probs, entropy, new_values, dist = (
+                            self.network.get_action_and_value(
+                                mb_states,
+                                mb_prompts,
+                                mb_action_masks,
+                                mb_actions,
+                            )
+                        )
+
+                    # ------------------------------------------------
+                    # Interval-level rho_t, same formula as full path:
+                    # rho_t = exp(mean_i(new_logp_i - old_logp_i))
+                    # ------------------------------------------------
+                    rhos = []
+                    for local_idxs in local_interval_indices:
+                        rho_t = torch.exp(
+                            (new_log_probs[local_idxs] - mb_old_log_probs[local_idxs]).mean()
+                        )
+                        rhos.append(rho_t)
+
+                    rhos = torch.stack(rhos)
+
+                    mb_term_adv = term_adv[mb_pos]
+                    mb_term_ret = term_ret[mb_pos]
+
+                    surr1 = rhos * mb_term_adv
+                    surr2 = torch.clamp(
+                        rhos,
+                        1.0 - Config.CLIP_EPSILON,
+                        1.0 + Config.CLIP_EPSILON,
+                    ) * mb_term_adv
+
+                    policy_loss = -torch.min(surr1, surr2).mean()
+
+                    # ------------------------------------------------
+                    # Value loss, same logic as full path:
+                    # interval value = mean value inside interval.
+                    # ------------------------------------------------
+                    v_all = new_values.squeeze(-1)
+
+                    v_interval = torch.stack([
+                        v_all[local_idxs].mean()
+                        for local_idxs in local_interval_indices
+                    ])
+
+                    value_loss = F.mse_loss(v_interval, mb_term_ret.detach())
+
+                    # ------------------------------------------------
+                    # Entropy loss, same style as full path.
+                    # ------------------------------------------------
+                    entropy_loss = -entropy.mean()
+
+                    # ------------------------------------------------
+                    # approx_kl monitor, same estimator as full path.
+                    # ------------------------------------------------
+                    with torch.no_grad():
+                        kl_terms = []
+                        for local_idxs in local_interval_indices:
+                            log_ratio_step = new_log_probs[local_idxs] - mb_old_log_probs[local_idxs]
+                            ratio_step = torch.exp(log_ratio_step)
+                            approx_kl_step = (ratio_step - 1.0) - log_ratio_step
+                            kl_terms.append(approx_kl_step.mean())
+
+                        approx_kl = torch.stack(kl_terms).mean()
+
+                    if use_kl_stop and float(approx_kl.detach().cpu().item()) > target_kl:
+                        print(
+                            f"[PPO] early stop at epoch {epoch}, mb_start={mb_start}: "
+                            f"approx_kl={float(approx_kl.detach().cpu().item()):.6f} "
+                            f"> target_kl={target_kl}"
+                        )
+                        early_stopped = True
+                        break
+
+                    loss = (
+                        float(getattr(Config, "POLICY_COEF", 1.0)) * policy_loss
+                        + float(getattr(Config, "VALUE_COEF", 0.5)) * value_loss
+                        + float(getattr(Config, "ENTROPY_COEF", 0.0)) * entropy_loss
+                    )
+
+                    self.optimizer.zero_grad(set_to_none=True)
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(self.network.parameters(), Config.MAX_GRAD_NORM)
+                    self.optimizer.step()
+
+                    actual_updates += 1
+                    total_policy_loss += float(policy_loss.item())
+                    total_value_loss += float(value_loss.item())
+                    total_entropy_loss += float(entropy_loss.item())
+
+        # ============================================================
+        # Metrics
+        # ============================================================
+        term_return_trajectory = float(self.cumulated_return(term_rewards)[0].item())
+        return_trajectory = float(self.cumulated_return(rewards)[0].item())
+
+        avg_rewards_t = (
+            torch.stack(avg_rewards)
+            if len(avg_rewards)
+            else torch.tensor(0.0, device=Config.DEVICE)
+        )
+        avg_rewards_returns = (
+            float(self.cumulated_return(avg_rewards_t)[0].item())
+            if avg_rewards_t.numel() > 0
+            else 0.0
+        )
+
+        actions_list = actions_np.tolist()
+
+        server_usage_percentage = {m: 0.0 for m in range(M)}
+        for a in actions_list:
+            server_usage_percentage[int(a)] += 1.0
+
+        for m in server_usage_percentage:
+            server_usage_percentage[m] /= max(len(actions_list), 1)
+
+        probs_usage = np.array(
+            [server_usage_percentage[m] for m in range(M)],
+            dtype=np.float64,
+        )
+        ent_usage = float(-(probs_usage * np.log(probs_usage + 1e-12)).sum())
+
+        route_dist = {
+            i: int(sum(1 for a in actions_list if a == i))
+            for i in range(M)
+        }
+
+        mean_min_reward = (
+            float(torch.stack(min_rewards).mean().item())
+            if len(min_rewards)
+            else 0.0
+        )
+
+        den = max(actual_updates, 1)
+
+        return {
+            "policy_loss": total_policy_loss / den,
+            "value_loss": total_value_loss / den,
+            "entropy_loss": total_entropy_loss / den,
+            "rewards_returns": return_trajectory,
+            "term_rewards_returns": term_return_trajectory,
+            "min_rewards": mean_min_reward,
+            "server_usage_percentage": server_usage_percentage,
+            "cumulated_avg_rewards": avg_rewards_returns,
+            "route distribution": route_dist,
+            "entropy of route distribution": ent_usage,
+            "approx_kl": float(approx_kl.detach().cpu().item()),
+            "actual_updates": actual_updates,
+            "early_stopped_kl": int(early_stopped),
+        }
+
+    # def update_new(self, trajectories):
+        """
+        PPO update on ACTIVE intervals only (N_t > 0), with:
+        - fair reward normalization: 1/M if N_t >= M, else 1/N_t
         - interval importance weight rho_t = exp(mean_i (new_logp_i - old_logp_i))
         
         Bug fixes applied:
@@ -2012,8 +2556,8 @@ class PPOAgent:
             # [FIX #3] Critic trained on ALL steps, not just interval-first steps
             # ----------------------------------------------------------------
             # OLD code:
-            #   v_pred = new_values.squeeze(-1)[first_indices_t]
-            #   value_loss = F.mse_loss(v_pred, term_ret.detach())
+            v_pred = new_values.squeeze(-1)[first_indices_t]
+            value_loss = F.mse_loss(v_pred, term_ret.detach())
             #
             # Old version only used 1 step per interval as critic target,
             # wasting ~99% of value predictions. Since interval state is frozen

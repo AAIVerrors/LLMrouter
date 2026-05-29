@@ -58,6 +58,94 @@ except RuntimeError:
     pass  # Already set
 
 
+class TransientAPIError(Exception):
+    pass
+
+
+def _get_status_code_from_exception(e):
+    for attr in ("status_code", "status"):
+        v = getattr(e, attr, None)
+        if v is not None:
+            try:
+                return int(v)
+            except Exception:
+                pass
+
+    raw = repr(e)
+    m = re.search(r"Status\s+(\d+)", raw)
+    if m:
+        return int(m.group(1))
+
+    return None
+
+
+def _get_retry_after_from_exception(e, default=5.0):
+    headers = getattr(e, "headers", None)
+    if headers is not None:
+        try:
+            v = headers.get("retry-after") or headers.get("Retry-After")
+            if v is not None:
+                return float(v)
+        except Exception:
+            pass
+
+    raw = repr(e)
+    m = re.search(r'"retry_after"\s*:\s*(\d+)', raw)
+    if m:
+        return float(m.group(1))
+
+    m = re.search(r"'retry-after':\s*'(\d+)'", raw)
+    if m:
+        return float(m.group(1))
+
+    return float(default)
+
+
+def _is_transient_api_error(e):
+    status = _get_status_code_from_exception(e)
+    return status in {408, 409, 429, 500, 502, 503, 504, 520, 522, 524}
+
+
+def mistral_chat_complete_with_retry(client, model_name, prompt, max_retries=2):
+    """
+    Short retry for PPO training.
+    Do not sleep retry_after=60 during training because it blocks the worker/episode.
+    """
+    last_e = None
+
+    for attempt in range(max_retries + 1):
+        try:
+            return client.chat.complete(
+                model=model_name,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=getattr(Config, "GEN_MAX_NEW_TOKENS", 128),
+                temperature=getattr(Config, "GEN_TEMPERATURE", 0.1),
+                top_p=getattr(Config, "GEN_TOP_P", 1.0),
+            )
+
+        except Exception as e:
+            last_e = e
+
+            if not _is_transient_api_error(e):
+                raise
+
+            retry_after = _get_retry_after_from_exception(e, default=5.0)
+
+            # During RL training, never block for 60 seconds.
+            sleep_s = min(float(retry_after), 5.0) * (attempt + 1)
+
+            if attempt < max_retries:
+                print(
+                    f"[Mistral transient error] model={model_name}, "
+                    f"status={_get_status_code_from_exception(e)}, "
+                    f"attempt={attempt + 1}/{max_retries}, sleep={sleep_s:.1f}s"
+                )
+                time.sleep(sleep_s)
+            else:
+                raise TransientAPIError(
+                    f"Mistral transient API error after retries: {repr(last_e)}"
+                )
+
 def _try_flash_attn2(device: Optional[str] = None) -> bool:
     """Return True iff it's worth trying flash_attention_2 on this machine."""
     if device is not None and "cuda" not in str(device):
@@ -688,12 +776,18 @@ def server_worker_process(
                         # elif model_name == "mixtral-8x7b-instruct-v0.1":
                         #     api_model = "open-mixtral-8x7b"
 
-                        chat_response = client.chat.complete(
-                            model=api_model,
-                            max_tokens=getattr(Config, "GEN_MAX_NEW_TOKENS", 256),
-                            temperature=getattr(Config, "GEN_TEMPERATURE", getattr(Config, "TEMPERATURE", 0.7)),
-                            top_p=getattr(Config, "GEN_TOP_P", 0.95),
-                            messages=[{"role": "user", "content": request.prompt}],
+                        # chat_response = client.chat.complete(
+                        #     model=api_model,
+                        #     max_tokens=getattr(Config, "GEN_MAX_NEW_TOKENS", 256),
+                        #     temperature=getattr(Config, "GEN_TEMPERATURE", getattr(Config, "TEMPERATURE", 0.7)),
+                        #     top_p=getattr(Config, "GEN_TOP_P", 0.95),
+                        #     messages=[{"role": "user", "content": request.prompt}],
+                        # )
+                        chat_response = mistral_chat_complete_with_retry(
+                            client=client,
+                            model_name=model_name,
+                            prompt=request.prompt,
+                            max_retries=int(getattr(Config, "MISTRAL_MAX_RETRIES", 2)),
                         )
                         response_text = chat_response.choices[0].message.content
 
@@ -855,7 +949,11 @@ def server_worker_process(
                         f.write(tb_msg)
                         f.write("\n" + "=" * 80 + "\n\n")
 
-                    request.status = "failed"
+                    # request.status = "failed"
+                    if isinstance(e, TransientAPIError) or _is_transient_api_error(e):
+                        request.status = "api_transient_failed"
+                    else:
+                        request.status = "failed"
                     request.completion_time = time.time()
                     raw_lat = max(float(request.completion_time - request.arrival_time), 0.0)
                     round_minmax_lat = bool(getattr(Config, "ROUND_MINMAX_NORM_ENABLE", False))
@@ -1322,6 +1420,20 @@ def response_collector_worker(
                 else:
                     print(f"Warning: Incomplete response data for request {request.id}")
 
+            elif request.status == "api_transient_failed":
+                # Provider outage / retryable API failure.
+                # Do not punish the routing policy as hard as invalid route.
+                penalty = float(getattr(Config, "API_TRANSIENT_FAIL_PENALTY", 0.05))
+
+                request.reward = -penalty
+                request.price = 0.0
+                request.quality_score = 0.0
+
+                routed_prompts[request.id] = request
+                if completed_prompts is not None:
+                    completed_prompts.value += 1
+
+                print(f"Response transient-failed - ID: {request.id}, Penalty: {-penalty:.3f}")
             elif request.status == "failed":
                 penalty = getattr(Config, "INVALID_ROUTE_PENALTY", None)
                 if penalty is None:
@@ -1384,6 +1496,8 @@ class EnhancedRouterEnvironment:
                 self.enable_monitoring = False
 
         self.manager = mp.Manager()
+
+        self.interval_routed_counts = np.zeros(len(Config.MODEL_NAMES), dtype=np.float32)
 
         self.routed_prompts = self.manager.dict()
         self.completed_prompts = self.manager.Value("i", 0)
@@ -1529,6 +1643,8 @@ class EnhancedRouterEnvironment:
         )
 
         server = self.servers[action]
+
+        self.interval_routed_counts[action] += 1
 
         queue_len_before = server.get_current_load()
         request.queue_len_at_dispatch = queue_len_before

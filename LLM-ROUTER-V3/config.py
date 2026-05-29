@@ -2,54 +2,65 @@ import torch
 
 class Config:
     MODEL_NAMES = [
-        # Mistral API
-        "mistral-small-2603",
-        "mistral-large-2512",
-        "mistral-medium-2508",
-        "ministral-14b-2512",
-        "ministral-8b-2512",
+        # ===== Tier 1: 最便宜 =====
         "ministral-3b-2512",
-        "magistral-medium-2509",
 
-        # Together AI stable models
-        "together/meta-llama/Llama-3.3-70B-Instruct-Turbo",
-        "together/Qwen/Qwen2.5-7B-Instruct-Turbo",
+        # ===== Tier 2: 便宜 weak baseline =====
         "together/meta-llama/Meta-Llama-3-8B-Instruct-Lite",
+        "ministral-8b-2512",
+        "gpt-4.1-nano-2025-04-14",
+
+        # ===== Tier 3: mid-tier =====
+        "together/Qwen/Qwen2.5-7B-Instruct-Turbo",
+        "mistral-small-2506",
+        "gpt-4.1-mini-2025-04-14",
+
+        # ===== Tier 4: 强模型 =====
+        "together/meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        "mistral-large-2512",
+        "gpt-4.1-2025-04-14",
     ]
 
     PRICE = [
-        # Mistral API
-        (0.00000015, 0.00000060),  # mistral-small-2603
-        (0.00000050, 0.00000150),  # mistral-large-2512
-        (0.00000040, 0.00000200),  # mistral-medium-2508
-        (0.00000020, 0.00000020),  # ministral-14b-2512
-        (0.00000015, 0.00000015),  # ministral-8b-2512
+        # ===== Tier 1: 最便宜 =====
         (0.00000010, 0.00000010),  # ministral-3b-2512
-        (0.00000200, 0.00000500),  # magistral-medium-2509
 
-        # Together AI
-        (0.00000088, 0.00000088),  # Llama-3.3-70B-Instruct-Turbo
-        (0.00000030, 0.00000030),  # Qwen2.5-7B-Instruct-Turbo
-        (0.00000010, 0.00000010),  # Meta-Llama-3-8B-Instruct-Lite
+        # ===== Tier 2: 便宜 weak baseline =====
+        (0.00000010, 0.00000010),  # together/meta-llama/Meta-Llama-3-8B-Instruct-Lite
+        (0.00000015, 0.00000015),  # ministral-8b-2512
+        (0.00000010, 0.00000040),  # gpt-4.1-nano-2025-04-14
+
+        # ===== Tier 3: mid-tier =====
+        (0.00000030, 0.00000030),  # together/Qwen/Qwen2.5-7B-Instruct-Turbo
+        (0.00000015, 0.00000060),  # mistral-small-2506
+        (0.00000040, 0.00000160),  # gpt-4.1-mini-2025-04-14
+
+        # ===== Tier 4: 强模型 =====
+        (0.00000088, 0.00000088),  # together/meta-llama/Llama-3.3-70B-Instruct-Turbo
+        (0.00000050, 0.00000150),  # mistral-large-2512
+        (0.00000200, 0.00000800),  # gpt-4.1-2025-04-14
     ]
 
     SERVICE_RATE = [
-        # Mistral API
-        0.251120,  # mistral-small-2603
-        0.079644,  # mistral-large-2512
-        0.227111,  # mistral-medium-2508
-        0.386185,  # ministral-14b-2512
-        0.363996,  # ministral-8b-2512
+        # ===== Tier 1: 最便宜 =====
         0.349045,  # ministral-3b-2512
-        0.174436,  # magistral-medium-2509
 
-        # Together AI, conservative initial estimates
-        0.120000,  # Llama-3.3-70B-Instruct-Turbo
-        0.300000,  # Qwen2.5-7B-Instruct-Turbo
-        0.400000,  # Meta-Llama-3-8B-Instruct-Lite
+        # ===== Tier 2: 便宜 weak baseline =====
+        0.400000,  # together/meta-llama/Meta-Llama-3-8B-Instruct-Lite
+        0.363996,  # ministral-8b-2512
+        0.736517,  # gpt-4.1-nano-2025-04-14
+
+        # ===== Tier 3: mid-tier =====
+        0.300000,  # together/Qwen/Qwen2.5-7B-Instruct-Turbo
+        0.251120,  # mistral-small-2506
+        0.460004,  # gpt-4.1-mini-2025-04-14
+
+        # ===== Tier 4: 强模型 =====
+        0.120000,  # together/meta-llama/Llama-3.3-70B-Instruct-Turbo
+        0.079644,  # mistral-large-2512
+        0.266312,  # gpt-4.1-2025-04-14
     ]
-
-    SERVER_CAPACITIES = [100] * 10
+    SERVER_CAPACITIES = [50] * 10
 
     USE_UTIL = True  # in the state use load/capability or load + capability
 
@@ -60,9 +71,9 @@ class Config:
     #   - "squad"
     #   - "cais/mmlu" - DATASET_CONFIG = "all" - DATASET_SPLIT = "auxiliary_train[:20000]"
     #   - "mixed" - "None" - "Train"
-    DATASET_NAME = "cais/mmlu"
-    DATASET_CONFIG = "all"    # Optional HF config name (e.g., HotpotQA: "distractor" / "fullwiki")
-    DATASET_SPLIT = "auxiliary_train[:20000]"     # "train" / "validation" / "test" (must exist in the dataset)
+    DATASET_NAME = "openai/gsm8k"
+    DATASET_CONFIG = "main"    # Optional HF config name (e.g., HotpotQA: "distractor" / "fullwiki")
+    DATASET_SPLIT = "train"     # "train" / "validation" / "test" (must exist in the dataset)
     MAX_SAMPLES = 20000         # Optional cap for faster experiments
     SHUFFLE_DATASET = True
     DATASET_SEED = 42
@@ -113,7 +124,7 @@ class Config:
 
     # Prompt encoder settings (RouterNetwork)
     # Any SentenceTransformer model name, e.g., 'all-MiniLM-L6-v2', 'all-mpnet-base-v2', etc.
-    PROMPT_MODEL = "BAAI/bge-base-en-v1.5"
+    PROMPT_MODEL = "Alibaba-NLP/gte-modernbert-base"
 
     # If False: use raw SentenceTransformer embedding directly (no projection).
     # If True: learn a small projection emb_dim -> PROMPT_DIM.
@@ -209,26 +220,39 @@ class Config:
     ENV_DEFER_LAT_PRICE_REWARD_WHEN_MINMAX = True
 
     LAMBDA = 5  # Capacity penalty weight (increased to strongly discourage invalid actions)
-    MAX_LAT = 20
+    MAX_LAT = 30
     FAIR_REWARD_MIN_FLOOR = False # True the missing server will be set min rewards, False will use the floor reward -Beta-REWARD_GAMMA
     
     # PPO hyperparameters - tuned for the routing problem
     LEARNING_RATE = 1e-4 # Reduced for more stable learning
     GAMMA = 0.99          # Slightly reduced discount factor
     GAE_LAMBDA = 0.95      # Reduced for less variance in advantage estimation
-    CLIP_EPSILON = 0.5    # Slightly reduced for more conservative updates
+    CLIP_EPSILON = 0.2    # Slightly reduced for more conservative updates
     POLICY_COEF = 1       # Policy loss weight
     VALUE_COEF = 0.2      # Reduced value function weight
     ENTROPY_COEF = 0.0   # Increased entropy for more exploration
-    ACTOR_LEARNING_RATE = 1e-4
-    CRITIC_LEARNING_RATE = 1e-3
+    ACTOR_LEARNING_RATE = 5e-6
+    CRITIC_LEARNING_RATE = 1e-4
+    USE_LR_DECAY = True
+    LR_DECAY_TYPE = "cosine"
+    LR_DECAY_MIN_RATIO = 0.1
     KL_COEF = 0.00
-    MAX_GRAD_NORM = 1
-    PPO_EPOCHS = 2     # Increased for more thorough updates
+    MAX_GRAD_NORM = 0.5  # Reduced for more stable training
+    PPO_EPOCHS = 4   # Increased for more thorough updates
     BATCH_SIZE = 1      # Increased batch size
-    TARGET_KL = 0.02
+
+    TARGET_KL = 0.04
     USE_TARGET_KL_STOP = False
+
+    USE_PER_INTERVAL_MINIBATCH = True
+    PPO_INTERVAL_MINIBATCH_SIZE = 1
+    PPO_SHUFFLE_INTERVALS = False
+
     USE_SERVERWISE_MLP = False
+
+    PROMPT_MAX_TOKENS = 1024
+    ROUTER_DEBUG_TEXT = False
+    LLAVA_FUSION_LAYERS = 2
     
     USE_CLIP_FUSION_ROUTER = True
     ATTN_D_MODEL  = 256
@@ -264,7 +288,7 @@ class Config:
     PLOT_INTERVAL = 50    # Plot progress every 50 episodes
     
     # Router QA generation controls (keeps answers short & deterministic)
-    GEN_MAX_NEW_TOKENS = 128         # hard cap on answer length
+    GEN_MAX_NEW_TOKENS = 512         # hard cap on answer length
     GEN_MIN_NEW_TOKENS = 0
     GEN_TEMPERATURE = 0.1         
     GEN_TOP_P = 1
@@ -278,6 +302,9 @@ class Config:
     TRUNCATE_AT_FINAL_TAG = True
     OUTPUT_FINAL_ONLY = True           # if True, store only <final>...</final> as response_text
     PRICE_USE_RAW_RESPONSE = True       # price penalty uses raw output length (more realistic)
+
+    MISTRAL_MAX_RETRIES = 2
+    API_TRANSIENT_FAIL_PENALTY = 0.0
 
     
     # Quality scoring settings
@@ -300,8 +327,8 @@ class Config:
     # [CHANNEL] Dual-channel attention router: split per-server features
     # into dynamic (util only) and static (mu, prices) channels.
     # ====================================================================
-    SERVER_DYN_DIM = 2      # util, slot_count
-    SERVER_STAT_DIM = 3     # mu, price_in, price_out
+    SERVER_DYN_DIM  = 4    # util, slot_count, interval_norm, time_remaining_norm  
+    SERVER_STAT_DIM = 3    # mu, price_in, price_out                         
 
     
     # Load factor settings
@@ -312,13 +339,13 @@ class Config:
     FINAL_EVAL_EPISODES = 10  # Number of episodes for final evaluation
     
     # Poisson prompt generation settings
-    POISSON_ARRIVAL_RATE = 3  # Average arrival rate of prompts per second
+    POISSON_ARRIVAL_RATE = 2  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
-    EPISODE_TIME_INTERVAL = 10 # How many intervals in current episode
+    EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
     
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)
-    INTERVAL_LENGTH = 2 # The length of interval
+    INTERVAL_LENGTH = 4 # The length of interval
     MAX_EPISODES = 200   # Increased for more training
     
     # Queue score settings
@@ -328,7 +355,7 @@ class Config:
 
     # Drop action
     INVALID_ROUTE_PENALTY = 2   # try 0.5 ~ 2.0 depending how hard you want to avoid full servers
-    FAIL_LATENCY_CAP = 20.0       # just for logging; failed branch uses penalty not latency
+    FAIL_LATENCY_CAP = 30.0       # just for logging; failed branch uses penalty not latency
     REWARD_CLIP = -2             # optional, set <=0 to disable
 
     MASK = False
@@ -347,7 +374,7 @@ class Config:
     
     RANDOM_SELECT = False
 
-    NAIVE_PPO = False
+    NAIVE_PPO = True
 
     ENABLE_QUEUE_PENALTY = False
 
@@ -394,9 +421,12 @@ class Config:
     GREEDY_TOPK = 1
 
     T = -1
-    FAIR = 1  # 0..1, it will control how fair you want, 1 max, 0 min
+    # FAIR = 1  # 0..1, it will control how fair you want, 1 max, 0 min
     T_QUEUE = -1
     T_REWARD = -1
+    FAIR_WARMUP_EPISODES = 0
+    FAIR_TARGET = 1.0       # 最终的 FAIR 值
+    FAIR = 1.0              # 起始（trainer 会覆盖）
 
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL
@@ -518,7 +548,7 @@ class Config:
     #   "contains" : 1 if one contains the other (after normalization)
     #   "em"       : strict exact match (0/1)
     # EM_METRIC = "mmlu"
-    EM_METRIC = "f1"
+    EM_METRIC = "number"
 
     # Optionally binarise the match score (useful if you want 0/1 reward)
     EM_BINARIZE = False

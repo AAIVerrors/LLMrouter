@@ -50,7 +50,7 @@ class EnhancedLLMRouterTrainer:
         # USE_UTIL=False -> load(M) + capacity(M) = 2M
         # ---- State dimension for flat *interleaved* per-server features ----
         # Per-server features: util, slot_count, mu, (optional q), price_in, price_out
-        per_server_dim = 2 + 1 + (1 if include_quality_state else 0) + 2
+        per_server_dim = 4 + 1 + (1 if include_quality_state else 0) + 2  
         state_dim = M * per_server_dim
         action_dim = M
         self.agent = PPOAgent(state_dim, action_dim)
@@ -339,47 +339,38 @@ class EnhancedLLMRouterTrainer:
             float(Config.POISSON_ARRIVAL_RATE) * float(Config.INTERVAL_LENGTH), 1.0
         )
 
-        def build_state(loads, slot_counts=None):
-            """Build **flat** state vector with per-server interleaved features.
-
-            Per-server layout (concatenated for i=0..M-1):
-              [ util_i, slot_count_i, mu_i, price_in_i, price_out_i ]   (F = 5)
-
-            slot_count_i: number of times server i was selected in the current
-                          time slot, normalized by expected arrivals per slot
-                          (POISSON_ARRIVAL_RATE * INTERVAL_LENGTH).
-
-            Returns:
-              np.ndarray of shape [M * 5]
-            """
+        def build_state(loads, slot_counts=None, current_time_slot=0, interval_remaining_norm=1.0):
             M = len(Config.SERVER_CAPACITIES)
-
             PRICE_SCALE = 1e6
-
-            # prices are tuples: (input_price, output_price)
-            price_in = [float(a[0]) * PRICE_SCALE for a in Config.PRICE]
+            price_in  = [float(a[0]) * PRICE_SCALE for a in Config.PRICE]
             price_out = [float(a[1]) * PRICE_SCALE for a in Config.PRICE]
 
+            T = float(Config.EPISODE_TIME_INTERVAL)
+            episode_progress    = float(current_time_slot) / max(T, 1.0)              # episode 进度 0 -> ~1
+            interval_remaining  = float(max(0.0, min(1.0, interval_remaining_norm)))  # 当前 interval 还剩 1 -> 0
+
+            F = 7
             feats_flat = []
             for i in range(M):
-                cap = float(Config.SERVER_CAPACITIES[i])
+                cap  = float(Config.SERVER_CAPACITIES[i])
                 load = float(loads[i])
                 util = load / max(cap, 1.0)
-                sc = float(slot_counts[i]) / _slot_count_norm if slot_counts is not None else 0.0
-                mu = float(self.last_service_rate[i])
+                sc   = float(slot_counts[i]) / _slot_count_norm if slot_counts is not None else 0.0
+                mu   = float(self.last_service_rate[i])
+                feats_flat.extend([
+                    util, sc, interval_remaining, episode_progress,    # dyn (4)
+                    mu,   price_in[i], price_out[i],                  # stat (3)
+                ])
 
-                feats_flat.extend([util, sc, mu, price_in[i], price_out[i]])
-
-            # sanity check
-            expected_len = M * 5
-            if len(feats_flat) != expected_len:
-                raise ValueError(f"build_state length mismatch: got {len(feats_flat)}, expected {expected_len} (M={M}, F=5).")
-
-            return np.array(feats_flat, dtype=np.float32)   # [M * 5]
+            if len(feats_flat) != M * F:
+                raise ValueError(f"build_state length mismatch: got {len(feats_flat)}, expected {M*F}")
+            return np.array(feats_flat, dtype=np.float32)
 
         M = len(Config.SERVER_CAPACITIES)
+        F = 7
         slot_counts = np.zeros(M, dtype=np.float32)
-        state = build_state(self.env.reset(), slot_counts)
+        state = build_state(self.env.reset(), slot_counts, current_time_slot=0,
+                            interval_remaining_norm=1.0)
         self.env.clean_prompt_queue()
         
         # state = [self.env.reset()[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + [1] * len(Config.SERVER_CAPACITIES) + price
@@ -400,6 +391,13 @@ class EnhancedLLMRouterTrainer:
             if current_time_slot >= Config.EPISODE_TIME_INTERVAL :
                 print(f"Episode {self.current_episode} timed out after {Config.EPISODE_TIME_INTERVAL} seconds")
                 break
+            # NEW: 当前 interval 内已经过去多久 / 还剩多久（归一化到 [0, 1]）
+            elapsed_in_episode = routing_start - start
+            elapsed_in_interval = elapsed_in_episode - current_time_slot * Config.INTERVAL_LENGTH
+            interval_remaining_norm = max(
+                0.0,
+                1.0 - float(elapsed_in_interval) / max(float(Config.INTERVAL_LENGTH), 1e-6)
+            )
 
             prompt_entry = self.env.get_next_prompt()
             if not prompt_entry:
@@ -422,18 +420,25 @@ class EnhancedLLMRouterTrainer:
 
             if Config.NAIVE_PPO:
                 current_loads = self.env.get_state()
-                state = build_state(current_loads, slot_counts)
+                state = build_state(current_loads, slot_counts, current_time_slot,
+                    interval_remaining_norm=interval_remaining_norm)
             else:
                 if current != current_time_slot:
                     current_loads = self.env.get_state()
                     slot_counts[:] = 0.0
-                    state = build_state(current_loads, slot_counts)
+                    state = build_state(
+                        current_loads,          # ← 用 fresh loads，不要用旧 state 反推
+                        slot_counts,
+                        current_time_slot,
+                        interval_remaining_norm=interval_remaining_norm,
+                    )
                     current = current_time_slot
                 else:
-                    # Same slot: refresh only the dynamic slot_count column
                     state = build_state(
-                        [state[i * 5] * float(Config.SERVER_CAPACITIES[i]) for i in range(M)],
+                        [state[i * F] * float(Config.SERVER_CAPACITIES[i]) for i in range(M)],  # same interval 内复用是对的
                         slot_counts,
+                        current_time_slot,
+                        interval_remaining_norm=interval_remaining_norm,
                     )
 
             action_mask = self.env.get_action_mask()
@@ -763,6 +768,17 @@ class EnhancedLLMRouterTrainer:
         print("=" * 60)
         
         for episode in range(Config.MAX_EPISODES):
+            
+            warmup = int(getattr(Config, "FAIR_WARMUP_EPISODES", 0))
+            fair_target = float(getattr(Config, "FAIR_TARGET", getattr(Config, "FAIR", 1.0)))
+
+            if warmup <= 0:
+                Config.FAIR = fair_target
+            else:
+                Config.FAIR = min(fair_target, fair_target * episode / max(warmup, 1))
+
+            print(f"[Episode {episode}] FAIR = {Config.FAIR:.3f}")
+
             self.current_episode = episode  # Update current episode
             self.env.set_episode(episode)  # Update environment episode tracking
             
