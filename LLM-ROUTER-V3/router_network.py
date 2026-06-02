@@ -80,6 +80,7 @@ class AttnBlock(nn.Module):
         )
         self.ln2 = nn.LayerNorm(d_model)
 
+
     def forward(self, x: torch.Tensor, key_padding_mask: torch.Tensor | None = None) -> torch.Tensor:
         # x: [B, T, d_model]
         # key_padding_mask: [B, T], True means the token is padding and should be ignored.
@@ -303,6 +304,22 @@ class RouterNetwork(nn.Module):
                 dropout=attn_drop,
             )
 
+            # self.state_critic = nn.Sequential(
+            #     nn.Linear(d_model, d_model), nn.GELU(),
+            #     nn.Linear(d_model, d_model), nn.GELU(),
+            #     nn.Linear(d_model, 1),
+            # )
+            
+            # 完全独立的 critic：直接吃原始 flat state，不碰 server 塔
+            critic_in_dim = self.M * self.server_feat_dim          # M * F = 40
+            critic_hidden = d_model
+            self.state_critic = nn.Sequential(
+                nn.LayerNorm(critic_in_dim),
+                nn.Linear(critic_in_dim, critic_hidden), nn.GELU(),
+                nn.Linear(critic_hidden, critic_hidden), nn.GELU(),
+                nn.Linear(critic_hidden, 1),
+            )
+
         elif self.use_attn:
             self.M = int(action_dim)
 
@@ -416,7 +433,7 @@ class RouterNetwork(nn.Module):
         actor_out, critic_out = self._get_output_layers()
 
         if actor_out is not None:
-            nn.init.orthogonal_(actor_out.weight, gain=0.5)
+            nn.init.orthogonal_(actor_out.weight, gain=1)
             if actor_out.bias is not None:
                 nn.init.zeros_(actor_out.bias)
 
@@ -436,7 +453,8 @@ class RouterNetwork(nn.Module):
             return None
 
         if getattr(self, "use_clip_fusion", False):
-            return last_linear(self.actor_head), last_linear(self.critic_mlp)
+            # return last_linear(self.actor_head), last_linear(self.critic_mlp)
+            return last_linear(self.actor_head), last_linear(self.state_critic)
         elif self.use_attn:
             return last_linear(self.actor_head), last_linear(self.critic_mlp)
         elif getattr(self, "use_serverwise_mlp", False):
@@ -702,6 +720,8 @@ class RouterNetwork(nn.Module):
             for blk in self.server_self_attn:
                 server_tokens = blk(server_tokens)
 
+            # state_repr = server_tokens.mean(dim=1)    # [B, d]
+
             # ---- LLaVA-style joint fusion ----
             # Build a single sequence:
             #   [ROUTE] + prompt tokens + server tokens
@@ -749,29 +769,32 @@ class RouterNetwork(nn.Module):
             # server_h: [B, M, d]
             route_expand = route_h.unsqueeze(1).expand(-1, M, -1)  # [B, M, d]
 
-            critic_score_in = torch.cat([server_h, route_expand], dim=-1)  # [B, M, 2d]
-            critic_scores = self.critic_server_score(critic_score_in).squeeze(-1)  # [B, M]
+            # critic_score_in = torch.cat([server_h, route_expand], dim=-1)  # [B, M, 2d]
+            # critic_scores = self.critic_server_score(critic_score_in).squeeze(-1)  # [B, M]
 
             # Optional: if action_mask exists, do not pool invalid/full servers too much.
-            if action_mask is not None:
-                if isinstance(action_mask, np.ndarray):
-                    critic_mask = torch.as_tensor(action_mask, dtype=torch.float32, device=critic_scores.device)
-                else:
-                    critic_mask = action_mask.to(device=critic_scores.device, dtype=torch.float32)
+            # if action_mask is not None:
+            #     if isinstance(action_mask, np.ndarray):
+            #         critic_mask = torch.as_tensor(action_mask, dtype=torch.float32, device=critic_scores.device)
+            #     else:
+            #         critic_mask = action_mask.to(device=critic_scores.device, dtype=torch.float32)
 
-                if critic_mask.dim() == 1:
-                    critic_mask = critic_mask.unsqueeze(0)
+            #     if critic_mask.dim() == 1:
+            #         critic_mask = critic_mask.unsqueeze(0)
 
-                if critic_mask.shape[0] == 1 and B > 1:
-                    critic_mask = critic_mask.expand(B, -1)
+            #     if critic_mask.shape[0] == 1 and B > 1:
+            #         critic_mask = critic_mask.expand(B, -1)
 
-                critic_scores = critic_scores.masked_fill(critic_mask <= 0, -1e9)
+            #     critic_scores = critic_scores.masked_fill(critic_mask <= 0, -1e9)
 
-            critic_weights = torch.softmax(critic_scores, dim=1)  # [B, M]
-            server_pool = torch.sum(critic_weights.unsqueeze(-1) * server_h, dim=1)  # [B, d]
+            # critic_weights = torch.softmax(critic_scores, dim=1)  # [B, M]
+            # server_pool = torch.sum(critic_weights.unsqueeze(-1) * server_h, dim=1)  # [B, d]
 
-            critic_in = torch.cat([route_h, server_pool], dim=-1)  # [B, 2d]
-            value = self.critic_mlp(critic_in)
+            # critic_in = torch.cat([route_h, server_pool], dim=-1)  # [B, 2d]
+            # value = self.critic_mlp(critic_in)
+
+            # value = self.state_critic(state_repr)
+            value = self.state_critic(state.reshape(B, -1))
 
         elif not self.use_attn:
             if getattr(self, "use_serverwise_mlp", False):
@@ -1313,7 +1336,7 @@ class PPOAgent:
             param_groups,
             eps=1e-5,
         )
-        
+
         # ============================================================
         # LR scheduler (episode-level decay)
         # trainer calls self.agent.scheduler.step() once per episode,
@@ -1886,7 +1909,7 @@ class PPOAgent:
 
             # Keep your current value baseline style:
             # interval old value = mean of values inside this interval.
-            term_values_old.append(values[idxs].mean())
+            term_values_old.append(values[idxs[0]])
 
             # ========================================================
             # FAIR reward aggregation: keep your original logic
@@ -2036,16 +2059,18 @@ class PPOAgent:
                 policy_loss = -torch.min(surr1, surr2).mean()
 
                 # ----------------------------------------------------
-                # Value loss, unchanged:
-                # interval value = mean value inside interval
+                # Value loss:
+                # one frozen telemetry state -> one interval value
                 # ----------------------------------------------------
                 v_all = new_values.squeeze(-1)
-                v_interval = torch.stack([
-                    v_all[idxs].mean()
-                    for idxs in interval_indices
-                ])
+                v_interval = v_all[first_indices_t]
 
-                value_loss = F.mse_loss(v_interval, term_ret.detach())
+                value_loss = F.smooth_l1_loss(
+                    v_interval,
+                    term_ret.detach()
+                )
+
+                # value_loss = F.mse_loss(v_interval, term_ret.detach())
 
                 # ----------------------------------------------------
                 # Entropy loss, unchanged style
@@ -2209,18 +2234,17 @@ class PPOAgent:
 
                     policy_loss = -torch.min(surr1, surr2).mean()
 
-                    # ------------------------------------------------
-                    # Value loss, same logic as full path:
-                    # interval value = mean value inside interval.
-                    # ------------------------------------------------
                     v_all = new_values.squeeze(-1)
 
                     v_interval = torch.stack([
-                        v_all[local_idxs].mean()
+                        v_all[local_idxs[0]]
                         for local_idxs in local_interval_indices
                     ])
 
-                    value_loss = F.mse_loss(v_interval, mb_term_ret.detach())
+                    value_loss = F.smooth_l1_loss(
+                        v_interval,
+                        mb_term_ret.detach()
+                    )
 
                     # ------------------------------------------------
                     # Entropy loss, same style as full path.
@@ -2327,367 +2351,367 @@ class PPOAgent:
         }
 
     # def update_new(self, trajectories):
-        """
-        PPO update on ACTIVE intervals only (N_t > 0), with:
-        - fair reward normalization: 1/M if N_t >= M, else 1/N_t
-        - interval importance weight rho_t = exp(mean_i (new_logp_i - old_logp_i))
+    #     """
+    #     PPO update on ACTIVE intervals only (N_t > 0), with:
+    #     - fair reward normalization: 1/M if N_t >= M, else 1/N_t
+    #     - interval importance weight rho_t = exp(mean_i (new_logp_i - old_logp_i))
         
-        Bug fixes applied:
-        [FIX #1] Single-interval advantage no longer zeroed by mean subtraction
-        [FIX #2] Entropy aggregated per-interval to match policy_loss scale
-        [FIX #3] Critic trained on ALL steps (broadcast interval return)
-        [FIX #4] approx_kl uses Schulman v3 estimator (always >= 0)
-        [NOTE ] KL term removed from loss (approx_kl is monitoring only now)
-        """
-        states_np = np.array([t["state"] for t in trajectories], dtype=np.float32)
-        actions_np = np.array([t["action"] for t in trajectories], dtype=np.int64)
-        old_log_probs_np = np.array([t["log_prob"] for t in trajectories], dtype=np.float32)
-        rewards_np = np.array([t["reward"] for t in trajectories], dtype=np.float32)
-        values_np = np.array([t["value"] for t in trajectories], dtype=np.float32)
+    #     Bug fixes applied:
+    #     [FIX #1] Single-interval advantage no longer zeroed by mean subtraction
+    #     [FIX #2] Entropy aggregated per-interval to match policy_loss scale
+    #     [FIX #3] Critic trained on ALL steps (broadcast interval return)
+    #     [FIX #4] approx_kl uses Schulman v3 estimator (always >= 0)
+    #     [NOTE ] KL term removed from loss (approx_kl is monitoring only now)
+    #     """
+    #     states_np = np.array([t["state"] for t in trajectories], dtype=np.float32)
+    #     actions_np = np.array([t["action"] for t in trajectories], dtype=np.int64)
+    #     old_log_probs_np = np.array([t["log_prob"] for t in trajectories], dtype=np.float32)
+    #     rewards_np = np.array([t["reward"] for t in trajectories], dtype=np.float32)
+    #     values_np = np.array([t["value"] for t in trajectories], dtype=np.float32)
 
-        prompts = [t["prompt"] for t in trajectories]
-        service_rate = [t["service_rate"] for t in trajectories]
-        time_slots_np = np.array([t["time_slot"] for t in trajectories], dtype=np.int64)
+    #     prompts = [t["prompt"] for t in trajectories]
+    #     service_rate = [t["service_rate"] for t in trajectories]
+    #     time_slots_np = np.array([t["time_slot"] for t in trajectories], dtype=np.int64)
 
-        states = torch.as_tensor(states_np, device=Config.DEVICE)
-        actions = torch.as_tensor(actions_np, device=Config.DEVICE)
-        old_log_probs = torch.as_tensor(old_log_probs_np, device=Config.DEVICE)
-        rewards = torch.as_tensor(rewards_np, device=Config.DEVICE)
-        values = torch.as_tensor(values_np, device=Config.DEVICE)
-        time_slots = torch.as_tensor(time_slots_np, device=Config.DEVICE)
+    #     states = torch.as_tensor(states_np, device=Config.DEVICE)
+    #     actions = torch.as_tensor(actions_np, device=Config.DEVICE)
+    #     old_log_probs = torch.as_tensor(old_log_probs_np, device=Config.DEVICE)
+    #     rewards = torch.as_tensor(rewards_np, device=Config.DEVICE)
+    #     values = torch.as_tensor(values_np, device=Config.DEVICE)
+    #     time_slots = torch.as_tensor(time_slots_np, device=Config.DEVICE)
 
-        action_masks = None
-        if "action_mask" in trajectories[0] and trajectories[0]["action_mask"] is not None:
-            action_masks_np = np.array([t["action_mask"] for t in trajectories], dtype=np.float32)
-            action_masks = torch.as_tensor(action_masks_np, device=Config.DEVICE)
+    #     action_masks = None
+    #     if "action_mask" in trajectories[0] and trajectories[0]["action_mask"] is not None:
+    #         action_masks_np = np.array([t["action_mask"] for t in trajectories], dtype=np.float32)
+    #         action_masks = torch.as_tensor(action_masks_np, device=Config.DEVICE)
 
-        M = len(Config.MODEL_NAMES)
-        beta = float(Config.T)
+    #     M = len(Config.MODEL_NAMES)
+    #     beta = float(Config.T)
 
-        def log_mean_exp(x: torch.Tensor, denom: int):
-            denom = max(int(denom), 1)
-            if abs(beta) < 1e-8:
-                return x.mean()
-            return (torch.logsumexp(beta * x, dim=0) - math.log(denom)) / beta
+    #     def log_mean_exp(x: torch.Tensor, denom: int):
+    #         denom = max(int(denom), 1)
+    #         if abs(beta) < 1e-8:
+    #             return x.mean()
+    #         return (torch.logsumexp(beta * x, dim=0) - math.log(denom)) / beta
 
-        slot_to_indices = {}
-        for i, ts in enumerate(time_slots.tolist()):
-            slot_to_indices.setdefault(int(ts), []).append(i)
+    #     slot_to_indices = {}
+    #     for i, ts in enumerate(time_slots.tolist()):
+    #         slot_to_indices.setdefault(int(ts), []).append(i)
             
-        arrivals_per_interval = {ts: len(idxs) for ts, idxs in sorted(slot_to_indices.items())}
-        total_arrivals = sum(arrivals_per_interval.values())
-        print(f"[Arrivals] intervals={len(arrivals_per_interval)} "
-            f"total={total_arrivals} "
-            f"per_slot={arrivals_per_interval}")
+    #     arrivals_per_interval = {ts: len(idxs) for ts, idxs in sorted(slot_to_indices.items())}
+    #     total_arrivals = sum(arrivals_per_interval.values())
+    #     print(f"[Arrivals] intervals={len(arrivals_per_interval)} "
+    #         f"total={total_arrivals} "
+    #         f"per_slot={arrivals_per_interval}")
 
-        interval_indices = []
-        first_indices = []
-        term_rewards = []
-        term_values_old = []
-        avg_rewards = []
-        min_rewards = []
+    #     interval_indices = []
+    #     first_indices = []
+    #     term_rewards = []
+    #     term_values_old = []
+    #     avg_rewards = []
+    #     min_rewards = []
 
-        for ts in sorted(slot_to_indices.keys()):
-            idxs = torch.tensor(slot_to_indices[ts], device=Config.DEVICE, dtype=torch.long)
-            Nt = int(idxs.numel())
-            if Nt == 0:
-                continue
+    #     for ts in sorted(slot_to_indices.keys()):
+    #         idxs = torch.tensor(slot_to_indices[ts], device=Config.DEVICE, dtype=torch.long)
+    #         Nt = int(idxs.numel())
+    #         if Nt == 0:
+    #             continue
 
-            interval_indices.append(idxs)
-            first_indices.append(int(idxs[0].item()))
+    #         interval_indices.append(idxs)
+    #         first_indices.append(int(idxs[0].item()))
 
-            r_t = rewards[idxs]
-            a_t = actions[idxs]
+    #         r_t = rewards[idxs]
+    #         a_t = actions[idxs]
 
-            avg_rewards.append(r_t.mean())
-            min_rewards.append(r_t.min())
-            # term_values_old.append(values[idxs[0]])
-            # Use interval-level value baseline.
-            # Since all prompts in the same interval share the same telemetry state s_t,
-            # average prompt-conditioned values to reduce dependence on the first prompt.
-            term_values_old.append(values[idxs].mean())
+    #         avg_rewards.append(r_t.mean())
+    #         min_rewards.append(r_t.min())
+    #         # term_values_old.append(values[idxs[0]])
+    #         # Use interval-level value baseline.
+    #         # Since all prompts in the same interval share the same telemetry state s_t,
+    #         # average prompt-conditioned values to reduce dependence on the first prompt.
+    #         term_values_old.append(values[idxs].mean())
 
-            # Fair reward with controllable padding
-            F_frac = float(getattr(Config, "FAIR", 1.0))
-            F_frac = max(0.0, min(1.0, F_frac))
+    #         # Fair reward with controllable padding
+    #         F_frac = float(getattr(Config, "FAIR", 1.0))
+    #         F_frac = max(0.0, min(1.0, F_frac))
 
-            # effective group size: historically you used denom=M if Nt>=M else denom=Nt
-            # i.e. G = min(Nt, M)
-            G = min(Nt, M)
+    #         # effective group size: historically you used denom=M if Nt>=M else denom=Nt
+    #         # i.e. G = min(Nt, M)
+    #         G = min(Nt, M)
 
-            if Config.FAIR_REWARD_MIN_FLOOR:
-                floor = r_t.min().detach()
-            else:
-                floor = torch.tensor(
-                            - Config.BETA - Config.REWARD_GAMMA,
-                            # -1,
-                            device=Config.DEVICE,
-                            dtype=r_t.dtype
-                        )
+    #         if Config.FAIR_REWARD_MIN_FLOOR:
+    #             floor = r_t.min().detach()
+    #         else:
+    #             floor = torch.tensor(
+    #                         - Config.BETA - Config.REWARD_GAMMA,
+    #                         # -1,
+    #                         device=Config.DEVICE,
+    #                         dtype=r_t.dtype
+    #                     )
 
-            # collect mean reward for each USED server (deterministic order by server id)
-            used_server_terms = []
+    #         # collect mean reward for each USED server (deterministic order by server id)
+    #         used_server_terms = []
 
-            for m in range(M):
-                mask = (a_t == m)
+    #         for m in range(M):
+    #             mask = (a_t == m)
 
-                if mask.any():
-                    r_m = r_t[mask]  # rewards of prompts routed to server m
+    #             if mask.any():
+    #                 r_m = r_t[mask]  # rewards of prompts routed to server m
 
-                    # Old:
-                    server_term = r_m.mean()
+    #                 # Old:
+    #                 server_term = r_m.mean()
 
-                    # New:
-                    # tilted aggregation inside this server, using the same Config.T
-                    # server_term = log_mean_exp(r_m, denom=r_m.numel())
+    #                 # New:
+    #                 # tilted aggregation inside this server, using the same Config.T
+    #                 # server_term = log_mean_exp(r_m, denom=r_m.numel())
 
-                    used_server_terms.append(server_term)
+    #                 used_server_terms.append(server_term)
 
-            if len(used_server_terms) == 0:
-                continue
+    #         if len(used_server_terms) == 0:
+    #             continue
 
-            K = len(used_server_terms)
-            missing = max(0, G - K)
-            pad = int(math.floor(F_frac * missing))
+    #         K = len(used_server_terms)
+    #         missing = max(0, G - K)
+    #         pad = int(math.floor(F_frac * missing))
 
-            if pad > 0:
-                used_server_terms.extend([floor] * pad)
+    #         if pad > 0:
+    #             used_server_terms.extend([floor] * pad)
 
-            server_terms = torch.stack(used_server_terms)
+    #         server_terms = torch.stack(used_server_terms)
 
-            # Tilted aggregation across servers, also using the same Config.T
-            tr = log_mean_exp(server_terms, denom=server_terms.numel())
-            term_rewards.append(tr)
+    #         # Tilted aggregation across servers, also using the same Config.T
+    #         tr = log_mean_exp(server_terms, denom=server_terms.numel())
+    #         term_rewards.append(tr)
 
-        if len(term_rewards) == 0:
-            return {
-                "policy_loss": 0.0,
-                "value_loss": 0.0,
-                "entropy_loss": 0.0,
-                "rewards_returns": float(self.cumulated_return(rewards)[0].item()) if rewards.numel() > 0 else 0.0,
-                "term_rewards_returns": 0.0,
-                "min_rewards": 0.0,
-                "server_usage_percentage": {m: 0.0 for m in range(M)},
-                "cumulated_avg_rewards": 0.0,
-                "route distribution": {i: 0 for i in range(M)},
-                "entropy of route distribution": 0.0,
-                "approx_kl": 0.0,
-            }
+    #     if len(term_rewards) == 0:
+    #         return {
+    #             "policy_loss": 0.0,
+    #             "value_loss": 0.0,
+    #             "entropy_loss": 0.0,
+    #             "rewards_returns": float(self.cumulated_return(rewards)[0].item()) if rewards.numel() > 0 else 0.0,
+    #             "term_rewards_returns": 0.0,
+    #             "min_rewards": 0.0,
+    #             "server_usage_percentage": {m: 0.0 for m in range(M)},
+    #             "cumulated_avg_rewards": 0.0,
+    #             "route distribution": {i: 0 for i in range(M)},
+    #             "entropy of route distribution": 0.0,
+    #             "approx_kl": 0.0,
+    #         }
 
-        term_rewards = torch.stack(term_rewards)
-        term_values_old = torch.stack(term_values_old)
-        first_indices_t = torch.tensor(first_indices, device=Config.DEVICE, dtype=torch.long)
+    #     term_rewards = torch.stack(term_rewards)
+    #     term_values_old = torch.stack(term_values_old)
+    #     first_indices_t = torch.tensor(first_indices, device=Config.DEVICE, dtype=torch.long)
 
-        dones = torch.zeros_like(term_rewards)
-        dones[-1] = 1
-        term_adv = self.compute_gae(term_rewards, term_values_old, dones=dones)
-        term_ret = term_adv + term_values_old
+    #     dones = torch.zeros_like(term_rewards)
+    #     dones[-1] = 1
+    #     term_adv = self.compute_gae(term_rewards, term_values_old, dones=dones)
+    #     term_ret = term_adv + term_values_old
 
-        # ====================================================================
-        # [FIX #1] Single-interval advantage zeroing bug
-        # --------------------------------------------------------------------
-        # OLD code:
-        #   if term_adv.numel() > 1:
-        #       term_adv = (term_adv - term_adv.mean()) / (term_adv.std(unbiased=False) + 1e-5)
-        #   else:
-        #       term_adv = term_adv - term_adv.mean()   # <-- BUG: single element = 0
-        #
-        # When EPISODE_TIME_INTERVAL / INTERVAL_LENGTH == 1, there is only ONE
-        # interval per episode, so term_adv.numel() == 1. Old "else" branch
-        # subtracted the mean from itself, making advantage exactly 0, which
-        # makes policy_loss always 0 -> policy never updates.
-        # ====================================================================
-        if term_adv.numel() > 1:
-            term_adv = (term_adv - term_adv.mean()) / (term_adv.std(unbiased=False) + 1e-5)
-        # else: keep term_adv as-is (do NOT subtract mean when only 1 element)
-        # NOTE: Still recommend EPISODE_TIME_INTERVAL >> INTERVAL_LENGTH so we
-        # have multiple intervals for meaningful advantage normalization.
+    #     # ====================================================================
+    #     # [FIX #1] Single-interval advantage zeroing bug
+    #     # --------------------------------------------------------------------
+    #     # OLD code:
+    #     #   if term_adv.numel() > 1:
+    #     #       term_adv = (term_adv - term_adv.mean()) / (term_adv.std(unbiased=False) + 1e-5)
+    #     #   else:
+    #     #       term_adv = term_adv - term_adv.mean()   # <-- BUG: single element = 0
+    #     #
+    #     # When EPISODE_TIME_INTERVAL / INTERVAL_LENGTH == 1, there is only ONE
+    #     # interval per episode, so term_adv.numel() == 1. Old "else" branch
+    #     # subtracted the mean from itself, making advantage exactly 0, which
+    #     # makes policy_loss always 0 -> policy never updates.
+    #     # ====================================================================
+    #     if term_adv.numel() > 1:
+    #         term_adv = (term_adv - term_adv.mean()) / (term_adv.std(unbiased=False) + 1e-5)
+    #     # else: keep term_adv as-is (do NOT subtract mean when only 1 element)
+    #     # NOTE: Still recommend EPISODE_TIME_INTERVAL >> INTERVAL_LENGTH so we
+    #     # have multiple intervals for meaningful advantage normalization.
 
-        # ====================================================================
-        # [FIX #3 - Prep] Build per-step -> interval-position mapping.
-        # Used so critic can regress every step's value to its interval return.
-        # ====================================================================
-        step_to_interval_pos = torch.zeros(len(trajectories), device=Config.DEVICE, dtype=torch.long)
-        for pos, idxs in enumerate(interval_indices):
-            step_to_interval_pos[idxs] = pos
+    #     # ====================================================================
+    #     # [FIX #3 - Prep] Build per-step -> interval-position mapping.
+    #     # Used so critic can regress every step's value to its interval return.
+    #     # ====================================================================
+    #     step_to_interval_pos = torch.zeros(len(trajectories), device=Config.DEVICE, dtype=torch.long)
+    #     for pos, idxs in enumerate(interval_indices):
+    #         step_to_interval_pos[idxs] = pos
 
-        total_policy_loss = 0.0
-        total_value_loss = 0.0
-        total_entropy_loss = 0.0
-        approx_kl = torch.tensor(0.0, device=Config.DEVICE)
+    #     total_policy_loss = 0.0
+    #     total_value_loss = 0.0
+    #     total_entropy_loss = 0.0
+    #     approx_kl = torch.tensor(0.0, device=Config.DEVICE)
         
-        actual_updates = 0
+    #     actual_updates = 0
 
-        for epoch in range(Config.PPO_EPOCHS):
-            if getattr(Config, "USE_MERGE_TO_TRAIN", False):
-                _, new_log_probs, entropy, new_values, dist, _queue_scores = self.network.get_action_and_value_queue(
-                    states, states_np, prompts, action_masks, actions, service_rate=service_rate
-                )
-            else:
-                if not Config.MASK:
-                    action_masks = None
-                _, new_log_probs, entropy, new_values, dist = self.network.get_action_and_value(
-                    states, prompts, action_masks, actions
-                )
+    #     for epoch in range(Config.PPO_EPOCHS):
+    #         if getattr(Config, "USE_MERGE_TO_TRAIN", False):
+    #             _, new_log_probs, entropy, new_values, dist, _queue_scores = self.network.get_action_and_value_queue(
+    #                 states, states_np, prompts, action_masks, actions, service_rate=service_rate
+    #             )
+    #         else:
+    #             if not Config.MASK:
+    #                 action_masks = None
+    #             _, new_log_probs, entropy, new_values, dist = self.network.get_action_and_value(
+    #                 states, prompts, action_masks, actions
+    #             )
 
-            # ---- Interval-level rho_t (your method, unchanged) ----
-            rhos = []
-            for idxs in interval_indices:
-                rho_t = torch.exp((new_log_probs[idxs] - old_log_probs[idxs]).mean())
-                rhos.append(rho_t)
-            rhos = torch.stack(rhos)
+    #         # ---- Interval-level rho_t (your method, unchanged) ----
+    #         rhos = []
+    #         for idxs in interval_indices:
+    #             rho_t = torch.exp((new_log_probs[idxs] - old_log_probs[idxs]).mean())
+    #             rhos.append(rho_t)
+    #         rhos = torch.stack(rhos)
 
-            surr1 = rhos * term_adv
-            surr2 = torch.clamp(rhos, 1.0 - Config.CLIP_EPSILON, 1.0 + Config.CLIP_EPSILON) * term_adv
-            policy_loss = -torch.min(surr1, surr2).mean()
+    #         surr1 = rhos * term_adv
+    #         surr2 = torch.clamp(rhos, 1.0 - Config.CLIP_EPSILON, 1.0 + Config.CLIP_EPSILON) * term_adv
+    #         policy_loss = -torch.min(surr1, surr2).mean()
             
-            # # ---- per-step ----
-            # step_adv = torch.zeros(len(trajectories), device=Config.DEVICE)
-            # for pos, idxs in enumerate(interval_indices):
-            #     step_adv[idxs] = term_adv[pos]  
+    #         # # ---- per-step ----
+    #         # step_adv = torch.zeros(len(trajectories), device=Config.DEVICE)
+    #         # for pos, idxs in enumerate(interval_indices):
+    #         #     step_adv[idxs] = term_adv[pos]  
 
-            # rho_step = torch.exp(new_log_probs - old_log_probs)   # [N_total]
+    #         # rho_step = torch.exp(new_log_probs - old_log_probs)   # [N_total]
 
-            # surr1 = rho_step * step_adv
-            # surr2 = torch.clamp(rho_step, 1.0 - Config.CLIP_EPSILON, 1.0 + Config.CLIP_EPSILON) * step_adv
-            # policy_loss = -torch.min(surr1, surr2).mean()
+    #         # surr1 = rho_step * step_adv
+    #         # surr2 = torch.clamp(rho_step, 1.0 - Config.CLIP_EPSILON, 1.0 + Config.CLIP_EPSILON) * step_adv
+    #         # policy_loss = -torch.min(surr1, surr2).mean()
 
-            # ================================================================
-            # [FIX #3] Critic trained on ALL steps, not just interval-first steps
-            # ----------------------------------------------------------------
-            # OLD code:
-            v_pred = new_values.squeeze(-1)[first_indices_t]
-            value_loss = F.mse_loss(v_pred, term_ret.detach())
-            #
-            # Old version only used 1 step per interval as critic target,
-            # wasting ~99% of value predictions. Since interval state is frozen
-            # but prompts differ, V(s_t, prompt_i) can still learn prompt
-            # difficulty. We regress every step's value to its interval's
-            # return (broadcast). Semantics preserved: target is still the
-            # interval-level return.
-            # ================================================================
-            # step_ret = term_ret[step_to_interval_pos]                 # [N_total]
-            # v_pred_all = new_values.squeeze(-1)                       # [N_total]
-            # value_loss = F.mse_loss(v_pred_all, step_ret.detach())
+    #         # ================================================================
+    #         # [FIX #3] Critic trained on ALL steps, not just interval-first steps
+    #         # ----------------------------------------------------------------
+    #         # OLD code:
+    #         v_pred = new_values.squeeze(-1)[first_indices_t]
+    #         value_loss = F.mse_loss(v_pred, term_ret.detach())
+    #         #
+    #         # Old version only used 1 step per interval as critic target,
+    #         # wasting ~99% of value predictions. Since interval state is frozen
+    #         # but prompts differ, V(s_t, prompt_i) can still learn prompt
+    #         # difficulty. We regress every step's value to its interval's
+    #         # return (broadcast). Semantics preserved: target is still the
+    #         # interval-level return.
+    #         # ================================================================
+    #         # step_ret = term_ret[step_to_interval_pos]                 # [N_total]
+    #         # v_pred_all = new_values.squeeze(-1)                       # [N_total]
+    #         # value_loss = F.mse_loss(v_pred_all, step_ret.detach())
             
-            # v_pred = new_values.squeeze(-1)[first_indices_t]
-            # value_loss = F.mse_loss(v_pred, term_ret.detach())
-            v_all = new_values.squeeze(-1)  # [N_total]
+    #         # v_pred = new_values.squeeze(-1)[first_indices_t]
+    #         # value_loss = F.mse_loss(v_pred, term_ret.detach())
+    #         v_all = new_values.squeeze(-1)  # [N_total]
 
-            v_interval = torch.stack([
-                v_all[idxs].mean()
-                for idxs in interval_indices
-            ])  # [num_intervals]
+    #         v_interval = torch.stack([
+    #             v_all[idxs].mean()
+    #             for idxs in interval_indices
+    #         ])  # [num_intervals]
 
-            value_loss = F.mse_loss(v_interval, term_ret.detach())
+    #         value_loss = F.mse_loss(v_interval, term_ret.detach())
 
-            # ================================================================
-            # [FIX #2] Entropy scale aligned with policy_loss (per-interval mean)
-            # ----------------------------------------------------------------
-            # OLD code:
-            #   entropy_loss = -entropy.mean()   # mean over N_total steps
-            #
-            # policy_loss averages over N_intervals, so old entropy_loss was
-            # effectively diluted by avg_steps_per_interval (often 20-100x).
-            # With ENTROPY_COEF=0.001, effective entropy pressure was ~1e-5,
-            # far too weak to prevent collapse.
-            # ================================================================
-            # entropy_per_interval = torch.stack(
-            #     [entropy[idxs].mean() for idxs in interval_indices]
-            # )
-            # entropy_loss = -entropy_per_interval.mean()
-            entropy_loss = -entropy.mean()   # mean over N_total steps
+    #         # ================================================================
+    #         # [FIX #2] Entropy scale aligned with policy_loss (per-interval mean)
+    #         # ----------------------------------------------------------------
+    #         # OLD code:
+    #         #   entropy_loss = -entropy.mean()   # mean over N_total steps
+    #         #
+    #         # policy_loss averages over N_intervals, so old entropy_loss was
+    #         # effectively diluted by avg_steps_per_interval (often 20-100x).
+    #         # With ENTROPY_COEF=0.001, effective entropy pressure was ~1e-5,
+    #         # far too weak to prevent collapse.
+    #         # ================================================================
+    #         # entropy_per_interval = torch.stack(
+    #         #     [entropy[idxs].mean() for idxs in interval_indices]
+    #         # )
+    #         # entropy_loss = -entropy_per_interval.mean()
+    #         entropy_loss = -entropy.mean()   # mean over N_total steps
 
-            # ================================================================
-            # [FIX #4] approx_kl uses Schulman v3 estimator (always >= 0)
-            # ----------------------------------------------------------------
-            # OLD code:
-            #   kls = []
-            #   for idxs in interval_indices:
-            #       kl_t = (old_log_probs[idxs] - new_log_probs[idxs]).mean()
-            #       kls.append(kl_t)
-            #   approx_kl = torch.stack(kls).mean()
-            #   approx_kl = torch.clamp(approx_kl, min=0.0)
-            #
-            # Old used (old - new).mean() which is 1st-order KL approximation.
-            # It can go negative due to finite-sample noise; clamping to 0
-            # hides the issue. Use Schulman v3: ((ratio - 1) - log_ratio),
-            # always >= 0 and unbiased. Compute under no_grad (monitoring only).
-            # ================================================================
-            with torch.no_grad():
-                log_ratio_step = new_log_probs - old_log_probs
-                ratio_step = torch.exp(log_ratio_step)
-                approx_kl_step = (ratio_step - 1.0) - log_ratio_step
-                approx_kl = torch.stack(
-                    [approx_kl_step[idxs].mean() for idxs in interval_indices]
-                ).mean()
+    #         # ================================================================
+    #         # [FIX #4] approx_kl uses Schulman v3 estimator (always >= 0)
+    #         # ----------------------------------------------------------------
+    #         # OLD code:
+    #         #   kls = []
+    #         #   for idxs in interval_indices:
+    #         #       kl_t = (old_log_probs[idxs] - new_log_probs[idxs]).mean()
+    #         #       kls.append(kl_t)
+    #         #   approx_kl = torch.stack(kls).mean()
+    #         #   approx_kl = torch.clamp(approx_kl, min=0.0)
+    #         #
+    #         # Old used (old - new).mean() which is 1st-order KL approximation.
+    #         # It can go negative due to finite-sample noise; clamping to 0
+    #         # hides the issue. Use Schulman v3: ((ratio - 1) - log_ratio),
+    #         # always >= 0 and unbiased. Compute under no_grad (monitoring only).
+    #         # ================================================================
+    #         with torch.no_grad():
+    #             log_ratio_step = new_log_probs - old_log_probs
+    #             ratio_step = torch.exp(log_ratio_step)
+    #             approx_kl_step = (ratio_step - 1.0) - log_ratio_step
+    #             approx_kl = torch.stack(
+    #                 [approx_kl_step[idxs].mean() for idxs in interval_indices]
+    #             ).mean()
 
-            # ================================================================
-            # [NOTE] KL_COEF * approx_kl removed from loss.
-            # Reason: approx_kl is now no_grad (monitoring only). PPO already
-            # controls trust region via the clip on rho_t. If you want an
-            # explicit KL penalty, build a differentiable KL separately.
-            # ================================================================
-            loss = (
-                float(getattr(Config, "POLICY_COEF", 1.0)) * policy_loss
-                + float(getattr(Config, "VALUE_COEF", 0.5)) * value_loss
-                + float(getattr(Config, "ENTROPY_COEF", 0.0)) * entropy_loss
-            )
+    #         # ================================================================
+    #         # [NOTE] KL_COEF * approx_kl removed from loss.
+    #         # Reason: approx_kl is now no_grad (monitoring only). PPO already
+    #         # controls trust region via the clip on rho_t. If you want an
+    #         # explicit KL penalty, build a differentiable KL separately.
+    #         # ================================================================
+    #         loss = (
+    #             float(getattr(Config, "POLICY_COEF", 1.0)) * policy_loss
+    #             + float(getattr(Config, "VALUE_COEF", 0.5)) * value_loss
+    #             + float(getattr(Config, "ENTROPY_COEF", 0.0)) * entropy_loss
+    #         )
             
-            if bool(getattr(Config, "USE_TARGET_KL_STOP", False)):
-                target_kl = float(getattr(Config, "TARGET_KL", 0.02))
-                if float(approx_kl.detach().cpu().item()) > target_kl:
-                    print(
-                        f"[PPO] early stop at epoch {epoch}: "
-                        f"approx_kl={float(approx_kl.detach().cpu().item()):.6f} > target_kl={target_kl}"
-                    )
-                    break
+    #         if bool(getattr(Config, "USE_TARGET_KL_STOP", False)):
+    #             target_kl = float(getattr(Config, "TARGET_KL", 0.02))
+    #             if float(approx_kl.detach().cpu().item()) > target_kl:
+    #                 print(
+    #                     f"[PPO] early stop at epoch {epoch}: "
+    #                     f"approx_kl={float(approx_kl.detach().cpu().item()):.6f} > target_kl={target_kl}"
+    #                 )
+    #                 break
                 
-            self.optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.network.parameters(), Config.MAX_GRAD_NORM)
-            self.optimizer.step()
+    #         self.optimizer.zero_grad(set_to_none=True)
+    #         loss.backward()
+    #         torch.nn.utils.clip_grad_norm_(self.network.parameters(), Config.MAX_GRAD_NORM)
+    #         self.optimizer.step()
             
-            actual_updates += 1
-            total_policy_loss += float(policy_loss.item())
-            total_value_loss += float(value_loss.item())
-            total_entropy_loss += float(entropy_loss.item())
+    #         actual_updates += 1
+    #         total_policy_loss += float(policy_loss.item())
+    #         total_value_loss += float(value_loss.item())
+    #         total_entropy_loss += float(entropy_loss.item())
 
-        term_return_trajectory = float(self.cumulated_return(term_rewards)[0].item())
-        return_trajectory = float(self.cumulated_return(rewards)[0].item())
+    #     term_return_trajectory = float(self.cumulated_return(term_rewards)[0].item())
+    #     return_trajectory = float(self.cumulated_return(rewards)[0].item())
 
-        avg_rewards_t = torch.stack(avg_rewards) if len(avg_rewards) else torch.tensor(0.0, device=Config.DEVICE)
-        avg_rewards_returns = float(self.cumulated_return(avg_rewards_t)[0].item()) if avg_rewards_t.numel() > 0 else 0.0
+    #     avg_rewards_t = torch.stack(avg_rewards) if len(avg_rewards) else torch.tensor(0.0, device=Config.DEVICE)
+    #     avg_rewards_returns = float(self.cumulated_return(avg_rewards_t)[0].item()) if avg_rewards_t.numel() > 0 else 0.0
 
-        actions_list = actions_np.tolist()
-        server_usage_percentage = {m: 0.0 for m in range(M)}
-        for a in actions_list:
-            server_usage_percentage[int(a)] += 1.0
-        for m in server_usage_percentage:
-            server_usage_percentage[m] /= max(len(actions_list), 1)
+    #     actions_list = actions_np.tolist()
+    #     server_usage_percentage = {m: 0.0 for m in range(M)}
+    #     for a in actions_list:
+    #         server_usage_percentage[int(a)] += 1.0
+    #     for m in server_usage_percentage:
+    #         server_usage_percentage[m] /= max(len(actions_list), 1)
 
-        probs_usage = np.array([server_usage_percentage[m] for m in range(M)], dtype=np.float64)
-        ent_usage = float(-(probs_usage * np.log(probs_usage + 1e-12)).sum())
+    #     probs_usage = np.array([server_usage_percentage[m] for m in range(M)], dtype=np.float64)
+    #     ent_usage = float(-(probs_usage * np.log(probs_usage + 1e-12)).sum())
 
-        route_dist = {i: int(sum(1 for a in actions_list if a == i)) for i in range(M)}
-        mean_min_reward = float(torch.stack(min_rewards).mean().item()) if len(min_rewards) else 0.0
+    #     route_dist = {i: int(sum(1 for a in actions_list if a == i)) for i in range(M)}
+    #     mean_min_reward = float(torch.stack(min_rewards).mean().item()) if len(min_rewards) else 0.0
 
-        den = max(actual_updates, 1)
-        return {
-            "policy_loss": total_policy_loss / den,
-            "value_loss": total_value_loss / den,
-            "entropy_loss": total_entropy_loss / den,
-            "rewards_returns": return_trajectory,
-            "term_rewards_returns": term_return_trajectory,
-            "min_rewards": mean_min_reward,
-            "server_usage_percentage": server_usage_percentage,
-            "cumulated_avg_rewards": avg_rewards_returns,
-            "route distribution": route_dist,
-            "entropy of route distribution": ent_usage,
-            "approx_kl": float(approx_kl.detach().cpu().item()),
-            "actual_updates": actual_updates,
-            "early_stopped_kl": int(actual_updates < Config.PPO_EPOCHS),
-        }
+    #     den = max(actual_updates, 1)
+    #     return {
+    #         "policy_loss": total_policy_loss / den,
+    #         "value_loss": total_value_loss / den,
+    #         "entropy_loss": total_entropy_loss / den,
+    #         "rewards_returns": return_trajectory,
+    #         "term_rewards_returns": term_return_trajectory,
+    #         "min_rewards": mean_min_reward,
+    #         "server_usage_percentage": server_usage_percentage,
+    #         "cumulated_avg_rewards": avg_rewards_returns,
+    #         "route distribution": route_dist,
+    #         "entropy of route distribution": ent_usage,
+    #         "approx_kl": float(approx_kl.detach().cpu().item()),
+    #         "actual_updates": actual_updates,
+    #         "early_stopped_kl": int(actual_updates < Config.PPO_EPOCHS),
+    #     }
 
     # def update_new(self, trajectories):
     #     """

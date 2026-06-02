@@ -79,7 +79,7 @@ class Config:
     DATASET_SEED = 42
 
     # Add this inside class Config
-    USE_MIXED_DATASET = False
+    USE_MIXED_DATASET = False  # If True, use a mixture of datasets instead of a single one.
 
     MIXED_DATASETS = [
         # Multi-hop QA, needs context; metric uses token F1
@@ -96,7 +96,7 @@ class Config:
         {
             "name": "squad",
             "config": None,
-            "split": "train[:10000]",
+            "split": "train[:20000]",
             "weight": 0.25,
             "metric": "f1",
             "task_type": "qa",
@@ -105,7 +105,7 @@ class Config:
         {
             "name": "cais/mmlu",
             "config": "all",
-            "split": "auxiliary_train[:10000]",
+            "split": "auxiliary_train[:20000]",
             "weight": 0.25,
             "metric": "mmlu",
             "task_type": "mmlu",
@@ -114,7 +114,7 @@ class Config:
         {
             "name": "openai/gsm8k",
             "config": "main",
-            "split": "train[:5000]",
+            "split": "train[:20000]",
             "weight": 0.25,
             "metric": "number",
             "task_type": "math",
@@ -227,12 +227,12 @@ class Config:
     LEARNING_RATE = 1e-4 # Reduced for more stable learning
     GAMMA = 0.99          # Slightly reduced discount factor
     GAE_LAMBDA = 0.95      # Reduced for less variance in advantage estimation
-    CLIP_EPSILON = 0.2    # Slightly reduced for more conservative updates
+    CLIP_EPSILON = 0.1    # Slightly reduced for more conservative updates
     POLICY_COEF = 1       # Policy loss weight
-    VALUE_COEF = 0.2      # Reduced value function weight
+    VALUE_COEF = 0.5      # Reduced value function weight
     ENTROPY_COEF = 0.0   # Increased entropy for more exploration
-    ACTOR_LEARNING_RATE = 5e-6
-    CRITIC_LEARNING_RATE = 1e-4
+    ACTOR_LEARNING_RATE = 1e-5
+    CRITIC_LEARNING_RATE = 2e-5
     USE_LR_DECAY = True
     LR_DECAY_TYPE = "cosine"
     LR_DECAY_MIN_RATIO = 0.1
@@ -245,9 +245,8 @@ class Config:
     USE_TARGET_KL_STOP = False
 
     USE_PER_INTERVAL_MINIBATCH = True
-    PPO_INTERVAL_MINIBATCH_SIZE = 1
-    PPO_SHUFFLE_INTERVALS = False
-
+    PPO_INTERVAL_MINIBATCH_SIZE = 3
+    PPO_SHUFFLE_INTERVALS = True
     USE_SERVERWISE_MLP = False
 
     PROMPT_MAX_TOKENS = 1024
@@ -258,7 +257,7 @@ class Config:
     ATTN_D_MODEL  = 256
     ATTN_N_HEADS  = 4
     ATTN_N_LAYERS = 2     
-    ATTN_FF_MULT  = 4
+    ATTN_FF_MULT  = 2
     ATTN_DROPOUT  = 0.0
     CLIP_INIT_TEMP = 0.2   # CLIP 默认；如果初期 entropy 太低就调大到 0.5 或 1.0
     
@@ -327,7 +326,7 @@ class Config:
     # [CHANNEL] Dual-channel attention router: split per-server features
     # into dynamic (util only) and static (mu, prices) channels.
     # ====================================================================
-    SERVER_DYN_DIM  = 4    # util, slot_count, interval_norm, time_remaining_norm  
+    SERVER_DYN_DIM  = 1    # util, slot_count, interval_norm, time_remaining_norm  
     SERVER_STAT_DIM = 3    # mu, price_in, price_out                         
 
     
@@ -339,13 +338,13 @@ class Config:
     FINAL_EVAL_EPISODES = 10  # Number of episodes for final evaluation
     
     # Poisson prompt generation settings
-    POISSON_ARRIVAL_RATE = 2  # Average arrival rate of prompts per second
+    POISSON_ARRIVAL_RATE = 3  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
-    EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
+    EPISODE_TIME_INTERVAL = 12 # How many intervals in current episode
     
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)
-    INTERVAL_LENGTH = 4 # The length of interval
+    INTERVAL_LENGTH = 3 # The length of interval
     MAX_EPISODES = 200   # Increased for more training
     
     # Queue score settings
@@ -374,7 +373,7 @@ class Config:
     
     RANDOM_SELECT = False
 
-    NAIVE_PPO = True
+    NAIVE_PPO = False
 
     ENABLE_QUEUE_PENALTY = False
 
@@ -425,8 +424,8 @@ class Config:
     T_QUEUE = -1
     T_REWARD = -1
     FAIR_WARMUP_EPISODES = 0
-    FAIR_TARGET = 1.0       # 最终的 FAIR 值
-    FAIR = 1.0              # 起始（trainer 会覆盖）
+    FAIR_TARGET = 1       # 最终的 FAIR 值
+    FAIR = 1              # 起始（trainer 会覆盖）
 
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL
