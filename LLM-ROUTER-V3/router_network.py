@@ -80,7 +80,6 @@ class AttnBlock(nn.Module):
         )
         self.ln2 = nn.LayerNorm(d_model)
 
-
     def forward(self, x: torch.Tensor, key_padding_mask: torch.Tensor | None = None) -> torch.Tensor:
         # x: [B, T, d_model]
         # key_padding_mask: [B, T], True means the token is padding and should be ignored.
@@ -304,20 +303,10 @@ class RouterNetwork(nn.Module):
                 dropout=attn_drop,
             )
 
-            # self.state_critic = nn.Sequential(
-            #     nn.Linear(d_model, d_model), nn.GELU(),
-            #     nn.Linear(d_model, d_model), nn.GELU(),
-            #     nn.Linear(d_model, 1),
-            # )
-            
-            # 完全独立的 critic：直接吃原始 flat state，不碰 server 塔
-            critic_in_dim = self.M * self.server_feat_dim          # M * F = 40
-            critic_hidden = d_model
             self.state_critic = nn.Sequential(
-                nn.LayerNorm(critic_in_dim),
-                nn.Linear(critic_in_dim, critic_hidden), nn.GELU(),
-                nn.Linear(critic_hidden, critic_hidden), nn.GELU(),
-                nn.Linear(critic_hidden, 1),
+                nn.Linear(d_model, d_model), nn.GELU(),
+                nn.Linear(d_model, d_model), nn.GELU(),
+                nn.Linear(d_model, 1),
             )
 
         elif self.use_attn:
@@ -720,7 +709,7 @@ class RouterNetwork(nn.Module):
             for blk in self.server_self_attn:
                 server_tokens = blk(server_tokens)
 
-            # state_repr = server_tokens.mean(dim=1)    # [B, d]
+            state_repr = server_tokens.mean(dim=1)    # [B, d]
 
             # ---- LLaVA-style joint fusion ----
             # Build a single sequence:
@@ -792,9 +781,7 @@ class RouterNetwork(nn.Module):
 
             # critic_in = torch.cat([route_h, server_pool], dim=-1)  # [B, 2d]
             # value = self.critic_mlp(critic_in)
-
-            # value = self.state_critic(state_repr)
-            value = self.state_critic(state.reshape(B, -1))
+            value = self.state_critic(state_repr)
 
         elif not self.use_attn:
             if getattr(self, "use_serverwise_mlp", False):

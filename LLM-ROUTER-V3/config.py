@@ -227,12 +227,12 @@ class Config:
     LEARNING_RATE = 1e-4 # Reduced for more stable learning
     GAMMA = 0.99          # Slightly reduced discount factor
     GAE_LAMBDA = 0.95      # Reduced for less variance in advantage estimation
-    CLIP_EPSILON = 0.1    # Slightly reduced for more conservative updates
+    CLIP_EPSILON = 0.2    # Slightly reduced for more conservative updates
     POLICY_COEF = 1       # Policy loss weight
-    VALUE_COEF = 0.5      # Reduced value function weight
+    VALUE_COEF = 0.1      # Reduced value function weight
     ENTROPY_COEF = 0.0   # Increased entropy for more exploration
-    ACTOR_LEARNING_RATE = 1e-5
-    CRITIC_LEARNING_RATE = 2e-5
+    ACTOR_LEARNING_RATE = 5e-6
+    CRITIC_LEARNING_RATE = 1e-5
     USE_LR_DECAY = True
     LR_DECAY_TYPE = "cosine"
     LR_DECAY_MIN_RATIO = 0.1
@@ -245,8 +245,8 @@ class Config:
     USE_TARGET_KL_STOP = False
 
     USE_PER_INTERVAL_MINIBATCH = True
-    PPO_INTERVAL_MINIBATCH_SIZE = 3
-    PPO_SHUFFLE_INTERVALS = True
+    PPO_INTERVAL_MINIBATCH_SIZE = 4
+    PPO_SHUFFLE_INTERVALS = False
     USE_SERVERWISE_MLP = False
 
     PROMPT_MAX_TOKENS = 1024
