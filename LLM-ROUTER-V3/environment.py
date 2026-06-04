@@ -644,7 +644,7 @@ def server_worker_process(
             model = _load_hf_seq2seq(model_name)
 
         elif _is_together_api_name(model_name):
-            together_client = Together(api_key=os.environ["TOGETHER_API_KEY"])
+            together_client = Together(api_key=os.environ["TOGETHER_API_KEY"], timeout=60000)
 
         elif any(k in model_name.lower() for k in ("gpt", "o1", "o3")):
             model = OpenAI()
@@ -656,7 +656,7 @@ def server_worker_process(
             model = anthropic.Anthropic()
 
         elif _is_mistral_api_name(model_name):
-            client = Mistral(api_key=os.environ["MISTRAL_API_KEY"], timeout_ms=120000)
+            client = Mistral(api_key=os.environ["MISTRAL_API_KEY"], timeout_ms=600000)
 
         else:
             # -----------------------------

@@ -231,7 +231,7 @@ class Config:
     POLICY_COEF = 1       # Policy loss weight
     VALUE_COEF = 1      # Reduced value function weight
     ENTROPY_COEF = 0.0   # Increased entropy for more exploration
-    ACTOR_LEARNING_RATE = 5e-6
+    ACTOR_LEARNING_RATE = 1e-5
     CRITIC_LEARNING_RATE = 1e-5
     USE_LR_DECAY = False
     LR_DECAY_TYPE = "cosine"
@@ -245,7 +245,7 @@ class Config:
     USE_TARGET_KL_STOP = False
 
     USE_PER_INTERVAL_MINIBATCH = True
-    PPO_INTERVAL_MINIBATCH_SIZE = 3
+    PPO_INTERVAL_MINIBATCH_SIZE = 4
     PPO_SHUFFLE_INTERVALS = False
     USE_SERVERWISE_MLP = False
 
