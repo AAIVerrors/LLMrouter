@@ -79,7 +79,7 @@ class Config:
     DATASET_SEED = 42
 
     # Add this inside class Config
-    USE_MIXED_DATASET = False  # If True, use a mixture of datasets instead of a single one.
+    USE_MIXED_DATASET = True  # If True, use a mixture of datasets instead of a single one.
 
     MIXED_DATASETS = [
         # Multi-hop QA, needs context; metric uses token F1
@@ -229,11 +229,11 @@ class Config:
     GAE_LAMBDA = 0.95      # Reduced for less variance in advantage estimation
     CLIP_EPSILON = 0.2    # Slightly reduced for more conservative updates
     POLICY_COEF = 1       # Policy loss weight
-    VALUE_COEF = 0.1      # Reduced value function weight
+    VALUE_COEF = 1      # Reduced value function weight
     ENTROPY_COEF = 0.0   # Increased entropy for more exploration
     ACTOR_LEARNING_RATE = 5e-6
     CRITIC_LEARNING_RATE = 1e-5
-    USE_LR_DECAY = True
+    USE_LR_DECAY = False
     LR_DECAY_TYPE = "cosine"
     LR_DECAY_MIN_RATIO = 0.1
     KL_COEF = 0.00
@@ -245,7 +245,7 @@ class Config:
     USE_TARGET_KL_STOP = False
 
     USE_PER_INTERVAL_MINIBATCH = True
-    PPO_INTERVAL_MINIBATCH_SIZE = 4
+    PPO_INTERVAL_MINIBATCH_SIZE = 3
     PPO_SHUFFLE_INTERVALS = False
     USE_SERVERWISE_MLP = False
 
@@ -257,9 +257,9 @@ class Config:
     ATTN_D_MODEL  = 256
     ATTN_N_HEADS  = 4
     ATTN_N_LAYERS = 2     
-    ATTN_FF_MULT  = 2
+    ATTN_FF_MULT  = 4
     ATTN_DROPOUT  = 0.0
-    CLIP_INIT_TEMP = 0.2   # CLIP 默认；如果初期 entropy 太低就调大到 0.5 或 1.0
+    CLIP_INIT_TEMP = 0.2   
     
     EPISODE_COMPLETION_TIMEOUT = 180
     
@@ -424,8 +424,8 @@ class Config:
     T_QUEUE = -1
     T_REWARD = -1
     FAIR_WARMUP_EPISODES = 0
-    FAIR_TARGET = 1       # 最终的 FAIR 值
-    FAIR = 1              # 起始（trainer 会覆盖）
+    FAIR_TARGET = 0       # 最终的 FAIR 值
+    FAIR = 0              # 起始（trainer 会覆盖）
 
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL

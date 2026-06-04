@@ -80,6 +80,7 @@ class AttnBlock(nn.Module):
         )
         self.ln2 = nn.LayerNorm(d_model)
 
+
     def forward(self, x: torch.Tensor, key_padding_mask: torch.Tensor | None = None) -> torch.Tensor:
         # x: [B, T, d_model]
         # key_padding_mask: [B, T], True means the token is padding and should be ignored.
@@ -303,10 +304,20 @@ class RouterNetwork(nn.Module):
                 dropout=attn_drop,
             )
 
+            # self.state_critic = nn.Sequential(
+            #     nn.Linear(d_model, d_model), nn.GELU(),
+            #     nn.Linear(d_model, d_model), nn.GELU(),
+            #     nn.Linear(d_model, 1),
+            # )
+            
+            # 完全独立的 critic：直接吃原始 flat state，不碰 server 塔
+            critic_in_dim = self.M * self.server_feat_dim          # M * F = 40
+            critic_hidden = d_model
             self.state_critic = nn.Sequential(
-                nn.Linear(d_model, d_model), nn.GELU(),
-                nn.Linear(d_model, d_model), nn.GELU(),
-                nn.Linear(d_model, 1),
+                nn.LayerNorm(critic_in_dim),
+                nn.Linear(critic_in_dim, critic_hidden), nn.GELU(),
+                nn.Linear(critic_hidden, critic_hidden), nn.GELU(),
+                nn.Linear(critic_hidden, 1),
             )
 
         elif self.use_attn:
@@ -422,7 +433,7 @@ class RouterNetwork(nn.Module):
         actor_out, critic_out = self._get_output_layers()
 
         if actor_out is not None:
-            nn.init.orthogonal_(actor_out.weight, gain=1)
+            nn.init.orthogonal_(actor_out.weight, gain=0.5)
             if actor_out.bias is not None:
                 nn.init.zeros_(actor_out.bias)
 
@@ -709,7 +720,7 @@ class RouterNetwork(nn.Module):
             for blk in self.server_self_attn:
                 server_tokens = blk(server_tokens)
 
-            state_repr = server_tokens.mean(dim=1)    # [B, d]
+            # state_repr = server_tokens.mean(dim=1)    # [B, d]
 
             # ---- LLaVA-style joint fusion ----
             # Build a single sequence:
@@ -781,7 +792,9 @@ class RouterNetwork(nn.Module):
 
             # critic_in = torch.cat([route_h, server_pool], dim=-1)  # [B, 2d]
             # value = self.critic_mlp(critic_in)
-            value = self.state_critic(state_repr)
+
+            # value = self.state_critic(state_repr)
+            value = self.state_critic(state.reshape(B, -1))
 
         elif not self.use_attn:
             if getattr(self, "use_serverwise_mlp", False):
@@ -1319,10 +1332,16 @@ class PPOAgent:
                 "lr": critic_lr,
             })
 
-        self.optimizer = torch.optim.Adam(
-            param_groups,
-            eps=1e-5,
-        )
+        # self.optimizer = torch.optim.Adam(
+        #     param_groups,
+        #     eps=1e-5,
+        # )
+        
+        self.actor_params  = actor_params
+        self.critic_params = critic_params
+
+        self.actor_optimizer  = torch.optim.Adam(actor_params,  lr=actor_lr,  eps=1e-5)
+        self.critic_optimizer = torch.optim.Adam(critic_params, lr=critic_lr, eps=1e-5)
 
         # ============================================================
         # LR scheduler (episode-level decay)
@@ -1344,14 +1363,20 @@ class PPOAgent:
                 def _lr_lambda(ep):
                     progress = min(ep / decay_eps, 1.0)
                     return 1.0 - (1.0 - min_ratio) * progress
-            else:  # cosine
+            else:
                 def _lr_lambda(ep):
                     progress = min(ep / decay_eps, 1.0)
                     return min_ratio + (1.0 - min_ratio) * 0.5 * (1.0 + math.cos(math.pi * progress))
 
-            self.scheduler = torch.optim.lr_scheduler.LambdaLR(
-                self.optimizer, lr_lambda=_lr_lambda
-            )
+            a_sched = torch.optim.lr_scheduler.LambdaLR(self.actor_optimizer,  lr_lambda=_lr_lambda)
+            c_sched = torch.optim.lr_scheduler.LambdaLR(self.critic_optimizer, lr_lambda=_lr_lambda)
+
+            class _Multi:
+                def __init__(self, *s): self.s = s
+                def step(self):
+                    for x in self.s: x.step()
+
+            self.scheduler = _Multi(a_sched, c_sched)
         else:
             self.scheduler = None
 
@@ -2091,10 +2116,21 @@ class PPOAgent:
                     + float(getattr(Config, "ENTROPY_COEF", 0.0)) * entropy_loss
                 )
 
-                self.optimizer.zero_grad(set_to_none=True)
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.network.parameters(), Config.MAX_GRAD_NORM)
-                self.optimizer.step()
+                actor_loss  = (float(getattr(Config, "POLICY_COEF", 1.0)) * policy_loss
+                            + float(getattr(Config, "ENTROPY_COEF", 0.0)) * entropy_loss)
+                critic_loss = float(getattr(Config, "VALUE_COEF", 0.5)) * value_loss
+
+                self.actor_optimizer.zero_grad(set_to_none=True)
+                self.critic_optimizer.zero_grad(set_to_none=True)
+
+                # 参数不相交 → actor 参数只拿到 actor_loss 的梯度，critic 参数只拿到 critic_loss 的梯度
+                (actor_loss + critic_loss).backward()
+
+                torch.nn.utils.clip_grad_norm_(self.actor_params,  Config.MAX_GRAD_NORM)
+                torch.nn.utils.clip_grad_norm_(self.critic_params, Config.MAX_GRAD_NORM)
+
+                self.actor_optimizer.step()
+                self.critic_optimizer.step()
 
                 actual_updates += 1
                 total_policy_loss += float(policy_loss.item())
@@ -2266,10 +2302,20 @@ class PPOAgent:
                         + float(getattr(Config, "ENTROPY_COEF", 0.0)) * entropy_loss
                     )
 
-                    self.optimizer.zero_grad(set_to_none=True)
-                    loss.backward()
-                    torch.nn.utils.clip_grad_norm_(self.network.parameters(), Config.MAX_GRAD_NORM)
-                    self.optimizer.step()
+                    actor_loss  = (float(getattr(Config, "POLICY_COEF", 1.0)) * policy_loss
+                                + float(getattr(Config, "ENTROPY_COEF", 0.0)) * entropy_loss)
+                    critic_loss = float(getattr(Config, "VALUE_COEF", 0.5)) * value_loss
+
+                    self.actor_optimizer.zero_grad(set_to_none=True)
+                    self.critic_optimizer.zero_grad(set_to_none=True)
+
+                    (actor_loss + critic_loss).backward()
+
+                    torch.nn.utils.clip_grad_norm_(self.actor_params,  Config.MAX_GRAD_NORM)
+                    torch.nn.utils.clip_grad_norm_(self.critic_params, Config.MAX_GRAD_NORM)
+
+                    self.actor_optimizer.step()
+                    self.critic_optimizer.step()
 
                     actual_updates += 1
                     total_policy_loss += float(policy_loss.item())
@@ -2972,15 +3018,15 @@ class PPOAgent:
         return returns
 
     def save(self, filepath):
-        torch.save(
-            {
-                "network_state_dict": self.network.state_dict(),
-                "optimizer_state_dict": self.optimizer.state_dict(),
-            },
-            filepath,
-        )
+        torch.save({
+            "network_state_dict": self.network.state_dict(),
+            "actor_optimizer_state_dict":  self.actor_optimizer.state_dict(),
+            "critic_optimizer_state_dict": self.critic_optimizer.state_dict(),
+        }, filepath)
 
     def load(self, filepath):
-        checkpoint = torch.load(filepath, map_location=Config.DEVICE)
-        self.network.load_state_dict(checkpoint["network_state_dict"])
-        self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        ckpt = torch.load(filepath, map_location=Config.DEVICE)
+        self.network.load_state_dict(ckpt["network_state_dict"])
+        if "actor_optimizer_state_dict" in ckpt:
+            self.actor_optimizer.load_state_dict(ckpt["actor_optimizer_state_dict"])
+            self.critic_optimizer.load_state_dict(ckpt["critic_optimizer_state_dict"])
