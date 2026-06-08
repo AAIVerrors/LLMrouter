@@ -433,7 +433,7 @@ class RouterNetwork(nn.Module):
         actor_out, critic_out = self._get_output_layers()
 
         if actor_out is not None:
-            nn.init.orthogonal_(actor_out.weight, gain=0.5)
+            nn.init.orthogonal_(actor_out.weight, gain=0.1)
             if actor_out.bias is not None:
                 nn.init.zeros_(actor_out.bias)
 
@@ -1351,21 +1351,28 @@ class PPOAgent:
         # factor, preserving the actor:critic LR ratio.
         # ============================================================
         use_lr_decay = bool(getattr(Config, "USE_LR_DECAY", False))
-        if use_lr_decay:
+        warmup_eps   = int(getattr(Config, "LR_WARMUP_EPISODES", 0))
+
+        if use_lr_decay or warmup_eps > 0:
             decay_type = str(getattr(Config, "LR_DECAY_TYPE", "cosine")).lower()
-            min_ratio = float(getattr(Config, "LR_DECAY_MIN_RATIO", 0.1))
-            decay_eps = getattr(Config, "LR_DECAY_EPISODES", None)
+            min_ratio  = float(getattr(Config, "LR_DECAY_MIN_RATIO", 0.1))
+            decay_eps  = getattr(Config, "LR_DECAY_EPISODES", None)
             if decay_eps is None:
                 decay_eps = int(getattr(Config, "MAX_EPISODES", 200))
             decay_eps = max(1, int(decay_eps))
 
-            if decay_type == "linear":
-                def _lr_lambda(ep):
-                    progress = min(ep / decay_eps, 1.0)
+            def _lr_lambda(ep):
+                # 1) 前 warmup_eps 个 episode：线性 warmup，base/W -> base
+                if warmup_eps > 0 and ep < warmup_eps:
+                    return float(ep + 1) / float(warmup_eps)
+                # 2) warmup 之后
+                if not use_lr_decay:
+                    return 1.0   # 只 warmup 不 decay：升到满 LR 后保持不变
+                denom = max(1, decay_eps - warmup_eps)
+                progress = min(max(ep - warmup_eps, 0) / denom, 1.0)
+                if decay_type == "linear":
                     return 1.0 - (1.0 - min_ratio) * progress
-            else:
-                def _lr_lambda(ep):
-                    progress = min(ep / decay_eps, 1.0)
+                else:  # cosine
                     return min_ratio + (1.0 - min_ratio) * 0.5 * (1.0 + math.cos(math.pi * progress))
 
             a_sched = torch.optim.lr_scheduler.LambdaLR(self.actor_optimizer,  lr_lambda=_lr_lambda)

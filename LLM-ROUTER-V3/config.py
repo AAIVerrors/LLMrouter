@@ -42,24 +42,17 @@ class Config:
     ]
 
     SERVICE_RATE = [
-        # ===== Tier 1: 最便宜 =====
-        0.349045,  # ministral-3b-2512
-
-        # ===== Tier 2: 便宜 weak baseline =====
-        0.400000,  # together/meta-llama/Meta-Llama-3-8B-Instruct-Lite
-        0.363996,  # ministral-8b-2512
-        0.736517,  # gpt-4.1-nano-2025-04-14
-
-        # ===== Tier 3: mid-tier =====
-        0.300000,  # together/Qwen/Qwen2.5-7B-Instruct-Turbo
-        0.251120,  # mistral-small-2506
-        0.460004,  # gpt-4.1-mini-2025-04-14
-
-        # ===== Tier 4: 强模型 =====
-        0.120000,  # together/meta-llama/Llama-3.3-70B-Instruct-Turbo
-        0.079644,  # mistral-large-2512
-        0.266312,  # gpt-4.1-2025-04-14
-    ]
+            1.1588,   # ministral-3b-2512
+            0.7194,   # together/.../Meta-Llama-3-8B-Instruct-Lite
+            0.7951,   # ministral-8b-2512
+            1.2537,   # gpt-4.1-nano
+            1.0520,   # together/Qwen/Qwen2.5-7B-Instruct-Turbo
+            1.0089,   # mistral-small-2506
+            0.8044,   # gpt-4.1-mini
+            0.4102,   # together/.../Llama-3.3-70B-Instruct-Turbo
+            0.7697,   # mistral-large-2512
+            1.0173,   # gpt-4.1
+        ]
     SERVER_CAPACITIES = [50] * 10
 
     USE_UTIL = True  # in the state use load/capability or load + capability
@@ -164,7 +157,7 @@ class Config:
     ROUTER_LLM_ACTOR_DEPTH = 4
     ROUTER_LLM_ACTOR_DROPOUT = 0.0
 
-    ROUTER_LLM_CRITIC_HIDDEN = 521
+    ROUTER_LLM_CRITIC_HIDDEN = 512
     ROUTER_LLM_CRITIC_DEPTH = 4
     ROUTER_LLM_CRITIC_DROPOUT = 0.0
 
@@ -227,18 +220,19 @@ class Config:
     LEARNING_RATE = 1e-4 # Reduced for more stable learning
     GAMMA = 0.99          # Slightly reduced discount factor
     GAE_LAMBDA = 0.95      # Reduced for less variance in advantage estimation
-    CLIP_EPSILON = 0.2    # Slightly reduced for more conservative updates
+    CLIP_EPSILON = 0.5    # Slightly reduced for more conservative updates
     POLICY_COEF = 1       # Policy loss weight
     VALUE_COEF = 1      # Reduced value function weight
     ENTROPY_COEF = 0.0   # Increased entropy for more exploration
-    ACTOR_LEARNING_RATE = 1e-5
-    CRITIC_LEARNING_RATE = 1e-5
-    USE_LR_DECAY = False
+    ACTOR_LEARNING_RATE = 5e-5
+    CRITIC_LEARNING_RATE = 1e-4
+    USE_LR_DECAY = True
     LR_DECAY_TYPE = "cosine"
     LR_DECAY_MIN_RATIO = 0.1
+    LR_WARMUP_EPISODES = 0
     KL_COEF = 0.00
-    MAX_GRAD_NORM = 0.5  # Reduced for more stable training
-    PPO_EPOCHS = 4   # Increased for more thorough updates
+    MAX_GRAD_NORM = 1  # Reduced for more stable training
+    PPO_EPOCHS = 2   # Increased for more thorough updates
     BATCH_SIZE = 1      # Increased batch size
 
     TARGET_KL = 0.04
@@ -254,11 +248,11 @@ class Config:
     LLAVA_FUSION_LAYERS = 2
     
     USE_CLIP_FUSION_ROUTER = True
-    ATTN_D_MODEL  = 256
+    ATTN_D_MODEL  = 512
     ATTN_N_HEADS  = 4
     ATTN_N_LAYERS = 2     
     ATTN_FF_MULT  = 4
-    ATTN_DROPOUT  = 0.0
+    ATTN_DROPOUT  = 0
     CLIP_INIT_TEMP = 0.2   
     
     EPISODE_COMPLETION_TIMEOUT = 180
@@ -338,13 +332,13 @@ class Config:
     FINAL_EVAL_EPISODES = 10  # Number of episodes for final evaluation
     
     # Poisson prompt generation settings
-    POISSON_ARRIVAL_RATE = 3  # Average arrival rate of prompts per second
+    POISSON_ARRIVAL_RATE = 2  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
-    EPISODE_TIME_INTERVAL = 12 # How many intervals in current episode
+    EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
     
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)
-    INTERVAL_LENGTH = 3 # The length of interval
+    INTERVAL_LENGTH = 4 # The length of interval
     MAX_EPISODES = 200   # Increased for more training
     
     # Queue score settings
@@ -353,7 +347,7 @@ class Config:
     MERGE_ALPHA = 0 # Alpha for merging action probabilities (0.5 for equal weighting)
 
     # Drop action
-    INVALID_ROUTE_PENALTY = 2   # try 0.5 ~ 2.0 depending how hard you want to avoid full servers
+    INVALID_ROUTE_PENALTY = 2/3   # try 0.5 ~ 2.0 depending how hard you want to avoid full servers
     FAIL_LATENCY_CAP = 30.0       # just for logging; failed branch uses penalty not latency
     REWARD_CLIP = -2             # optional, set <=0 to disable
 
@@ -419,13 +413,13 @@ class Config:
     # Set 1 to disable.
     GREEDY_TOPK = 1
 
-    T = -1
+    T = -2
     # FAIR = 1  # 0..1, it will control how fair you want, 1 max, 0 min
-    T_QUEUE = -1
-    T_REWARD = -1
+    T_QUEUE = -2
+    T_REWARD = -2
     FAIR_WARMUP_EPISODES = 0
-    FAIR_TARGET = 0       # 最终的 FAIR 值
-    FAIR = 0              # 起始（trainer 会覆盖）
+    FAIR_TARGET = 1       # 最终的 FAIR 值
+    FAIR = 1              # 起始（trainer 会覆盖）
 
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL
