@@ -211,6 +211,9 @@ class EnhancedLLMRouterTrainer:
                 name=f"enhanced_llm_router_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
                 reinit=True
             )
+
+            wandb.define_metric("episode")
+            wandb.define_metric("*", step_metric="episode")   # 所有指标都按 episode 索引
             
             if Config.WANDB_CONFIG.get('watch_model', True):
                 wandb.watch(self.agent.network, log='all', log_freq=100)
@@ -857,24 +860,24 @@ class EnhancedLLMRouterTrainer:
                         "cumulated_avg_rewards_return": training_metrics['cumulated_avg_rewards'] if training_metrics else None,
                         "entropy of route distribution": training_metrics['entropy of route distribution'] if training_metrics else None,
                         "approx_kl": training_metrics['approx_kl'] if training_metrics else None,
-                    }, step=episode)
+                    })
 
 
                 # Add server usage percentage if available
                 if self.wandb_available and training_metrics and 'server_usage_percentage' in training_metrics:
                     for server_id, usage in training_metrics['server_usage_percentage'].items():
-                        wandb.log({f"server_{server_id}_usage": usage}, step=episode)
+                        wandb.log({f"server_{server_id}_usage": usage})
 
                 # Add avg reward per server
                 if self.wandb_available and episode_info and 'mean_reward_per_server' in episode_info:
                     for server_id, mean_reward in episode_info['mean_reward_per_server'].items():
                         if mean_reward is not None:
-                            wandb.log({f"reward/server_{server_id}_avg_reward": float(mean_reward)}, step=episode)
-                        wandb.log({f"reward/server_{server_id}_count": int(episode_info['reward_count_per_server'][server_id])}, step=episode)
-                        wandb.log({f"reward/server_{server_id}_sum": float(episode_info['reward_sum_per_server'][server_id])}, step=episode)
+                            wandb.log({f"reward/server_{server_id}_avg_reward": float(mean_reward)})
+                        wandb.log({f"reward/server_{server_id}_count": int(episode_info['reward_count_per_server'][server_id])})
+                        wandb.log({f"reward/server_{server_id}_sum": float(episode_info['reward_sum_per_server'][server_id])})
                     agg_server_avg_reward = episode_info.get('server_avg_reward_tilted_ConfigT')
                     if agg_server_avg_reward is not None:
-                        wandb.log({"reward/server_avg_reward_softmin_ConfigT": float(agg_server_avg_reward)}, step=episode)
+                        wandb.log({"reward/server_avg_reward_softmin_ConfigT": float(agg_server_avg_reward)})
 
                 if self.wandb_available and episode_info and episode_info.get("queue_length"):
                     M = len(Config.SERVER_CAPACITIES)
@@ -899,50 +902,50 @@ class EnhancedLLMRouterTrainer:
                 
                         # ---- Per-server: ONLY length and ratio ----
                         for server_id in range(M):
-                            wandb.log({f"queue_length/server_{server_id}_queue_length_ratio": float(ratio_vec[server_id])}, step=episode)
-                            wandb.log({f"queue_length/server_{server_id}_queue_length": float(q_vec[server_id])}, step=episode)
+                            wandb.log({f"queue_length/server_{server_id}_queue_length_ratio": float(ratio_vec[server_id])})
+                            wandb.log({f"queue_length/server_{server_id}_queue_length": float(q_vec[server_id])})
                 
                         # ---- Others remain (summary) ----
-                        wandb.log({"queue_length/server_queue_length_ratio_p90": self.safe_percentile(ratio_list, 90)}, step=episode)
-                        wandb.log({"queue_length/server_queue_length_ratio_p50": self.safe_percentile(ratio_list, 50)}, step=episode)
-                        wandb.log({"queue_length/server_queue_length_ratio_p95": self.safe_percentile(ratio_list, 95)}, step=episode)
-                        wandb.log({"queue_length/server_queue_length_ratio_p99": self.safe_percentile(ratio_list, 99)}, step=episode)
+                        wandb.log({"queue_length/server_queue_length_ratio_p90": self.safe_percentile(ratio_list, 90)})
+                        wandb.log({"queue_length/server_queue_length_ratio_p50": self.safe_percentile(ratio_list, 50)})
+                        wandb.log({"queue_length/server_queue_length_ratio_p95": self.safe_percentile(ratio_list, 95)})
+                        wandb.log({"queue_length/server_queue_length_ratio_p99": self.safe_percentile(ratio_list, 99)})
                 
                         max_ratio = float(np.max(ratio_vec))
                         min_ratio = float(np.min(ratio_vec))
                 
-                        wandb.log({"queue_length/server_queue_length_ratio_mean": float(np.mean(ratio_vec))}, step=episode)
-                        wandb.log({"queue_length/server_queue_length_ratio_min": min_ratio}, step=episode)  # FIXED
-                        wandb.log({"queue_length/server_queue_length_ratio_max": max_ratio}, step=episode)  # FIXED
-                        wandb.log({"queue_length/server_queue_length_ratio_gap": max_ratio - min_ratio}, step=episode)
-                        wandb.log({"queue_length/server_queue_length_ratio_softmax": self.softmax_value(ratio_list)}, step=episode)
+                        wandb.log({"queue_length/server_queue_length_ratio_mean": float(np.mean(ratio_vec))})
+                        wandb.log({"queue_length/server_queue_length_ratio_min": min_ratio})  # FIXED
+                        wandb.log({"queue_length/server_queue_length_ratio_max": max_ratio})  # FIXED
+                        wandb.log({"queue_length/server_queue_length_ratio_gap": max_ratio - min_ratio})
+                        wandb.log({"queue_length/server_queue_length_ratio_softmax": self.softmax_value(ratio_list)})
 
                 # Add server scores if available
                 # if training_metrics and 'each_server_score' in training_metrics:
                 #     for server_id, score in training_metrics['each_server_score'].items():
-                #         wandb.log({f"server_{server_id}_score": score}, step=episode)
+                #         wandb.log({f"server_{server_id}_score": score})
                         
                 # # Add min score server 
                 # if training_metrics and 'min_score_server' in training_metrics:
-                #     wandb.log({"min_score_server": training_metrics['min_score_server']}, step=episode)
+                #     wandb.log({"min_score_server": training_metrics['min_score_server']})
                     
                 # # Add mean reward per server if available
                 # if training_metrics and 'mean_reward_per_server' in training_metrics:
                 #     for server_id, mean_reward in training_metrics['mean_reward_per_server'].items():
-                #         wandb.log({f"server_{server_id}_reward": mean_reward}, step=episode)
+                #         wandb.log({f"server_{server_id}_reward": mean_reward})
                         
                 # # Add min mean reward server
                 # if training_metrics and 'min_mean_reward_server' in training_metrics:
-                #     wandb.log({"min_mean_reward_server": training_metrics['min_mean_reward_server']}, step=episode)
+                #     wandb.log({"min_mean_reward_server": training_metrics['min_mean_reward_server']})
                     
                 # # Add return of each server
                 # if training_metrics and 'each_server_returns' in training_metrics:
                 #     for server_id, ret in training_metrics['each_server_returns'].items():
-                #         wandb.log({f"server_{server_id}_trajectory_return": ret}, step=episode)
+                #         wandb.log({f"server_{server_id}_trajectory_return": ret})
                 
                 # # Add min return server
                 # if training_metrics and 'min_return_server' in training_metrics:
-                #     wandb.log({"min_return_server": training_metrics['min_return_server']}, step=episode)
+                #     wandb.log({"min_return_server": training_metrics['min_return_server']})
 
                 if self.wandb_available and hasattr(self.env, 'queue_monitor'):
                     self.env.queue_monitor.log_throughput_to_wandb(episode)
@@ -1035,7 +1038,7 @@ class EnhancedLLMRouterTrainer:
                             # "term_returns": training_metrics['term_rewards_returns'],
                             # 'min_rewards': training_metrics['min_rewards'],
                             # 'cumulated_avg_rewards_return': training_metrics['cumulated_avg_rewards'],
-                        }, step=episode)
+                        })
                 
                 # server usage percentage
                 server_usage = {i: 0 for i in range(len(Config.SERVER_CAPACITIES))}
@@ -1046,16 +1049,16 @@ class EnhancedLLMRouterTrainer:
                     server_usage = {k: v / total_actions for k, v in server_usage.items()}
                 if self.wandb_available:
                     for server_id, usage in server_usage.items():
-                        wandb.log({f"server_{server_id}_usage": usage}, step=episode)
+                        wandb.log({f"server_{server_id}_usage": usage})
                     if episode_info and 'mean_reward_per_server' in episode_info:
                         for server_id, mean_reward in episode_info['mean_reward_per_server'].items():
                             if mean_reward is not None:
-                                wandb.log({f"reward/server_{server_id}_avg_reward": float(mean_reward)}, step=episode)
-                            wandb.log({f"reward/server_{server_id}_count": int(episode_info['reward_count_per_server'][server_id])}, step=episode)
-                            wandb.log({f"reward/server_{server_id}_sum": float(episode_info['reward_sum_per_server'][server_id])}, step=episode)
+                                wandb.log({f"reward/server_{server_id}_avg_reward": float(mean_reward)})
+                            wandb.log({f"reward/server_{server_id}_count": int(episode_info['reward_count_per_server'][server_id])})
+                            wandb.log({f"reward/server_{server_id}_sum": float(episode_info['reward_sum_per_server'][server_id])})
                         agg_server_avg_reward = episode_info.get('server_avg_reward_tilted_ConfigT')
                         if agg_server_avg_reward is not None:
-                            wandb.log({"reward/server_avg_reward_softmin_ConfigT": float(agg_server_avg_reward)}, step=episode)
+                            wandb.log({"reward/server_avg_reward_softmin_ConfigT": float(agg_server_avg_reward)})
                     
                 if self.wandb_available and hasattr(self.env, 'queue_monitor'):
                     self.env.queue_monitor.log_throughput_to_wandb(episode)

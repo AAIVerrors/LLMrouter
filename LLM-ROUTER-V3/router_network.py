@@ -433,7 +433,7 @@ class RouterNetwork(nn.Module):
         actor_out, critic_out = self._get_output_layers()
 
         if actor_out is not None:
-            nn.init.orthogonal_(actor_out.weight, gain=0.1)
+            nn.init.orthogonal_(actor_out.weight, gain=0.5)
             if actor_out.bias is not None:
                 nn.init.zeros_(actor_out.bias)
 

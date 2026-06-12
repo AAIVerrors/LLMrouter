@@ -157,7 +157,7 @@ class Config:
     ROUTER_LLM_ACTOR_DEPTH = 4
     ROUTER_LLM_ACTOR_DROPOUT = 0.0
 
-    ROUTER_LLM_CRITIC_HIDDEN = 512
+    ROUTER_LLM_CRITIC_HIDDEN = 256
     ROUTER_LLM_CRITIC_DEPTH = 4
     ROUTER_LLM_CRITIC_DROPOUT = 0.0
 
@@ -220,19 +220,19 @@ class Config:
     LEARNING_RATE = 1e-4 # Reduced for more stable learning
     GAMMA = 0.99          # Slightly reduced discount factor
     GAE_LAMBDA = 0.95      # Reduced for less variance in advantage estimation
-    CLIP_EPSILON = 0.5    # Slightly reduced for more conservative updates
+    CLIP_EPSILON = 0.2    # Slightly reduced for more conservative updates
     POLICY_COEF = 1       # Policy loss weight
     VALUE_COEF = 1      # Reduced value function weight
     ENTROPY_COEF = 0.0   # Increased entropy for more exploration
-    ACTOR_LEARNING_RATE = 5e-5
-    CRITIC_LEARNING_RATE = 1e-4
+    ACTOR_LEARNING_RATE = 1e-5
+    CRITIC_LEARNING_RATE = 2e-5
     USE_LR_DECAY = True
     LR_DECAY_TYPE = "cosine"
     LR_DECAY_MIN_RATIO = 0.1
     LR_WARMUP_EPISODES = 0
     KL_COEF = 0.00
     MAX_GRAD_NORM = 1  # Reduced for more stable training
-    PPO_EPOCHS = 2   # Increased for more thorough updates
+    PPO_EPOCHS = 4   # Increased for more thorough updates
     BATCH_SIZE = 1      # Increased batch size
 
     TARGET_KL = 0.04
@@ -240,7 +240,7 @@ class Config:
 
     USE_PER_INTERVAL_MINIBATCH = True
     PPO_INTERVAL_MINIBATCH_SIZE = 4
-    PPO_SHUFFLE_INTERVALS = False
+    PPO_SHUFFLE_INTERVALS = True
     USE_SERVERWISE_MLP = False
 
     PROMPT_MAX_TOKENS = 1024
@@ -248,7 +248,7 @@ class Config:
     LLAVA_FUSION_LAYERS = 2
     
     USE_CLIP_FUSION_ROUTER = True
-    ATTN_D_MODEL  = 512
+    ATTN_D_MODEL  = 256
     ATTN_N_HEADS  = 4
     ATTN_N_LAYERS = 2     
     ATTN_FF_MULT  = 4
@@ -271,7 +271,7 @@ class Config:
     DEVICE = torch.device("cuda:0")
     
     # Wandb settings
-    WANDB_PROJECT = "enhanced-llm-router-ppo"
+    WANDB_PROJECT = "router"
     WANDB_ENTITY = None  # Set your wandb entity if needed
     
     # Logging
@@ -334,11 +334,11 @@ class Config:
     # Poisson prompt generation settings
     POISSON_ARRIVAL_RATE = 2  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
-    EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
+    EPISODE_TIME_INTERVAL = 12 # How many intervals in current episode
     
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)
-    INTERVAL_LENGTH = 4 # The length of interval
+    INTERVAL_LENGTH = 3 # The length of interval
     MAX_EPISODES = 200   # Increased for more training
     
     # Queue score settings
@@ -413,10 +413,10 @@ class Config:
     # Set 1 to disable.
     GREEDY_TOPK = 1
 
-    T = -2
+    T = -1
     # FAIR = 1  # 0..1, it will control how fair you want, 1 max, 0 min
-    T_QUEUE = -2
-    T_REWARD = -2
+    T_QUEUE = -1
+    T_REWARD = -1
     FAIR_WARMUP_EPISODES = 0
     FAIR_TARGET = 1       # 最终的 FAIR 值
     FAIR = 1              # 起始（trainer 会覆盖）

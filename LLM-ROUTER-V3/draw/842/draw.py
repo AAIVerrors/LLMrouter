@@ -310,5 +310,5 @@ if __name__ == "__main__":
     main()
 # # 多方法对比（FAIR=1/0、Greedy、PPO…），EMA 平滑
 # python draw.py \
-#   --runs "FAIR=1:jain/fair1.csv" "FAIR=0:jain/fair0.csv" "Greedy:jain/greedy.csv" \
+#   --runs "FAIR=1:jain/fair1-new.csv" "FAIR=0:jain/fair0.csv" "Greedy:jain/greedy.csv" \
 #   --metric Jain_fairness_index --half-life 20 --save jain_842.png
