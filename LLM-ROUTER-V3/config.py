@@ -18,7 +18,8 @@ class Config:
         # ===== Tier 4: 强模型 =====
         "together/meta-llama/Llama-3.3-70B-Instruct-Turbo",
         "mistral-large-2512",
-        "gpt-4.1-2025-04-14",
+        # "gpt-4.1-2025-04-14",
+        "together/openai/gpt-oss-120b",
     ]
 
     PRICE = [
@@ -26,7 +27,7 @@ class Config:
         (0.00000010, 0.00000010),  # ministral-3b-2512
 
         # ===== Tier 2: 便宜 weak baseline =====
-        (0.00000010, 0.00000010),  # together/meta-llama/Meta-Llama-3-8B-Instruct-Lite
+        (0.00000014, 0.00000014),  # together/meta-llama/Meta-Llama-3-8B-Instruct-Lite
         (0.00000015, 0.00000015),  # ministral-8b-2512
         (0.00000010, 0.00000040),  # gpt-4.1-nano-2025-04-14
 
@@ -36,23 +37,25 @@ class Config:
         (0.00000040, 0.00000160),  # gpt-4.1-mini-2025-04-14
 
         # ===== Tier 4: 强模型 =====
-        (0.00000088, 0.00000088),  # together/meta-llama/Llama-3.3-70B-Instruct-Turbo
+        (0.00000104, 0.00000104),  # together/meta-llama/Llama-3.3-70B-Instruct-Turbo
         (0.00000050, 0.00000150),  # mistral-large-2512
-        (0.00000200, 0.00000800),  # gpt-4.1-2025-04-14
+        # (0.00000200, 0.00000800),  # gpt-4.1-2025-04-14
+        (0.00000015, 0.00000060),  # 9 gpt-oss-120b
+        
     ]
 
     SERVICE_RATE = [
-            1.1588,   # ministral-3b-2512
-            0.7194,   # together/.../Meta-Llama-3-8B-Instruct-Lite
-            0.7951,   # ministral-8b-2512
-            1.2537,   # gpt-4.1-nano
-            1.0520,   # together/Qwen/Qwen2.5-7B-Instruct-Turbo
-            1.0089,   # mistral-small-2506
-            0.8044,   # gpt-4.1-mini
-            0.4102,   # together/.../Llama-3.3-70B-Instruct-Turbo
-            0.7697,   # mistral-large-2512
-            1.0173,   # gpt-4.1
-        ]
+        0.5147,   # 0 ministral-3b
+        0.5605,   # 1 Meta-Llama-3-8B-Lite
+        0.4924,   # 2 ministral-8b
+        0.7042,   # 3 gpt-4.1-nano
+        0.4137,   # 4 Qwen2.5-7B
+        0.3352,   # 5 mistral-small
+        0.5391,   # 6 gpt-4.1-mini
+        0.1351,   # 7 Llama-3.3-70B
+        0.2065,   # 8 mistral-large
+        0.2036,   # 9 gpt-oss-120b
+    ]
     SERVER_CAPACITIES = [50] * 10
 
     USE_UTIL = True  # in the state use load/capability or load + capability
@@ -72,7 +75,7 @@ class Config:
     DATASET_SEED = 42
 
     # Add this inside class Config
-    USE_MIXED_DATASET = True  # If True, use a mixture of datasets instead of a single one.
+    USE_MIXED_DATASET = False  # If True, use a mixture of datasets instead of a single one.
 
     MIXED_DATASETS = [
         # Multi-hop QA, needs context; metric uses token F1
@@ -220,27 +223,27 @@ class Config:
     LEARNING_RATE = 1e-4 # Reduced for more stable learning
     GAMMA = 0.99          # Slightly reduced discount factor
     GAE_LAMBDA = 0.95      # Reduced for less variance in advantage estimation
-    CLIP_EPSILON = 0.2    # Slightly reduced for more conservative updates
+    CLIP_EPSILON = 0.5    # Slightly reduced for more conservative updates
     POLICY_COEF = 1       # Policy loss weight
     VALUE_COEF = 1      # Reduced value function weight
     ENTROPY_COEF = 0.0   # Increased entropy for more exploration
     ACTOR_LEARNING_RATE = 1e-5
-    CRITIC_LEARNING_RATE = 2e-5
-    USE_LR_DECAY = True
+    CRITIC_LEARNING_RATE = 1e-4
+    USE_LR_DECAY = False
     LR_DECAY_TYPE = "cosine"
-    LR_DECAY_MIN_RATIO = 0.1
+    LR_DECAY_MIN_RATIO = 0.01
     LR_WARMUP_EPISODES = 0
     KL_COEF = 0.00
     MAX_GRAD_NORM = 1  # Reduced for more stable training
-    PPO_EPOCHS = 4   # Increased for more thorough updates
+    PPO_EPOCHS = 3   # Increased for more thorough updates
     BATCH_SIZE = 1      # Increased batch size
 
     TARGET_KL = 0.04
     USE_TARGET_KL_STOP = False
 
     USE_PER_INTERVAL_MINIBATCH = True
-    PPO_INTERVAL_MINIBATCH_SIZE = 4
-    PPO_SHUFFLE_INTERVALS = True
+    PPO_INTERVAL_MINIBATCH_SIZE = 2
+    PPO_SHUFFLE_INTERVALS = False
     USE_SERVERWISE_MLP = False
 
     PROMPT_MAX_TOKENS = 1024
@@ -248,10 +251,10 @@ class Config:
     LLAVA_FUSION_LAYERS = 2
     
     USE_CLIP_FUSION_ROUTER = True
-    ATTN_D_MODEL  = 256
-    ATTN_N_HEADS  = 4
+    ATTN_D_MODEL  = 128
+    ATTN_N_HEADS  = 2
     ATTN_N_LAYERS = 2     
-    ATTN_FF_MULT  = 4
+    ATTN_FF_MULT  = 2
     ATTN_DROPOUT  = 0
     CLIP_INIT_TEMP = 0.2   
     
@@ -281,7 +284,7 @@ class Config:
     PLOT_INTERVAL = 50    # Plot progress every 50 episodes
     
     # Router QA generation controls (keeps answers short & deterministic)
-    GEN_MAX_NEW_TOKENS = 512         # hard cap on answer length
+    GEN_MAX_NEW_TOKENS = 256         # hard cap on answer length
     GEN_MIN_NEW_TOKENS = 0
     GEN_TEMPERATURE = 0.1         
     GEN_TOP_P = 1
@@ -413,10 +416,10 @@ class Config:
     # Set 1 to disable.
     GREEDY_TOPK = 1
 
-    T = -1
+    T = -2
     # FAIR = 1  # 0..1, it will control how fair you want, 1 max, 0 min
-    T_QUEUE = -1
-    T_REWARD = -1
+    T_QUEUE = -2
+    T_REWARD = -2
     FAIR_WARMUP_EPISODES = 0
     FAIR_TARGET = 1       # 最终的 FAIR 值
     FAIR = 1              # 起始（trainer 会覆盖）
