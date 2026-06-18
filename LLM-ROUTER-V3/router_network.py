@@ -438,7 +438,7 @@ class RouterNetwork(nn.Module):
                 nn.init.zeros_(actor_out.bias)
 
         if critic_out is not None:
-            nn.init.orthogonal_(critic_out.weight, gain=0.5)
+            nn.init.orthogonal_(critic_out.weight, gain=1)
             if critic_out.bias is not None:
                 nn.init.zeros_(critic_out.bias)
 

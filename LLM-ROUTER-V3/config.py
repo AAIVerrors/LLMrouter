@@ -12,7 +12,7 @@ class Config:
 
         # ===== Tier 3: mid-tier =====
         "together/Qwen/Qwen2.5-7B-Instruct-Turbo",
-        "mistral-small-2506",
+        "mistral-small-2603",
         "gpt-4.1-mini-2025-04-14",
 
         # ===== Tier 4: 强模型 =====
@@ -217,25 +217,25 @@ class Config:
 
     LAMBDA = 5  # Capacity penalty weight (increased to strongly discourage invalid actions)
     MAX_LAT = 30
-    FAIR_REWARD_MIN_FLOOR = False # True the missing server will be set min rewards, False will use the floor reward -Beta-REWARD_GAMMA
+    FAIR_REWARD_MIN_FLOOR = True # True the missing server will be set min rewards, False will use the floor reward -Beta-REWARD_GAMMA
     
     # PPO hyperparameters - tuned for the routing problem
     LEARNING_RATE = 1e-4 # Reduced for more stable learning
     GAMMA = 0.99          # Slightly reduced discount factor
     GAE_LAMBDA = 0.95      # Reduced for less variance in advantage estimation
-    CLIP_EPSILON = 0.5    # Slightly reduced for more conservative updates
+    CLIP_EPSILON = 0.2    # Slightly reduced for more conservative updates
     POLICY_COEF = 1       # Policy loss weight
     VALUE_COEF = 1      # Reduced value function weight
     ENTROPY_COEF = 0.0   # Increased entropy for more exploration
-    ACTOR_LEARNING_RATE = 1e-5
-    CRITIC_LEARNING_RATE = 1e-4
-    USE_LR_DECAY = False
+    ACTOR_LEARNING_RATE = 2e-6
+    CRITIC_LEARNING_RATE = 1e-5
+    USE_LR_DECAY = True
     LR_DECAY_TYPE = "cosine"
-    LR_DECAY_MIN_RATIO = 0.01
+    LR_DECAY_MIN_RATIO = 0.1
     LR_WARMUP_EPISODES = 0
     KL_COEF = 0.00
-    MAX_GRAD_NORM = 1  # Reduced for more stable training
-    PPO_EPOCHS = 3   # Increased for more thorough updates
+    MAX_GRAD_NORM = 0.5  # Reduced for more stable training
+    PPO_EPOCHS = 4   # Increased for more thorough updates
     BATCH_SIZE = 1      # Increased batch size
 
     TARGET_KL = 0.04
@@ -251,10 +251,10 @@ class Config:
     LLAVA_FUSION_LAYERS = 2
     
     USE_CLIP_FUSION_ROUTER = True
-    ATTN_D_MODEL  = 128
-    ATTN_N_HEADS  = 2
+    ATTN_D_MODEL  = 256
+    ATTN_N_HEADS  = 4
     ATTN_N_LAYERS = 2     
-    ATTN_FF_MULT  = 2
+    ATTN_FF_MULT  = 4
     ATTN_DROPOUT  = 0
     CLIP_INIT_TEMP = 0.2   
     
@@ -337,7 +337,7 @@ class Config:
     # Poisson prompt generation settings
     POISSON_ARRIVAL_RATE = 2  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
-    EPISODE_TIME_INTERVAL = 12 # How many intervals in current episode
+    EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
     
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)
@@ -421,8 +421,8 @@ class Config:
     T_QUEUE = -2
     T_REWARD = -2
     FAIR_WARMUP_EPISODES = 0
-    FAIR_TARGET = 1       # 最终的 FAIR 值
-    FAIR = 1              # 起始（trainer 会覆盖）
+    FAIR_TARGET = 0       # 最终的 FAIR 值
+    FAIR = 0              # 起始（trainer 会覆盖）
 
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL

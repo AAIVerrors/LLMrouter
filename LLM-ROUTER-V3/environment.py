@@ -644,7 +644,7 @@ def server_worker_process(
             model = _load_hf_seq2seq(model_name)
 
         elif _is_together_api_name(model_name):
-            together_client = Together(api_key=os.environ["TOGETHER_API_KEY"], timeout=60000)
+            together_client = Together(api_key=os.environ["TOGETHER_API_KEY"], timeout=60)
 
         elif any(k in model_name.lower() for k in ("gpt", "o1", "o3")):
             model = OpenAI(
