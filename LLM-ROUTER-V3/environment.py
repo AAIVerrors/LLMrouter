@@ -17,6 +17,7 @@ import hashlib
 from collections import Counter
 from difflib import SequenceMatcher
 from together import Together
+import httpx
 
 from typing import List, Dict, Tuple, Optional, Any
 from dataclasses import dataclass
@@ -644,7 +645,11 @@ def server_worker_process(
             model = _load_hf_seq2seq(model_name)
 
         elif _is_together_api_name(model_name):
-            together_client = Together(api_key=os.environ["TOGETHER_API_KEY"], timeout=60)
+            together_client = Together(
+                api_key=os.environ["TOGETHER_API_KEY"],
+                timeout=httpx.Timeout(60.0, connect=10.0),
+                max_retries=2,
+            )
 
         elif any(k in model_name.lower() for k in ("gpt", "o1", "o3")):
             model = OpenAI(

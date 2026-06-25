@@ -85,9 +85,9 @@ class PoissonPromptGenerator:
     # -------------------------
     def _load_one_dataset(self, dataset_name: str, dataset_config: Optional[str], dataset_split: str) -> List[Dict[str, Any]]:
         if dataset_config:
-            ds = load_dataset(dataset_name, dataset_config, split=dataset_split)
+            ds = load_dataset(dataset_name, dataset_config, split=dataset_split, streaming=True)
         else:
-            ds = load_dataset(dataset_name, split=dataset_split)
+            ds = load_dataset(dataset_name, split=dataset_split, streaming=True)
         data = list(ds)
         return data
 
@@ -281,7 +281,7 @@ class PoissonPromptGenerator:
         tag = self.final_tag
         if self.force_final_tag:
             suffix = (
-                f"\nSolve step by step if needed. At the end, output only the final numeric answer "
+                f"\nSolve step by step. At the end, output only the final numeric answer "
                 f"inside <{tag}>...</{tag}>. Do not include units or commas inside the tag.\n"
             )
         else:

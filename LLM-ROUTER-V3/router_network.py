@@ -1922,56 +1922,104 @@ class PPOAgent:
 
             r_t = rewards[idxs]
             a_t = actions[idxs]
-
-            avg_rewards.append(r_t.mean())
+            avg_r_t = r_t.mean()
+            avg_rewards.append(avg_r_t)
             min_rewards.append(r_t.min())
+            term_values_old.append(values[idxs].mean())
 
-            # Keep your current value baseline style:
-            # interval old value = mean of values inside this interval.
-            term_values_old.append(values[idxs[0]])
+            # ============================================================
+            # Interval reward aggregation
+            # ============================================================
+            if bool(getattr(Config, "USE_AVG", False)):
+                # Pure request-level mean reward for this interval.
+                # No server grouping, no fair padding, no softmin.
+                tr = avg_r_t
 
-            # ========================================================
-            # FAIR reward aggregation: keep your original logic
-            # ========================================================
-            F_frac = float(getattr(Config, "FAIR", 1.0))
-            F_frac = max(0.0, min(1.0, F_frac))
-
-            # Effective group size:
-            # historically denom=M if Nt>=M else denom=Nt, i.e. G=min(Nt, M)
-            G = min(Nt, M)
-
-            if Config.FAIR_REWARD_MIN_FLOOR:
-                floor = r_t.min().detach()
             else:
-                floor = torch.tensor(
-                    -Config.BETA - Config.REWARD_GAMMA,
-                    device=Config.DEVICE,
-                    dtype=r_t.dtype,
-                )
+                # Fair / softmin aggregation over used servers.
+                F_frac = float(getattr(Config, "FAIR", 1.0))
+                F_frac = max(0.0, min(1.0, F_frac))
 
-            used_server_terms = []
-            for m in range(M):
-                mask = (a_t == m)
-                if mask.any():
-                    r_m = r_t[mask]
-                    server_term = r_m.mean()
-                    used_server_terms.append(server_term)
+                G = min(Nt, M)
 
-            if len(used_server_terms) == 0:
-                continue
+                if Config.FAIR_REWARD_MIN_FLOOR:
+                    floor = r_t.min().detach()
+                else:
+                    floor = torch.tensor(
+                        -Config.BETA - Config.REWARD_GAMMA,
+                        device=Config.DEVICE,
+                        dtype=r_t.dtype,
+                    )
 
-            K = len(used_server_terms)
-            missing = max(0, G - K)
-            pad = int(math.floor(F_frac * missing))
+                used_server_terms = []
+                for m in range(M):
+                    mask = (a_t == m)
+                    if mask.any():
+                        used_server_terms.append(r_t[mask].mean())
 
-            if pad > 0:
-                used_server_terms.extend([floor] * pad)
+                if len(used_server_terms) == 0:
+                    continue
 
-            server_terms = torch.stack(used_server_terms)
+                K = len(used_server_terms)
+                missing = max(0, G - K)
+                pad = int(math.floor(F_frac * missing))
 
-            # Tilted aggregation across used/padded server terms.
-            tr = log_mean_exp(server_terms, denom=server_terms.numel())
+                if pad > 0:
+                    used_server_terms.extend([floor] * pad)
+
+                server_terms = torch.stack(used_server_terms)
+                tr = log_mean_exp(server_terms, denom=server_terms.numel())
+
             term_rewards.append(tr)
+            # avg_rewards.append(r_t.mean())
+            # min_rewards.append(r_t.min())
+
+            # # Keep your current value baseline style:
+            # # interval old value = mean of values inside this interval.
+            # term_values_old.append(values[idxs[0]])
+
+            # # ========================================================
+            # # FAIR reward aggregation: keep your original logic
+            # # ========================================================
+            # F_frac = float(getattr(Config, "FAIR", 1.0))
+            # F_frac = max(0.0, min(1.0, F_frac))
+
+            # # Effective group size:
+            # # historically denom=M if Nt>=M else denom=Nt, i.e. G=min(Nt, M)
+            # G = min(Nt, M)
+
+            # if Config.FAIR_REWARD_MIN_FLOOR:
+            #     floor = r_t.min().detach()
+            # else:
+            #     floor = torch.tensor(
+            #         -Config.BETA - Config.REWARD_GAMMA,
+            #         device=Config.DEVICE,
+            #         dtype=r_t.dtype,
+            #     )
+
+            # used_server_terms = []
+            # for m in range(M):
+            #     mask = (a_t == m)
+            #     if mask.any():
+            #         r_m = r_t[mask]
+            #         server_term = r_m.mean()
+            #         used_server_terms.append(server_term)
+
+            # if len(used_server_terms) == 0:
+            #     continue
+
+            # K = len(used_server_terms)
+            # missing = max(0, G - K)
+            # pad = int(math.floor(F_frac * missing))
+
+            # if pad > 0:
+            #     used_server_terms.extend([floor] * pad)
+
+            # server_terms = torch.stack(used_server_terms)
+
+            # # Tilted aggregation across used/padded server terms.
+            # tr = log_mean_exp(server_terms, denom=server_terms.numel())
+            # term_rewards.append(tr)
 
         if len(term_rewards) == 0:
             return {

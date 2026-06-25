@@ -67,10 +67,10 @@ class Config:
     #   - "squad"
     #   - "cais/mmlu" - DATASET_CONFIG = "all" - DATASET_SPLIT = "auxiliary_train[:20000]"
     #   - "mixed" - "None" - "Train"
-    DATASET_NAME = "openai/gsm8k"
-    DATASET_CONFIG = "main"    # Optional HF config name (e.g., HotpotQA: "distractor" / "fullwiki")
+    DATASET_NAME = "hotpotqa/hotpot_qa"
+    DATASET_CONFIG = "distractor"    # Optional HF config name (e.g., HotpotQA: "distractor" / "fullwiki")
     DATASET_SPLIT = "train"     # "train" / "validation" / "test" (must exist in the dataset)
-    MAX_SAMPLES = 20000         # Optional cap for faster experiments
+    MAX_SAMPLES = 50000         # Optional cap for faster experiments
     SHUFFLE_DATASET = True
     DATASET_SEED = 42
 
@@ -217,7 +217,7 @@ class Config:
 
     LAMBDA = 5  # Capacity penalty weight (increased to strongly discourage invalid actions)
     MAX_LAT = 30
-    FAIR_REWARD_MIN_FLOOR = True # True the missing server will be set min rewards, False will use the floor reward -Beta-REWARD_GAMMA
+    FAIR_REWARD_MIN_FLOOR = False # True the missing server will be set min rewards, False will use the floor reward -Beta-REWARD_GAMMA
     
     # PPO hyperparameters - tuned for the routing problem
     LEARNING_RATE = 1e-4 # Reduced for more stable learning
@@ -227,14 +227,14 @@ class Config:
     POLICY_COEF = 1       # Policy loss weight
     VALUE_COEF = 1      # Reduced value function weight
     ENTROPY_COEF = 0.0   # Increased entropy for more exploration
-    ACTOR_LEARNING_RATE = 2e-6
+    ACTOR_LEARNING_RATE = 5e-6
     CRITIC_LEARNING_RATE = 1e-5
     USE_LR_DECAY = True
     LR_DECAY_TYPE = "cosine"
     LR_DECAY_MIN_RATIO = 0.1
     LR_WARMUP_EPISODES = 0
     KL_COEF = 0.00
-    MAX_GRAD_NORM = 0.5  # Reduced for more stable training
+    MAX_GRAD_NORM = 1 # Reduced for more stable training
     PPO_EPOCHS = 4   # Increased for more thorough updates
     BATCH_SIZE = 1      # Increased batch size
 
@@ -335,7 +335,7 @@ class Config:
     FINAL_EVAL_EPISODES = 10  # Number of episodes for final evaluation
     
     # Poisson prompt generation settings
-    POISSON_ARRIVAL_RATE = 2  # Average arrival rate of prompts per second
+    POISSON_ARRIVAL_RATE = 5  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
     EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
     
@@ -421,8 +421,8 @@ class Config:
     T_QUEUE = -2
     T_REWARD = -2
     FAIR_WARMUP_EPISODES = 0
-    FAIR_TARGET = 0       # 最终的 FAIR 值
-    FAIR = 0              # 起始（trainer 会覆盖）
+    FAIR_TARGET = 1      # 最终的 FAIR 值
+    FAIR = 1             # 起始（trainer 会覆盖）
 
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL
@@ -544,7 +544,7 @@ class Config:
     #   "contains" : 1 if one contains the other (after normalization)
     #   "em"       : strict exact match (0/1)
     # EM_METRIC = "mmlu"
-    EM_METRIC = "number"
+    EM_METRIC = "f1"
 
     # Optionally binarise the match score (useful if you want 0/1 reward)
     EM_BINARIZE = False
