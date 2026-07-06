@@ -67,15 +67,15 @@ class Config:
     #   - "squad"
     #   - "cais/mmlu" - DATASET_CONFIG = "all" - DATASET_SPLIT = "auxiliary_train[:20000]"
     #   - "mixed" - "None" - "Train"
-    DATASET_NAME = "hotpotqa/hotpot_qa"
-    DATASET_CONFIG = "distractor"    # Optional HF config name (e.g., HotpotQA: "distractor" / "fullwiki")
-    DATASET_SPLIT = "train"     # "train" / "validation" / "test" (must exist in the dataset)
+    DATASET_NAME = "cais/mmlu"
+    DATASET_CONFIG = "all"    # Optional HF config name (e.g., HotpotQA: "distractor" / "fullwiki")
+    DATASET_SPLIT = "auxiliary_train[:50000]"     # "train" / "validation" / "test" (must exist in the dataset)
     MAX_SAMPLES = 50000         # Optional cap for faster experiments
     SHUFFLE_DATASET = True
     DATASET_SEED = 42
 
     # Add this inside class Config
-    USE_MIXED_DATASET = False  # If True, use a mixture of datasets instead of a single one.
+    USE_MIXED_DATASET = True  # If True, use a mixture of datasets instead of a single one.
 
     MIXED_DATASETS = [
         # Multi-hop QA, needs context; metric uses token F1
@@ -83,7 +83,7 @@ class Config:
             "name": "hotpotqa/hotpot_qa",
             "config": "distractor",
             "split": "train",
-            "weight": 0.25,
+            "weight": 1/3,
             "metric": "f1",
             "task_type": "multihop_qa",
             "max_samples": 20000,
@@ -93,7 +93,7 @@ class Config:
             "name": "squad",
             "config": None,
             "split": "train[:20000]",
-            "weight": 0.25,
+            "weight": 0,
             "metric": "f1",
             "task_type": "qa",
         },
@@ -102,7 +102,7 @@ class Config:
             "name": "cais/mmlu",
             "config": "all",
             "split": "auxiliary_train[:20000]",
-            "weight": 0.25,
+            "weight": 1/3,
             "metric": "mmlu",
             "task_type": "mmlu",
         },
@@ -111,7 +111,7 @@ class Config:
             "name": "openai/gsm8k",
             "config": "main",
             "split": "train[:20000]",
-            "weight": 0.25,
+            "weight": 1/3,
             "metric": "number",
             "task_type": "math",
         },
@@ -184,9 +184,9 @@ class Config:
     FINAL_ANSWER_TAG = "final"
     
     # Reward function weights - adjusted for better balance
-    ALPHA = 1/3   # Quality weight (increased importance)
-    BETA = 1/3    # Latency weight
-    REWARD_GAMMA = 1/3 # price weight (increased to emphasize cost)
+    ALPHA = 0.25   # Quality weight (increased importance)
+    BETA = 0.25    # Latency weight
+    REWARD_GAMMA = 0.5 # price weight (increased to emphasize cost)
 
     # =========================================================
     # Per-round (episode) min-max normalization for latency/price
@@ -227,14 +227,14 @@ class Config:
     POLICY_COEF = 1       # Policy loss weight
     VALUE_COEF = 1      # Reduced value function weight
     ENTROPY_COEF = 0.0   # Increased entropy for more exploration
-    ACTOR_LEARNING_RATE = 5e-6
+    ACTOR_LEARNING_RATE = 2e-6
     CRITIC_LEARNING_RATE = 1e-5
     USE_LR_DECAY = True
     LR_DECAY_TYPE = "cosine"
     LR_DECAY_MIN_RATIO = 0.1
     LR_WARMUP_EPISODES = 0
     KL_COEF = 0.00
-    MAX_GRAD_NORM = 1 # Reduced for more stable training
+    MAX_GRAD_NORM = 0.5 # Reduced for more stable training
     PPO_EPOCHS = 4   # Increased for more thorough updates
     BATCH_SIZE = 1      # Increased batch size
 
@@ -366,7 +366,7 @@ class Config:
     
     ENTROPY_BASED_EXPLORATION = False  # Use entropy-based exploration
     
-    USE_AVG = False 
+    USE_AVG = False  # Use average reward for training
     
     RANDOM_SELECT = False
 
@@ -544,7 +544,7 @@ class Config:
     #   "contains" : 1 if one contains the other (after normalization)
     #   "em"       : strict exact match (0/1)
     # EM_METRIC = "mmlu"
-    EM_METRIC = "f1"
+    EM_METRIC = "mmlu" 
 
     # Optionally binarise the match score (useful if you want 0/1 reward)
     EM_BINARIZE = False

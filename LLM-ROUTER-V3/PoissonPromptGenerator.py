@@ -84,10 +84,12 @@ class PoissonPromptGenerator:
     # Dataset loading
     # -------------------------
     def _load_one_dataset(self, dataset_name: str, dataset_config: Optional[str], dataset_split: str) -> List[Dict[str, Any]]:
+        # streaming=True does not support slice syntax in split strings (e.g. "auxiliary_train[:40000]"),
+        # which several configured splits rely on; load eagerly instead.
         if dataset_config:
-            ds = load_dataset(dataset_name, dataset_config, split=dataset_split, streaming=True)
+            ds = load_dataset(dataset_name, dataset_config, split=dataset_split)
         else:
-            ds = load_dataset(dataset_name, split=dataset_split, streaming=True)
+            ds = load_dataset(dataset_name, split=dataset_split)
         data = list(ds)
         return data
 
