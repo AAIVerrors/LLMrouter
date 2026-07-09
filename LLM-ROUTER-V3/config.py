@@ -184,9 +184,9 @@ class Config:
     FINAL_ANSWER_TAG = "final"
     
     # Reward function weights - adjusted for better balance
-    ALPHA = 0.25   # Quality weight (increased importance)
-    BETA = 0.25    # Latency weight
-    REWARD_GAMMA = 0.5 # price weight (increased to emphasize cost)
+    ALPHA = 1/6   # Quality weight (increased importance)
+    BETA = 2/3    # Latency weight
+    REWARD_GAMMA = 1/6 # price weight (increased to emphasize cost)
 
     # =========================================================
     # Per-round (episode) min-max normalization for latency/price
