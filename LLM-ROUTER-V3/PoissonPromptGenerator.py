@@ -260,39 +260,53 @@ class PoissonPromptGenerator:
             return s
         return s[:max_chars]
 
+    _CHOICE_LETTERS = "ABCDEFGHIJ"
+
     @staticmethod
     def _choice_label(i: int) -> str:
-        return ["A", "B", "C", "D", "E", "F"][int(i)]
+        return PoissonPromptGenerator._CHOICE_LETTERS[int(i)]
+
+    @staticmethod
+    def _mmlu_choices(sample: Dict[str, Any]) -> List[Any]:
+        # MMLU uses "choices"; MMLU-Pro uses "options" (up to 10, A-J).
+        c = sample.get("choices")
+        if not isinstance(c, (list, tuple)):
+            c = sample.get("options")
+        return list(c) if isinstance(c, (list, tuple)) else []
 
     def _is_mmlu_sample(self, sample: Dict[str, Any]) -> bool:
         return (
             isinstance(sample, dict)
             and isinstance(sample.get("question"), str)
-            and isinstance(sample.get("choices"), (list, tuple))
-            and sample.get("answer") is not None
+            and len(self._mmlu_choices(sample)) > 0
+            and (sample.get("answer") is not None or sample.get("answer_index") is not None)
         )
 
     def _mmlu_gold_letter(self, sample: Dict[str, Any]) -> str:
         ans = sample.get("answer")
+        if ans is None:
+            ans = sample.get("answer_index")
         if isinstance(ans, (int, np.integer)):
             return self._choice_label(int(ans))
         if isinstance(ans, str):
             s = ans.strip()
             if s.isdigit():
                 return self._choice_label(int(s))
-            if len(s) == 1 and s.upper() in ["A", "B", "C", "D", "E", "F"]:
+            if len(s) == 1 and s.upper() in self._CHOICE_LETTERS:
                 return s.upper()
         return str(ans).strip()
 
     def _build_mmlu_prompt(self, sample: Dict[str, Any]) -> str:
         question = str(sample.get("question", "")).strip()
-        choices = list(sample.get("choices", []))
-        subject = str(sample.get("subject", "")).replace("_", " ").strip()
+        choices = self._mmlu_choices(sample)
+        subject = str(sample.get("subject") or sample.get("category") or "").replace("_", " ").strip()
         choice_lines = [f"{self._choice_label(i)}. {str(c).strip()}" for i, c in enumerate(choices)]
         subject_line = f"Subject: {subject}\n" if subject else ""
         # Standard multiple-choice output: the option letter alone;
-        # no <final> tag required.
-        suffix = "\nAnswer with only one option letter (A, B, C, or D). Do not explain.\n"
+        # no <final> tag required. Letter range follows the option count
+        # (A-D for MMLU, up to A-J for MMLU-Pro).
+        last = self._choice_label(max(len(choices) - 1, 0))
+        suffix = f"\nAnswer with only one option letter (A-{last}). Do not explain.\n"
         return subject_line + f"Question: {question}\nChoices:\n" + "\n".join(choice_lines) + f"\nAnswer:{suffix}"
 
     def _is_gsm8k_sample(self, sample: Dict[str, Any]) -> bool:
@@ -541,8 +555,8 @@ class PoissonPromptGenerator:
             prompt = self._build_mmlu_prompt(sample)
             output = self._mmlu_gold_letter(sample)
             question = str(sample.get("question", "")).strip()
-            choices = sample.get("choices", [])
-            subject = str(sample.get("subject", "")).strip()
+            choices = self._mmlu_choices(sample)
+            subject = str(sample.get("subject") or sample.get("category") or "").strip()
             return {
                 "prompt": prompt,
                 "output": {"answers": output, "metric": "mmlu", "dataset": dataset_name, "task_type": task_type},

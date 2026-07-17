@@ -117,6 +117,19 @@ class Config:
             "metric": "mmlu",
             "task_type": "mmlu",
         },
+        # Harder MMLU replacement (MMLU-Pro): 12k questions, 10 options
+        # (A-J, random floor 10%), reasoning-heavy, low contamination —
+        # weak-strong gap roughly 2x wider than MMLU. Activate by setting
+        # weight > 0 (typically also set cais/mmlu weight to 0).
+        {
+            "name": "TIGER-Lab/MMLU-Pro",
+            "config": None,
+            "split": "test",
+            "weight": 0,
+            "metric": "mmlu",
+            "task_type": "mmlu_pro",
+            "max_samples": 20000,
+        },
         # Math reasoning, metric extracts exact final number
         {
             "name": "openai/gsm8k",
@@ -253,7 +266,7 @@ class Config:
     POLICY_COEF = 1       # Policy loss weight
     VALUE_COEF = 1      # Reduced value function weight
     ENTROPY_COEF = 0.0   # Increased entropy for more exploration
-    ACTOR_LEARNING_RATE = 1e-5
+    ACTOR_LEARNING_RATE = 2e-6
     CRITIC_LEARNING_RATE = 1e-5
     USE_LR_DECAY = True
     LR_DECAY_TYPE = "cosine"
@@ -310,7 +323,7 @@ class Config:
     PLOT_INTERVAL = 50    # Plot progress every 50 episodes
     
     # Router QA generation controls (keeps answers short & deterministic)
-    GEN_MAX_NEW_TOKENS = 256         # hard cap on answer length
+    GEN_MAX_NEW_TOKENS = 512         # hard cap on answer length
     GEN_MIN_NEW_TOKENS = 0
     GEN_TEMPERATURE = 0.1         
     GEN_TOP_P = 1
@@ -403,7 +416,7 @@ class Config:
 
     ENABLE_QUEUE_PENALTY = False
 
-    JSQ = False
+    JSQ = True
 
     P2C = False
 
@@ -451,8 +464,8 @@ class Config:
     T_REWARD = -2
     FAIR_WARMUP_EPISODES = 0
     FAIRNESS_MODE = "quota"
-    FAIR_TARGET = 1      # 最终的 FAIR 值
-    FAIR = 1             # 起始（trainer 会覆盖）
+    FAIR_TARGET = 0      # 最终的 FAIR 值
+    FAIR = 0             # 起始（trainer 会覆盖）
 
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL

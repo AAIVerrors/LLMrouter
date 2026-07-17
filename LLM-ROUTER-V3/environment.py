@@ -319,7 +319,7 @@ def contains_score(pred: Optional[str], gold: Any) -> float:
             break
     return best
 
-_CHOICE_LETTER_RE = re.compile(r"^\s*([A-Da-d])\s*([\.\)\]:：]|$|\s+$)")
+_CHOICE_LETTER_RE = re.compile(r"^\s*([A-Ja-j])\s*([\.\)\]:：]|$|\s+$)")
 
 def _extract_choice_letter(x: Any) -> str:
     if x is None:
@@ -329,14 +329,14 @@ def _extract_choice_letter(x: Any) -> str:
     if not s:
         return ""
 
-    # gold may be 0/1/2/3
+    # gold may be an option index (0-9; MMLU 0-3, MMLU-Pro 0-9)
     if s.isdigit():
         idx = int(s)
-        if 0 <= idx < 4:
-            return ["A", "B", "C", "D"][idx]
+        if 0 <= idx < 10:
+            return "ABCDEFGHIJ"[idx]
 
-    # direct A/B/C/D
-    if len(s) == 1 and s.upper() in ["A", "B", "C", "D"]:
+    # direct option letter A-J
+    if len(s) == 1 and s.upper() in "ABCDEFGHIJ":
         return s.upper()
 
     # "A.", "A)", "A: ..."
@@ -345,7 +345,7 @@ def _extract_choice_letter(x: Any) -> str:
         return m.group(1).upper()
 
     # "answer is A", "Final answer: A"
-    m = re.search(r"(answer|final)\s*(is|:|-)?\s*([A-Da-d])\b", s, flags=re.I)
+    m = re.search(r"(answer|final)\s*(is|:|-)?\s*([A-Ja-j])\b", s, flags=re.I)
     if m:
         return m.group(3).upper()
 
