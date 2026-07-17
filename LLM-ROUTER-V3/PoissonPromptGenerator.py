@@ -39,9 +39,13 @@ class PoissonPromptGenerator:
         shuffle_dataset: bool = True,
         dataset_seed: int = 42,
         mixed_datasets: Optional[List[Dict[str, Any]]] = None,
+        dataset_levels: Optional[List[str]] = None,
+        dataset_filter: Optional[str] = None,
     ):
         self.shuffle_dataset = bool(shuffle_dataset)
         self.dataset_seed = int(dataset_seed)
+        self.dataset_levels = dataset_levels
+        self.dataset_filter = dataset_filter
         self.arrival_rate = float(arrival_rate)
         self.prompt_queue = prompt_queue
         self.max_queue_size = int(max_queue_size)
@@ -97,6 +101,23 @@ class PoissonPromptGenerator:
         """Load one dataset into memory."""
         try:
             self.dataset = self._load_one_dataset(dataset_name, dataset_config, dataset_split)
+            # Optional single-dataset filters, mirroring the mixed-mode
+            # "levels" / "filter" hooks (Config.DATASET_LEVELS / DATASET_FILTER,
+            # passed in as constructor arguments).
+            if self.dataset_levels:
+                keep = {str(x) for x in self.dataset_levels}
+                self.dataset = [s for s in self.dataset if str(s.get("level", "")) in keep]
+            flt = str(self.dataset_filter or "")
+            if flt == "numeric_boxed":
+                self.dataset = [
+                    s for s in self.dataset
+                    if self._extract_boxed_final(s.get("solution", "")) is not None
+                ]
+            elif flt == "boxed":
+                self.dataset = [
+                    s for s in self.dataset
+                    if self._extract_boxed_raw(s.get("solution", "")) is not None
+                ]
             if self.shuffle_dataset:
                 rng = random.Random(self.dataset_seed)
                 rng.shuffle(self.dataset)
@@ -132,6 +153,27 @@ class PoissonPromptGenerator:
 
             try:
                 data = self._load_one_dataset(name, config, split)
+                # Optional difficulty filter (e.g., MATH "Level 3"-"Level 5").
+                levels = cfg.get("levels", None)
+                if levels:
+                    keep = {str(x) for x in levels}
+                    data = [s for s in data if str(s.get("level", "")) in keep]
+                # Optional sample filter:
+                #   "numeric_boxed": only purely numeric \boxed answers
+                #                    (exact "number"-metric scoring);
+                #   "boxed":         any sample with a \boxed answer
+                #                    (scored via math-verify equivalence).
+                flt = str(cfg.get("filter", "") or "")
+                if flt == "numeric_boxed":
+                    data = [
+                        s for s in data
+                        if self._extract_boxed_final(s.get("solution", "")) is not None
+                    ]
+                elif flt == "boxed":
+                    data = [
+                        s for s in data
+                        if self._extract_boxed_raw(s.get("solution", "")) is not None
+                    ]
                 if max_samples is not None:
                     data = data[: int(max_samples)]
                 if self.shuffle_dataset:
@@ -198,6 +240,8 @@ class PoissonPromptGenerator:
             return "mmlu"
         if "gsm8k" in n:
             return "math"
+        if "competition_math" in n or "hendrycks_math" in n:
+            return "math_hard"
         if "hotpot" in n:
             return "multihop_qa"
         if "squad" in n or "trivia" in n:
@@ -246,14 +290,9 @@ class PoissonPromptGenerator:
         subject = str(sample.get("subject", "")).replace("_", " ").strip()
         choice_lines = [f"{self._choice_label(i)}. {str(c).strip()}" for i, c in enumerate(choices)]
         subject_line = f"Subject: {subject}\n" if subject else ""
-        tag = self.final_tag
-        if self.force_final_tag:
-            suffix = (
-                f"\nThink and return only one option letter inside <{tag}>...</{tag}>.\n"
-                f"The answer must be one of A, B, C, or D.\n"
-            )
-        else:
-            suffix = "\nReturn only one option letter. Do not explain.\n"
+        # Standard multiple-choice output: the option letter alone;
+        # no <final> tag required.
+        suffix = "\nAnswer with only one option letter (A, B, C, or D). Do not explain.\n"
         return subject_line + f"Question: {question}\nChoices:\n" + "\n".join(choice_lines) + f"\nAnswer:{suffix}"
 
     def _is_gsm8k_sample(self, sample: Dict[str, Any]) -> bool:
@@ -279,16 +318,77 @@ class PoissonPromptGenerator:
         return num
 
     def _build_gsm8k_prompt(self, sample: Dict[str, Any]) -> str:
+        # Standard math-reasoning output format: close with \boxed{...};
+        # no <final> tag required (same convention as competition math).
         question = str(sample.get("question", "")).strip()
-        tag = self.final_tag
-        if self.force_final_tag:
-            suffix = (
-                f"\nSolve step by step. At the end, output only the final numeric answer "
-                f"inside <{tag}>...</{tag}>. Do not include units or commas inside the tag.\n"
-            )
-        else:
-            suffix = "\nReturn only the final numeric answer.\n"
+        suffix = (
+            "\nSolve the problem step by step. "
+            "Put your final answer within \\boxed{}.\n"
+        )
         return f"Question: {question}\nAnswer:{suffix}"
+
+    def _is_math_sample(self, sample: Dict[str, Any]) -> bool:
+        # Competition-math (MATH) rows: {"problem", "solution", "level", "type"}.
+        return (
+            isinstance(sample, dict)
+            and isinstance(sample.get("problem"), str)
+            and isinstance(sample.get("solution"), str)
+        )
+
+    @staticmethod
+    def _extract_boxed_raw(solution: str) -> Optional[str]:
+        """Extract the raw content of the last \\boxed{...} in a solution,
+        handling nested braces. Returns None when no boxed answer exists."""
+        s = str(solution or "")
+        i = s.rfind("\\boxed")
+        if i < 0:
+            return None
+        j = s.find("{", i)
+        if j < 0:
+            return None
+        depth, k = 1, j + 1
+        while k < len(s) and depth > 0:
+            if s[k] == "{":
+                depth += 1
+            elif s[k] == "}":
+                depth -= 1
+            k += 1
+        if depth != 0:
+            return None
+        return s[j + 1:k - 1].strip()
+
+    @staticmethod
+    def _extract_boxed_final(solution: str) -> Optional[str]:
+        """Extract the last \\boxed{...} answer and normalize it to a plain
+        number string. Returns None when the boxed answer is not purely
+        numeric (fractions, radicals, pi, intervals, ...), so callers can
+        filter those samples out and keep exact numeric scoring."""
+        raw = PoissonPromptGenerator._extract_boxed_raw(solution)
+        if raw is None:
+            return None
+        b = raw.strip().strip("$")
+        b = b.replace("\\!", "").replace("\\,", "").replace(" ", "")
+        b = re.sub(r"(\\text\{[^}]*\}|\\%|\\?\^\\?circ|\\?\^\{\\circ\})$", "", b).strip()
+        if not re.match(r"^[-+]?\d{1,3}(?:,\d{3})*(?:\.\d+)?$|^[-+]?\d+(?:\.\d+)?$", b):
+            return None
+        b = b.replace(",", "")
+        try:
+            f = float(b)
+            if abs(f - round(f)) < 1e-9:
+                return str(int(round(f)))
+        except Exception:
+            pass
+        return b
+
+    def _build_math_prompt(self, sample: Dict[str, Any]) -> str:
+        # MATH-standard output format: the model closes with \boxed{...};
+        # no <final> tag is required (math-verify extracts boxed answers).
+        problem = str(sample.get("problem", "")).strip()
+        suffix = (
+            # "\nSolve the problem step by step. "
+            "\nPut your final answer within \\boxed{}.\n"
+        )
+        return f"Problem: {problem}\nAnswer:{suffix}"
 
     def _extract_question(self, sample: Dict[str, Any]) -> str:
         if isinstance(sample.get("instruction"), str) and sample.get("instruction").strip():
@@ -384,15 +484,9 @@ class PoissonPromptGenerator:
         style = (self.prompt_style or "instruction").lower().strip()
         if (not self.qa_include_context) or (not context):
             context = ""
-        suffix = ""
-        if self.force_final_tag:
-            tag = self.final_tag
-            suffix = (
-                f"\nThink first and then output the final answer inside <{tag}>...</{tag}>.\n"
-                f"Do not output an empty tag.\n"
-                f"Do not output placeholders like FINAL_ANSWER.\n"
-                f"Do not output your thought process inside the tag.\n"
-            )
+        # Standard QA output: the short answer span alone; no <final> tag
+        # required (token-F1 scoring rewards concise answers).
+        suffix = "\nAnswer with only the short final answer. Do not explain.\n"
         if style in {"instruction", "alpaca"}:
             if context:
                 return f"Instruction: {question}\nInput: {context}\nResponse:{suffix}"
@@ -458,6 +552,20 @@ class PoissonPromptGenerator:
                 "task_type": task_type,
                 "subject": subject,
                 "mmlu_answer": output,
+            }
+
+        # Competition math (MATH) special case: \boxed{...} answers, scored
+        # by symbolic equivalence (math-verify) with numeric fallback.
+        if metric in {"math_boxed", "math_verify", "competition_math"} or self._is_math_sample(sample):
+            prompt = self._build_math_prompt(sample)
+            output = self._extract_boxed_raw(sample.get("solution", "")) or ""
+            return {
+                "prompt": prompt,
+                "output": {"answers": output, "metric": "math_verify", "dataset": dataset_name, "task_type": task_type},
+                "instruction": str(sample.get("problem", "")).strip(),
+                "input": "",
+                "dataset": dataset_name,
+                "task_type": task_type,
             }
 
         # GSM8K / numeric math special case

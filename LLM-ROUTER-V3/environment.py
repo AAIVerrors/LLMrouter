@@ -184,6 +184,28 @@ _FINAL_LINE_RE = re.compile(r"^(final\s*answer|final|answer)\s*[:\-]\s*(.*)$", f
 _CODEBLOCK_RE = re.compile(r"```[\s\S]*?```", flags=re.S)
 
 
+def _extract_last_boxed(text: str) -> Optional[str]:
+    """Return the last \\boxed{...} substring (wrapper included), handling
+    nested braces; None if absent."""
+    s = str(text or "")
+    i = s.rfind("\\boxed")
+    if i < 0:
+        return None
+    j = s.find("{", i)
+    if j < 0:
+        return None
+    depth, k = 1, j + 1
+    while k < len(s) and depth > 0:
+        if s[k] == "{":
+            depth += 1
+        elif s[k] == "}":
+            depth -= 1
+        k += 1
+    if depth != 0:
+        return None
+    return s[i:k].strip()
+
+
 def extract_final_answer(text: Optional[str]) -> str:
     """Extract a short final answer span from a model output."""
     if text is None:
@@ -201,6 +223,13 @@ def extract_final_answer(text: Optional[str]) -> str:
             return m.group(1).strip()
     except Exception:
         pass
+
+    # 1b) last \boxed{...} — math models often close with a display-math
+    # block ("\[ \boxed{42} \]") whose final line is just "\]", which the
+    # last-line fallback below would return instead of the answer.
+    boxed = _extract_last_boxed(s)
+    if boxed is not None:
+        return boxed
 
     # Remove fenced code blocks
     s2 = _CODEBLOCK_RE.sub("", s).strip()
@@ -388,6 +417,48 @@ def numeric_exact_score(pred: Optional[str], gold: Any) -> float:
     return 0.0
 
 
+_MATH_VERIFY_FUNCS = None  # lazy: (parse, verify) once imported, False if unavailable
+
+
+def _math_verify_equal(pred: Optional[str], gold: Any) -> Optional[bool]:
+    """Symbolic math equivalence via the math-verify library (sympy-backed).
+
+    Handles \\boxed{...}, fractions, radicals, etc. (e.g. 1/2 == 0.5 ==
+    \\frac{1}{2}). Returns None when the library is unavailable, parsing
+    yields nothing, or an internal error/timeout occurs, so the caller can
+    fall back to the plain numeric matcher; the reward pipeline never blocks.
+    """
+    global _MATH_VERIFY_FUNCS
+    if _MATH_VERIFY_FUNCS is None:
+        try:
+            from math_verify import parse as _mv_parse, verify as _mv_verify
+            _MATH_VERIFY_FUNCS = (_mv_parse, _mv_verify)
+        except Exception:
+            _MATH_VERIFY_FUNCS = False
+    if not _MATH_VERIFY_FUNCS:
+        return None
+    mv_parse, mv_verify = _MATH_VERIFY_FUNCS
+    try:
+        golds = _as_list(gold)
+        if not golds:
+            return None
+        parsed_pred = mv_parse(str(pred or ""), parsing_timeout=5)
+        if not parsed_pred:
+            return None
+        for g in golds:
+            g = str(g).strip()
+            if not g:
+                continue
+            # Wrap bare expressions so the latex extractor anchors on them.
+            g_text = g if ("$" in g or "\\boxed" in g) else f"${g}$"
+            parsed_gold = mv_parse(g_text, parsing_timeout=5)
+            if parsed_gold and mv_verify(parsed_gold, parsed_pred, timeout_seconds=5):
+                return True
+        return False
+    except Exception:
+        return None
+
+
 # Replace your current match_quality_score with this version.
 def match_quality_score(pred: Optional[str], gold: Any) -> float:
     """Compute a match score for reward.
@@ -411,6 +482,12 @@ def match_quality_score(pred: Optional[str], gold: Any) -> float:
 
     if metric in {"mmlu", "choice", "multiple_choice"}:
         score = mmlu_choice_score(pred, gold_answers)
+    elif metric in {"math_verify", "boxed_math"}:
+        # Symbolic equivalence first (handles \boxed / fractions / radicals);
+        # fall back to the plain numeric matcher if math-verify is missing
+        # or cannot parse either side.
+        ok = _math_verify_equal(pred, gold_answers)
+        score = float(ok) if ok is not None else numeric_exact_score(pred, gold_answers)
     elif metric in {"number", "numeric", "gsm8k", "math"}:
         score = numeric_exact_score(pred, gold_answers)
     elif metric == "em":
@@ -479,6 +556,18 @@ def _strip_together_prefix(model_name: str) -> str:
     """Convert together/<provider>/<model> -> <provider>/<model>."""
     if _is_together_api_name(model_name):
         return model_name.split("together/", 1)[1]
+    return model_name
+
+
+def _is_novita_api_name(model_name: str) -> bool:
+    """True for Novita-served remote models explicitly prefixed as novita/<provider>/<model>."""
+    return (model_name or "").lower().startswith("novita/")
+
+
+def _strip_novita_prefix(model_name: str) -> str:
+    """Convert novita/<provider>/<model> -> <provider>/<model>."""
+    if _is_novita_api_name(model_name):
+        return model_name.split("novita/", 1)[1]
     return model_name
 
 
@@ -651,6 +740,15 @@ def server_worker_process(
                 max_retries=2,
             )
 
+        elif _is_novita_api_name(model_name):
+            # Novita serves an OpenAI-compatible API; reuse the OpenAI client.
+            model = OpenAI(
+                base_url="https://api.novita.ai/openai",
+                api_key=os.environ["NOVITA_API_KEY"],
+                timeout=float(getattr(Config, "GEN_REQUEST_TIMEOUT", 60)),
+                max_retries=2,
+            )
+
         elif any(k in model_name.lower() for k in ("gpt", "o1", "o3")):
             model = OpenAI(
                 timeout=float(getattr(Config, "GEN_REQUEST_TIMEOUT", 60)),
@@ -746,6 +844,16 @@ def server_worker_process(
                             temperature=getattr(Config, "GEN_TEMPERATURE", getattr(Config, "TEMPERATURE", 0.7)),
                             top_p=getattr(Config, "GEN_TOP_P", 0.7),
                             reasoning={"enabled": False},
+                        )
+                        response_text = response.choices[0].message.content
+
+                    elif _is_novita_api_name(model_name):
+                        response = model.chat.completions.create(
+                            model=_strip_novita_prefix(model_name),
+                            messages=[{"role": "user", "content": request.prompt}],
+                            max_tokens=getattr(Config, "GEN_MAX_NEW_TOKENS", 256),
+                            temperature=getattr(Config, "GEN_TEMPERATURE", getattr(Config, "TEMPERATURE", 0.7)),
+                            top_p=getattr(Config, "GEN_TOP_P", 0.7),
                         )
                         response_text = response.choices[0].message.content
 
@@ -1530,6 +1638,8 @@ class EnhancedRouterEnvironment:
             final_tag=getattr(Config, "FINAL_ANSWER_TAG", "final"),
             shuffle_dataset=getattr(Config, "SHUFFLE_DATASET", True),
             dataset_seed=getattr(Config, "DATASET_SEED", 42),
+            dataset_levels=getattr(Config, "DATASET_LEVELS", None),
+            dataset_filter=getattr(Config, "DATASET_FILTER", None),
             mixed_datasets=(
                 getattr(Config, "MIXED_DATASETS", None)
                 if getattr(Config, "USE_MIXED_DATASET", False)

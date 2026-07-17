@@ -10,6 +10,12 @@ except Exception:
     AutoTokenizer = None
     AutoModel = None
 from config import Config
+from quota_flair import (
+    fair_quota,
+    quota_flair_reward,
+    load_fairness,
+    jain_normalized_load,
+)
 import torch.multiprocessing as mp
 from environment import QualityScorer
 import math
@@ -1811,7 +1817,9 @@ class PPOAgent:
             rng = np.random.default_rng()
 
         M = len(capacities)
-        util = np.asarray(state[:M], dtype=np.float64)
+        # State uses the interleaved per-server layout [util, mu, price_in, price_out],
+        # so utilization sits in column 0 of the (M, F) view (same as the JSQ branch).
+        util = np.asarray(state, dtype=np.float64).reshape(M, -1)[:, 0]
         cap = np.asarray(capacities, dtype=np.float64)
         q = util * cap
 
@@ -1853,7 +1861,14 @@ class PPOAgent:
         - Does NOT change your interval objective.
         - Does NOT change rho formula.
         - Does NOT change value target style.
-        - Does NOT change FAIR aggregation.
+
+        Interval reward aggregation is selected by Config.FAIRNESS_MODE:
+        - "quota":  capacity- and backlog-aware quota fairness
+                    (water-filling fair quota + ReLU quota penalty +
+                    weighted tilted aggregate; see quota_flair.py).
+                    Config.FAIR is the quota tolerance/strength f.
+        - "legacy": original padded softmin over per-server means
+                    (Config.FAIR = pad fraction).
         """
         states_np = np.array([t["state"] for t in trajectories], dtype=np.float32)
         actions_np = np.array([t["action"] for t in trajectories], dtype=np.int64)
@@ -1910,6 +1925,8 @@ class PPOAgent:
         term_values_old = []
         avg_rewards = []
         min_rewards = []
+        quota_f_load = []
+        quota_jain = []
 
         for ts in sorted(slot_to_indices.keys()):
             idxs = torch.tensor(slot_to_indices[ts], device=Config.DEVICE, dtype=torch.long)
@@ -1934,6 +1951,67 @@ class PPOAgent:
                 # Pure request-level mean reward for this interval.
                 # No server grouping, no fair padding, no softmin.
                 tr = avg_r_t
+
+            elif str(getattr(Config, "FAIRNESS_MODE", "legacy")).lower() == "quota":
+                # ====================================================
+                # [Quota-FLAIR] capacity- and backlog-aware fairness.
+                # Fair load = balanced normalized post-dispatch work
+                # (D_m + n_m)/S_m; the integer fair quota k comes from
+                # discrete water filling on the FROZEN interval-start
+                # snapshot, used-server means are interpolated toward
+                # the floor by the ReLU quota penalty, and missing
+                # positive-quota servers add fractional floor weight
+                # W = f*H inside one weighted tilted aggregate.
+                # ====================================================
+                f_frac = float(getattr(Config, "FAIR", 1.0))
+                f_frac = max(0.0, min(1.0, f_frac))
+
+                # Decode the frozen snapshot: state layout is
+                # [util, mu, price_in, price_out] per server, with
+                # util = load / capacity (trainer.build_state).
+                snap = states_np[int(idxs[0].item())]
+                caps = np.asarray(Config.SERVER_CAPACITIES[:M], dtype=np.float64)
+                if snap.shape[-1] >= M * 4:
+                    d_snap = np.clip(snap[0:M * 4:4].astype(np.float64), 0.0, None) * caps
+                    mu_snap = snap[1:M * 4:4].astype(np.float64)
+                else:
+                    # Unknown state layout: fall back to a backlog-free
+                    # quota with configured service rates.
+                    d_snap = np.zeros(M, dtype=np.float64)
+                    mu_snap = np.asarray(Config.SERVICE_RATE[:M], dtype=np.float64)
+                eps_mu = float(getattr(Config, "QUOTA_EPS_MU", 1e-3))
+                s_budget = np.maximum(
+                    mu_snap * float(Config.INTERVAL_LENGTH), eps_mu
+                )
+
+                counts_np = np.bincount(
+                    a_t.detach().cpu().numpy().astype(np.int64), minlength=M
+                )[:M]
+                n_routed = int(counts_np.sum())
+                if n_routed == 0:
+                    continue
+
+                k_dag = fair_quota(d_snap, s_budget, n_routed, counts_np)
+
+                r_floor = float(-Config.BETA - Config.REWARD_GAMMA)
+                if bool(getattr(Config, "QUOTA_FLOOR_ADAPTIVE", True)):
+                    r_floor = min(r_floor, float(r_t.min().item()))
+
+                server_means = {}
+                for m in range(M):
+                    mask = (a_t == m)
+                    if mask.any():
+                        server_means[m] = float(r_t[mask].mean().item())
+
+                tr_val, _q_info = quota_flair_reward(
+                    server_means, counts_np, k_dag, f_frac, beta, r_floor
+                )
+                tr = torch.tensor(tr_val, device=Config.DEVICE, dtype=r_t.dtype)
+
+                quota_f_load.append(load_fairness(counts_np, k_dag))
+                quota_jain.append(
+                    jain_normalized_load(d_snap, s_budget, counts_np)
+                )
 
             else:
                 # Fair / softmin aggregation over used servers.
@@ -2036,6 +2114,8 @@ class PPOAgent:
                 "approx_kl": 0.0,
                 "actual_updates": 0,
                 "early_stopped_kl": 0,
+                "quota_f_load": None,
+                "quota_jain_norm_load": None,
             }
 
         term_rewards = torch.stack(term_rewards)
@@ -2436,6 +2516,8 @@ class PPOAgent:
             "approx_kl": float(approx_kl.detach().cpu().item()),
             "actual_updates": actual_updates,
             "early_stopped_kl": int(early_stopped),
+            "quota_f_load": float(np.mean(quota_f_load)) if quota_f_load else None,
+            "quota_jain_norm_load": float(np.mean(quota_jain)) if quota_jain else None,
         }
 
     # def update_new(self, trajectories):

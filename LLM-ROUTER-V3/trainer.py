@@ -845,6 +845,8 @@ class EnhancedLLMRouterTrainer:
                         "latencies_norm": float(np.mean(episode_info['latencies_norm'])) if episode_info.get('latencies_norm') else None,
                         "price_norm": float(np.mean(episode_info['prices_norm'])) if episode_info.get('prices_norm') else None,
                         "Jain_fairness_index": fairness,
+                        "fairness/quota_F_load": training_metrics.get('quota_f_load') if training_metrics else None,
+                        "fairness/quota_jain_norm_load": training_metrics.get('quota_jain_norm_load') if training_metrics else None,
 
                         'valid_total_request_ratio': episode_info.get('valid_actions', None)/episode_info.get('episode_length', None),
                     

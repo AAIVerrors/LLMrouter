@@ -6,7 +6,7 @@ class Config:
         "ministral-3b-2512",
 
         # ===== Tier 2: 便宜 weak baseline =====
-        "together/meta-llama/Meta-Llama-3-8B-Instruct-Lite",
+        "together/Qwen/Qwen3.5-9B",
         "ministral-8b-2512",
         "gpt-4.1-nano-2025-04-14",
 
@@ -27,7 +27,7 @@ class Config:
         (0.00000010, 0.00000010),  # ministral-3b-2512
 
         # ===== Tier 2: 便宜 weak baseline =====
-        (0.00000014, 0.00000014),  # together/meta-llama/Meta-Llama-3-8B-Instruct-Lite
+        (0.00000017, 0.00000025),  # novita/meta-llama/llama-3.1-8b-instruct
         (0.00000015, 0.00000015),  # ministral-8b-2512
         (0.00000010, 0.00000040),  # gpt-4.1-nano-2025-04-14
 
@@ -46,7 +46,7 @@ class Config:
 
     SERVICE_RATE = [
         0.5147,   # 0 ministral-3b
-        0.5605,   # 1 Meta-Llama-3-8B-Lite
+        0.5605,   # 1 llama-3.1-8b (novita)
         0.4924,   # 2 ministral-8b
         0.7042,   # 3 gpt-4.1-nano
         0.4137,   # 4 Qwen2.5-7B
@@ -67,12 +67,23 @@ class Config:
     #   - "squad"
     #   - "cais/mmlu" - DATASET_CONFIG = "all" - DATASET_SPLIT = "auxiliary_train[:20000]"
     #   - "mixed" - "None" - "Train"
-    DATASET_NAME = "cais/mmlu"
-    DATASET_CONFIG = "all"    # Optional HF config name (e.g., HotpotQA: "distractor" / "fullwiki")
-    DATASET_SPLIT = "auxiliary_train[:50000]"     # "train" / "validation" / "test" (must exist in the dataset)
+    # [MATH-only test run] previous single-dataset settings:
+    #   DATASET_NAME = "cais/mmlu"; DATASET_CONFIG = "all"
+    #   DATASET_SPLIT = "auxiliary_train[:50000]"
+    DATASET_NAME = "qwedsacf/competition_math"
+    DATASET_CONFIG = None     # Optional HF config name (e.g., HotpotQA: "distractor" / "fullwiki")
+    DATASET_SPLIT = "train"   # "train" / "validation" / "test" (must exist in the dataset)
     MAX_SAMPLES = 50000         # Optional cap for faster experiments
     SHUFFLE_DATASET = True
     DATASET_SEED = 42
+    # Single-dataset filters (None disables). All five MATH levels are used;
+    # "boxed" keeps every problem with a \boxed answer (~12.5k samples), and
+    # expression answers are scored by math-verify symbolic equivalence with
+    # numeric fallback. Set DATASET_LEVELS = ["Level 3","Level 4","Level 5"]
+    # for the hard subset only, or DATASET_FILTER = "numeric_boxed" to
+    # restrict to plain-number answers.
+    DATASET_LEVELS = None
+    DATASET_FILTER = "boxed"
 
     # Add this inside class Config
     USE_MIXED_DATASET = True  # If True, use a mixture of datasets instead of a single one.
@@ -114,6 +125,21 @@ class Config:
             "weight": 1/3,
             "metric": "number",
             "task_type": "math",
+        },
+        # Competition math (MATH, full 12.5k train set, all five levels),
+        # \boxed answers scored by math-verify symbolic equivalence with
+        # numeric fallback. Set "levels": ["Level 3","Level 4","Level 5"]
+        # to keep only the hard subset.
+        {
+            "name": "qwedsacf/competition_math",
+            "config": None,
+            "split": "train",
+            "weight": 0,
+            "metric": "math_verify",
+            "task_type": "math_hard",
+            "filter": "boxed",
+            "levels": None,
+            "max_samples": 20000,
         },
     ]
 
@@ -184,9 +210,9 @@ class Config:
     FINAL_ANSWER_TAG = "final"
     
     # Reward function weights - adjusted for better balance
-    ALPHA = 1/6   # Quality weight (increased importance)
-    BETA = 2/3    # Latency weight
-    REWARD_GAMMA = 1/6 # price weight (increased to emphasize cost)
+    ALPHA = 1/3   # Quality weight (increased importance)
+    BETA = 1/3    # Latency weight
+    REWARD_GAMMA = 1/3 # price weight (increased to emphasize cost)
 
     # =========================================================
     # Per-round (episode) min-max normalization for latency/price
@@ -227,7 +253,7 @@ class Config:
     POLICY_COEF = 1       # Policy loss weight
     VALUE_COEF = 1      # Reduced value function weight
     ENTROPY_COEF = 0.0   # Increased entropy for more exploration
-    ACTOR_LEARNING_RATE = 2e-6
+    ACTOR_LEARNING_RATE = 1e-5
     CRITIC_LEARNING_RATE = 1e-5
     USE_LR_DECAY = True
     LR_DECAY_TYPE = "cosine"
@@ -293,7 +319,10 @@ class Config:
     
     # Encourage a parseable final answer
     QA_PROMPT_STYLE = "plain"     # "instruction"/"alpaca" or "plain"
-    QA_FORCE_FINAL_TAG = True 
+    # False: prompts use each dataset's standard output format (\boxed{}
+    # for math, option letter for MMLU, short span for QA) instead of the
+    # <final> tag; extraction falls back tag -> \boxed -> answer lines.
+    QA_FORCE_FINAL_TAG = False
     FINAL_ANSWER_TAG = "final"
     TRUNCATE_AT_FINAL_TAG = True
     OUTPUT_FINAL_ONLY = True           # if True, store only <final>...</final> as response_text
@@ -421,6 +450,7 @@ class Config:
     T_QUEUE = -2
     T_REWARD = -2
     FAIR_WARMUP_EPISODES = 0
+    FAIRNESS_MODE = "quota"
     FAIR_TARGET = 1      # 最终的 FAIR 值
     FAIR = 1             # 起始（trainer 会覆盖）
 
@@ -543,8 +573,11 @@ class Config:
     #   "ratio"    : character-level similarity ratio (0..1)
     #   "contains" : 1 if one contains the other (after normalization)
     #   "em"       : strict exact match (0/1)
+    # Fallback metric, used ONLY when a gold answer arrives as a bare
+    # string; per-sample gold dicts carry their own "metric" and override
+    # this (MATH samples embed "number"). Aligned with the MATH-only run.
     # EM_METRIC = "mmlu"
-    EM_METRIC = "mmlu" 
+    EM_METRIC = "number"
 
     # Optionally binarise the match score (useful if you want 0/1 reward)
     EM_BINARIZE = False
