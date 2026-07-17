@@ -1,0 +1,26 @@
+# LLM-ROUTER-V3 runtime dependencies for pip-only installs
+# (e.g. Lightning AI Studio base environment: `pip install -r requirements.txt`).
+#
+# torch is intentionally NOT pinned here: Lightning Studios ship a
+# CUDA-matched torch preinstall. On a bare machine install it first
+# (development used torch==2.7.0+cu126).
+#
+# flash-attn is intentionally absent: Config.FLASH_ATTN_FALLBACK="sdpa"
+# covers machines without it (T4 cannot run flash-attn 2 anyway).
+#
+# Versions below are pinned from the working development environment.
+
+anthropic==0.101.0
+datasets==4.8.5
+google-genai==2.0.1
+httpx==0.28.1
+math-verify==0.9.0
+mistralai==2.4.5
+numpy==2.2.6
+openai==2.36.0
+pandas==2.3.3
+python-dotenv==1.2.2
+sentence-transformers==5.4.1
+together==2.12.0
+transformers==5.8.0
+wandb==0.26.1
