@@ -597,7 +597,14 @@ class EnhancedLLMRouterTrainer:
             for i, c in enumerate(service_rate_info["service_rate_counts"]):
                 log_dict[f"service_rate/count_server_{i}"] = c
 
-            wandb.log(log_dict, step=self.current_episode)
+            # Log WITHOUT an explicit step, matching every other wandb.log
+            # call in this file. Mixing explicit step=episode here with the
+            # step-less (auto-incrementing) calls elsewhere made wandb drop
+            # these logs after episode 0 (their episode-numbered step fell
+            # behind the auto-incremented internal step). Use the "episode"
+            # data key for the x-axis instead, like the main metrics block.
+            log_dict["episode"] = self.current_episode
+            wandb.log(log_dict)
 
         return episode_record
 
