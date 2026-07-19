@@ -6,18 +6,18 @@ class Config:
         "ministral-3b-2512",
 
         # ===== Tier 2: 便宜 weak baseline =====
-        # "together/Qwen/Qwen3.5-9B",
-        # "ministral-8b-2512",
+        "together/Qwen/Qwen3.5-9B",
+        "ministral-8b-2512",
         "gpt-4.1-nano-2025-04-14",
 
         # ===== Tier 3: mid-tier =====
-        # "together/Qwen/Qwen2.5-7B-Instruct-Turbo",
+        "together/Qwen/Qwen2.5-7B-Instruct-Turbo",
         "mistral-small-2603",
         "gpt-4.1-mini-2025-04-14",
 
         # ===== Tier 4: 强模型 =====
         "together/meta-llama/Llama-3.3-70B-Instruct-Turbo",
-        # "mistral-large-2512",
+        "mistral-large-2512",
         # "gpt-4.1-2025-04-14",
         "together/openai/gpt-oss-120b",
     ]
@@ -27,36 +27,36 @@ class Config:
         (0.00000010, 0.00000010),  # ministral-3b-2512
 
         # ===== Tier 2: 便宜 weak baseline =====
-        # (0.00000017, 0.00000025),  # novita/meta-llama/llama-3.1-8b-instruct
-        # (0.00000015, 0.00000015),  # ministral-8b-2512
+        (0.00000017, 0.00000025),  # novita/meta-llama/llama-3.1-8b-instruct
+        (0.00000015, 0.00000015),  # ministral-8b-2512
         (0.00000010, 0.00000040),  # gpt-4.1-nano-2025-04-14
 
         # ===== Tier 3: mid-tier =====
-        # (0.00000030, 0.00000030),  # together/Qwen/Qwen2.5-7B-Instruct-Turbo
+        (0.00000030, 0.00000030),  # together/Qwen/Qwen2.5-7B-Instruct-Turbo
         (0.00000015, 0.00000060),  # mistral-small-2506
         (0.00000040, 0.00000160),  # gpt-4.1-mini-2025-04-14
 
         # ===== Tier 4: 强模型 =====
         (0.00000104, 0.00000104),  # together/meta-llama/Llama-3.3-70B-Instruct-Turbo
-        # (0.00000050, 0.00000150),  # mistral-large-2512
+        (0.00000050, 0.00000150),  # mistral-large-2512
         # (0.00000200, 0.00000800),  # gpt-4.1-2025-04-14
-        (0.00000015, 0.00000060),  # gpt-oss-120b
-
+        (0.00000015, 0.00000060),  # 9 gpt-oss-120b
+        
     ]
 
     SERVICE_RATE = [
-        0.663,   # ministral-3b
-        # 0.5605,   # llama-3.1-8b (novita)
-        # 0.4924,   # ministral-8b
-        0.745,   # gpt-4.1-nano
-        # 0.4137,   # Qwen2.5-7B
-        0.639,   # mistral-small
-        0.565,   # gpt-4.1-mini
-        0.471,   # Llama-3.3-70B
-        # 0.2065,   # mistral-large
-        0.313,   # gpt-oss-120b
+        0.5147,   # 0 ministral-3b
+        0.5605,   # 1 llama-3.1-8b (novita)
+        0.4924,   # 2 ministral-8b
+        0.7042,   # 3 gpt-4.1-nano
+        0.4137,   # 4 Qwen2.5-7B
+        0.3352,   # 5 mistral-small
+        0.5391,   # 6 gpt-4.1-mini
+        0.1351,   # 7 Llama-3.3-70B
+        0.2065,   # 8 mistral-large
+        0.2036,   # 9 gpt-oss-120b
     ]
-    SERVER_CAPACITIES = [50] * 6
+    SERVER_CAPACITIES = [50] * 10
 
     USE_UTIL = True  # in the state use load/capability or load + capability
 
@@ -76,17 +76,13 @@ class Config:
     MAX_SAMPLES = 50000         # Optional cap for faster experiments
     SHUFFLE_DATASET = True
     DATASET_SEED = 42
-    # Single-dataset filters (None disables). All five MATH levels are used;
-    # "boxed" keeps every problem with a \boxed answer (~12.5k samples), and
-    # expression answers are scored by math-verify symbolic equivalence with
-    # numeric fallback. Set DATASET_LEVELS = ["Level 3","Level 4","Level 5"]
-    # for the hard subset only, or DATASET_FILTER = "numeric_boxed" to
-    # restrict to plain-number answers.
-    DATASET_LEVELS = None
-    DATASET_FILTER = "boxed"
+    # Single-dataset filters (None disables). Mirror the MIXED_DATASETS
+    # MATH entry: keep Levels 3-5 with purely numeric \boxed answers.
+    DATASET_LEVELS = ["Level 3", "Level 4", "Level 5"]
+    DATASET_FILTER = "numeric_boxed"
 
     # Add this inside class Config
-    USE_MIXED_DATASET = True  # If True, use a mixture of datasets instead of a single one.
+    USE_MIXED_DATASET = False  # If True, use a mixture of datasets instead of a single one.
 
     MIXED_DATASETS = [
         # Multi-hop QA, needs context; metric uses token F1
@@ -113,45 +109,32 @@ class Config:
             "name": "cais/mmlu",
             "config": "all",
             "split": "auxiliary_train[:20000]",
-            "weight": 0,
-            "metric": "mmlu",
-            "task_type": "mmlu",
-        },
-        # Harder MMLU replacement (MMLU-Pro): 12k questions, 10 options
-        # (A-J, random floor 10%), reasoning-heavy, low contamination —
-        # weak-strong gap roughly 2x wider than MMLU. Activate by setting
-        # weight > 0 (typically also set cais/mmlu weight to 0).
-        {
-            "name": "TIGER-Lab/MMLU-Pro",
-            "config": None,
-            "split": "test",
             "weight": 1/3,
             "metric": "mmlu",
-            "task_type": "mmlu_pro",
-            "max_samples": 20000,
+            "task_type": "mmlu",
         },
         # Math reasoning, metric extracts exact final number
         {
             "name": "openai/gsm8k",
             "config": "main",
             "split": "train[:20000]",
-            "weight": 0,
+            "weight": 1/3,
             "metric": "number",
             "task_type": "math",
         },
-        # Competition math (MATH, full 12.5k train set, all five levels),
-        # \boxed answers scored by math-verify symbolic equivalence with
-        # numeric fallback. Set "levels": ["Level 3","Level 4","Level 5"]
-        # to keep only the hard subset.
+        # Competition math (MATH, full 12.5k train set), filtered to
+        # Levels 3-5 with purely numeric \boxed answers (~6k samples):
+        # much harder than GSM8K, so the strong/weak quality gap widens
+        # while scoring stays exact numeric match.
         {
             "name": "qwedsacf/competition_math",
             "config": None,
             "split": "train",
             "weight": 1/3,
-            "metric": "math_verify",
+            "metric": "math_boxed",
             "task_type": "math_hard",
-            "filter": "boxed",
-            "levels": None,
+            "filter": "numeric_boxed",
+            "levels": ["Level 3", "Level 4", "Level 5"],
             "max_samples": 20000,
         },
     ]
@@ -221,7 +204,7 @@ class Config:
     # Scoring: extract a final answer span before EM/F1 (prevents explanations from lowering scores)
     EXTRACT_FINAL_ANSWER = True
     FINAL_ANSWER_TAG = "final"
-
+    
     # Reward function weights - adjusted for better balance
     ALPHA = 1/3   # Quality weight (increased importance)
     BETA = 1/3    # Latency weight
@@ -257,49 +240,30 @@ class Config:
     LAMBDA = 5  # Capacity penalty weight (increased to strongly discourage invalid actions)
     MAX_LAT = 30
     FAIR_REWARD_MIN_FLOOR = False # True the missing server will be set min rewards, False will use the floor reward -Beta-REWARD_GAMMA
-
-    # =========================================================
-    # PPO hyperparameters
-    # Values below were converged from three real runs:
-    #   ACTOR_LR 2e-6  -> never learns  (approx_kl ~0.001, entropy pinned)
-    #   ACTOR_LR 1e-4  -> collapses     (KL spike 0.8, entropy 2.24 -> 0.2)
-    #   ACTOR_LR 5e-5 + entropy brake -> stable to ~ep20, then needs the
-    #   KL clamp + LR annealing below for a stable END of training.
-    # =========================================================
-    LEARNING_RATE = 1e-4  # legacy fallback, unused when ACTOR/CRITIC set
-    GAMMA = 0.99          # discount factor
-    GAE_LAMBDA = 0.95     # advantage estimation
-    CLIP_EPSILON = 0.2    # PPO clip
+    
+    # PPO hyperparameters - tuned for the routing problem
+    LEARNING_RATE = 1e-4 # Reduced for more stable learning
+    GAMMA = 0.99          # Slightly reduced discount factor
+    GAE_LAMBDA = 0.95      # Reduced for less variance in advantage estimation
+    CLIP_EPSILON = 0.2    # Slightly reduced for more conservative updates
     POLICY_COEF = 1       # Policy loss weight
-    VALUE_COEF = 1        # Value loss weight
-    # Anti-collapse brake: 0 collapses onto few servers; 0.02 only delayed
-    # the slide to ~ep20; 0.03 is the current setting.
-    ENTROPY_COEF = 0.03
-    ACTOR_LEARNING_RATE = 5e-5
-    CRITIC_LEARNING_RATE = 3e-4
+    VALUE_COEF = 1      # Reduced value function weight
+    ENTROPY_COEF = 0.0   # Increased entropy for more exploration
+    ACTOR_LEARNING_RATE = 1e-5
+    CRITIC_LEARNING_RATE = 1e-5
     USE_LR_DECAY = True
     LR_DECAY_TYPE = "cosine"
     LR_DECAY_MIN_RATIO = 0.1
-    # Spread the cosine over the ACTUAL run length (= MAX_EPISODES).
-    # Unset, it falls back to 200 and the decay never bites in a 60-ep run
-    # (LR would still be ~97% at ep25) -> no stable end-of-training phase.
-    LR_DECAY_EPISODES = 100
     LR_WARMUP_EPISODES = 0
     KL_COEF = 0.00
-    MAX_GRAD_NORM = 0.5
-    PPO_EPOCHS = 3   # small interval batch: more epochs overfit noise
-    BATCH_SIZE = 1
+    MAX_GRAD_NORM = 0.5 # Reduced for more stable training
+    PPO_EPOCHS = 4   # Increased for more thorough updates
+    BATCH_SIZE = 1      # Increased batch size
 
-    # The ep20+ slide happened at KL 0.007-0.015 — entirely below the old
-    # 0.04 target, so the early stop never fired. 0.012 clamps the late
-    # acceleration while passing normal mid-run learning (0.002-0.003).
-    TARGET_KL = 0.012
-    USE_TARGET_KL_STOP = True
+    TARGET_KL = 0.04
+    USE_TARGET_KL_STOP = False
 
-    # Full-batch Path A over all intervals: every stability number above
-    # (LR / KL / entropy) was measured on this path; minibatching the tiny
-    # interval batch only adds gradient noise.
-    USE_PER_INTERVAL_MINIBATCH = False
+    USE_PER_INTERVAL_MINIBATCH = True
     PPO_INTERVAL_MINIBATCH_SIZE = 2
     PPO_SHUFFLE_INTERVALS = False
     USE_SERVERWISE_MLP = False
@@ -307,20 +271,17 @@ class Config:
     PROMPT_MAX_TOKENS = 1024
     ROUTER_DEBUG_TEXT = False
     LLAVA_FUSION_LAYERS = 2
-
+    
     USE_CLIP_FUSION_ROUTER = True
     ATTN_D_MODEL  = 256
     ATTN_N_HEADS  = 4
-    ATTN_N_LAYERS = 2
+    ATTN_N_LAYERS = 2     
     ATTN_FF_MULT  = 4
     ATTN_DROPOUT  = 0
-    CLIP_INIT_TEMP = 0.2
-
-    # (dead config, nothing reads it; the episode-completion wait loop in
-    # trainer.py is unbounded — API-client timeouts/retries bound it in
-    # practice)
-    # EPISODE_COMPLETION_TIMEOUT = 180
-
+    CLIP_INIT_TEMP = 0.2   
+    
+    EPISODE_COMPLETION_TIMEOUT = 180
+    
     SERVICE_RATE_EMA_ALPHA = 0.1
     SERVICE_RATE_MIN_SAMPLES = 1
     SERVICE_RATE_MIN = 1e-4
@@ -329,35 +290,32 @@ class Config:
 
     # Neural network settings
     HIDDEN_DIM = 512
-
+    
     # Device settings
     GPU_LIST = [0]
     DEVICE = torch.device("cuda:0")
-
+    
     # Wandb settings
     WANDB_PROJECT = "router"
     WANDB_ENTITY = None  # Set your wandb entity if needed
-
+    
     # Logging
     LOG_INTERVAL = 5      # Log every 5 episodes
     SAVE_INTERVAL = 25    # Save every 25 episodes
     EVAL_INTERVAL = 15    # Evaluate every 15 episodes
     PLOT_INTERVAL = 50    # Plot progress every 50 episodes
-
+    
     # Router QA generation controls (keeps answers short & deterministic)
-    GEN_MAX_NEW_TOKENS = 768         # hard cap on answer length
+    GEN_MAX_NEW_TOKENS = 256         # hard cap on answer length
     GEN_MIN_NEW_TOKENS = 0
-    GEN_TEMPERATURE = 0.1
+    GEN_TEMPERATURE = 0.1         
     GEN_TOP_P = 1
     GEN_DO_SAMPLE = False
 
-
+    
     # Encourage a parseable final answer
     QA_PROMPT_STYLE = "plain"     # "instruction"/"alpaca" or "plain"
-    # False: prompts use each dataset's standard output format (\boxed{}
-    # for math, option letter for MMLU, short span for QA) instead of the
-    # <final> tag; extraction falls back tag -> \boxed -> answer lines.
-    QA_FORCE_FINAL_TAG = False
+    QA_FORCE_FINAL_TAG = True 
     FINAL_ANSWER_TAG = "final"
     TRUNCATE_AT_FINAL_TAG = True
     OUTPUT_FINAL_ONLY = True           # if True, store only <final>...</final> as response_text
@@ -366,46 +324,48 @@ class Config:
     MISTRAL_MAX_RETRIES = 2
     API_TRANSIENT_FAIL_PENALTY = 0.0
 
-
+    
     # Quality scoring settings
-    # Realigned to the 6-server list (the old dict was keyed for 10
-    # servers; after the cut, index 4 = Llama-70B would have read 700).
     MODEL_ELO_SCORES = {
-        0: 700,   # ministral-3b
-        1: 1200,  # gpt-4.1-nano
-        2: 1100,  # mistral-small
-        3: 1300,  # gpt-4.1-mini
-        4: 1500,  # Llama-3.3-70B
-        5: 1500,  # gpt-oss-120b
+        0: 700,  # GPT-2 base ELO
+        1: 1100,  # Qwen base ELO
+        2: 700,  # GPT-2 base ELO
+        3: 1500,
+        4: 700,  # GPT-2 base ELO
+        5: 1100,
+        6: 700,  # GPT-2 base ELO
+        7: 1500,
+        8: 700,  # GPT-2 base ELO
+        9: 1100,
     }
-
+    
     USE_ATTN_ROUTER = False
 
     # ====================================================================
     # [CHANNEL] Dual-channel attention router: split per-server features
     # into dynamic (util only) and static (mu, prices) channels.
     # ====================================================================
-    SERVER_DYN_DIM  = 1    # util, slot_count, interval_norm, time_remaining_norm
-    SERVER_STAT_DIM = 3    # mu, price_in, price_out
+    SERVER_DYN_DIM  = 1    # util, slot_count, interval_norm, time_remaining_norm  
+    SERVER_STAT_DIM = 3    # mu, price_in, price_out                         
 
-
+    
     # Load factor settings
     MAX_LOAD_FACTOR = 1.5
 
     # Final evaluation settings
     EVAL_EPISODES = 5         # Number of episodes for evaluation
     FINAL_EVAL_EPISODES = 10  # Number of episodes for final evaluation
-
+    
     # Poisson prompt generation settings
-    POISSON_ARRIVAL_RATE = 4  # Average arrival rate of prompts per second
+    POISSON_ARRIVAL_RATE = 5  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
-    EPISODE_TIME_INTERVAL = 12 # How many intervals in current episode
-
+    EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
+    
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)
-    INTERVAL_LENGTH = 4 # The length of interval
-    MAX_EPISODES = 100   # match LR_DECAY_EPISODES above
-
+    INTERVAL_LENGTH = 3 # The length of interval
+    MAX_EPISODES = 200   # Increased for more training
+    
     # Queue score settings
     QUEUE_SCORE_FACTOR = 0.2  # Factor to adjust queue score impact
     QUEUE_EPSILON = 0.0001  # Epsilon for queue score stability
@@ -419,17 +379,17 @@ class Config:
     MASK = False
 
     ROUND_ROBIN = False
-
-    USE_MERGE_TO_TRAIN = False  # Use merge action for training
-
+    
+    USE_MERGE_TO_TRAIN = False  # Use merge action for training 
+    
     ADAPTIVE_EPSILON = False  # Use adaptive epsilon for exploration
-
+    
     MIX_QUEUE_SCORE = False
-
+    
     ENTROPY_BASED_EXPLORATION = False  # Use entropy-based exploration
-
+    
     USE_AVG = False  # Use average reward for training
-
+    
     RANDOM_SELECT = False
 
     NAIVE_PPO = False
@@ -446,8 +406,8 @@ class Config:
     GREEDY_UTILITY = False
     GREEDY_MASK = False # True will enable action mask
     # Queue-conditioned predictor for GREEDY_UTILITY.
-    #   - "none"   : use a single global EMA per server
-    #   - "bins"   : keep EMA latency/cost in coarse bins of queue length q
+    #   - "none"   : use a single global EMA per server 
+    #   - "bins"   : keep EMA latency/cost in coarse bins of queue length q 
     #   - "linear" : online fit of latency/cost as a + b*q per server
     UTILITY_QUEUE_MODEL = "linear"
     UTILITY_EMA_ALPHA = 0.10      # EMA update rate for latency/cost (0.05-0.2 typical)
@@ -461,19 +421,19 @@ class Config:
     # ============================================================
     # Greedy utility exploration (safe defaults)
     # ============================================================
-
+    
     # Ensure each server is tried at least this many times before pure greedy utility.
     # Set 0 to disable.
     GREEDY_WARMUP_MIN_TRIALS = 1
-
+    
     # With probability epsilon, pick a random server (exploration).
     # Set 0.0 to disable.
     GREEDY_EPSILON = 0.2
-
+    
     # If > 0, adds a UCB-style bonus to uncertain servers in greedy utility.
     # Set 0.0 to disable.
     GREEDY_UCB_COEF = 0.0
-
+    
     # If > 1, sample uniformly among the top-K highest-utility servers (simple exploration).
     # Set 1 to disable.
     GREEDY_TOPK = 1
@@ -485,19 +445,19 @@ class Config:
     FAIR_WARMUP_EPISODES = 0
     FAIRNESS_MODE = "quota"
     FAIR_TARGET = 1      # 最终的 FAIR 值
-    FAIR = 1            # 起始（trainer 会覆盖）
+    FAIR = 1             # 起始（trainer 会覆盖）
 
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL
     # =================================================================
-
+    
     # Master switches for different types of logging/visualization
     ENABLE_WANDB_LOGGING = True          # Enable/disable all wandb logging
     ENABLE_CONSOLE_LOGGING = True        # Enable/disable console output
     ENABLE_QUEUE_MONITORING = True       # Enable/disable queue state monitoring
     ENABLE_VISUALIZATIONS = True         # Enable/disable all plot generation
     ENABLE_FILE_EXPORTS = True           # Enable/disable file exports
-
+    
     # Detailed visualization control
     VISUALIZATION_CONFIG = {
         'training_progress_plots': True,     # Episode rewards, moving averages
@@ -507,7 +467,7 @@ class Config:
         'server_utilization_plots': True,   # Server utilization over time
         'real_time_plots': False,           # Real-time plotting (resource intensive)
     }
-
+    
     # Detailed logging control
     LOGGING_CONFIG = {
         'episode_metrics': False,            # Basic episode metrics (rewards, actions)
@@ -519,7 +479,7 @@ class Config:
         'real_time_queue_state': True,     # Real-time queue state updates
         'periodic_summaries': True,        # Periodic summary reports
     }
-
+    
     # File export control
     EXPORT_CONFIG = {
         'queue_events_json': False,          # Export queue events to JSON
@@ -529,7 +489,7 @@ class Config:
         'csv_metrics': False,               # Export metrics to CSV (optional)
         'detailed_logs': False,             # Detailed debug logs (verbose)
     }
-
+    
     # Wandb specific control
     WANDB_CONFIG = {
         'log_episode_metrics': True,        # Episode-level metrics
@@ -540,7 +500,7 @@ class Config:
         'log_hyperparameters': True,        # Log all hyperparameters
         'watch_model': True,                # Watch model gradients/weights
     }
-
+    
     # Console output control
     CONSOLE_CONFIG = {
         'episode_progress': True,           # Episode progress messages
@@ -551,7 +511,7 @@ class Config:
         'error_messages': True,             # Error and warning messages
         'debug_messages': False,            # Detailed debug messages
     }
-
+    
     # Performance and frequency control
     FREQUENCY_CONFIG = {
         'queue_event_logging': 1,           # Log every N queue events (1 = all)
@@ -561,7 +521,7 @@ class Config:
         'wandb_upload_interval': 1,        # Upload to wandb every N log calls
         'file_export_interval': 50,        # Export files every N episodes
     }
-
+    
 
     # =================================================================
     # Quality scoring and LLM-as-judge (optional)
