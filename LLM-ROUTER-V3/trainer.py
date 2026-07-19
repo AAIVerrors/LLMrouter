@@ -82,10 +82,12 @@ class EnhancedLLMRouterTrainer:
         Update per-server service rate after each trajectory/episode.
 
         Estimate:
-            mu_i = completed_requests_i / sum(actual_service_time_i)
+            mu_i = completed_requests_i / sum(service_time_i)
 
-        Prefer response['decode_time'] because it excludes queue waiting more than
-        processing_latency does.
+        service_time is PURE generation time (completion_time - start_time,
+        with start_time stamped at dequeue), which excludes queue waiting.
+        End-to-end latency is intentionally not used, as it would bias mu
+        downward whenever requests queue.
         """
         M = len(Config.SERVER_CAPACITIES)
 
@@ -118,25 +120,34 @@ class EnhancedLLMRouterTrainer:
             if sid < 0 or sid >= M:
                 continue
 
+            # Service rate must be estimated from PURE service (generation)
+            # time only. start_time is stamped at dequeue (generation start,
+            # see environment request loop), so completion_time - start_time
+            # excludes queue waiting. End-to-end latency
+            # (processing_latency*, = completion - arrival) is deliberately
+            # NOT used here: it includes queue wait and would bias mu
+            # downward under load.
+            def _valid_time(x):
+                if x is None:
+                    return None
+                try:
+                    v = float(x)
+                except (TypeError, ValueError):
+                    return None
+                return v if (np.isfinite(v) and v > 0) else None
+
+            # Prefer the precomputed decode_time; if it is missing or invalid
+            # in this snapshot, recompute the same pure-service quantity from
+            # the raw timing attributes (reliably present on completions).
             resp = req.get("response", {}) or {}
-
-            # Prefer actual decoding/service time
-            service_time = None
-            if isinstance(resp, dict):
-                service_time = resp.get("decode_time", None)
-
-            # Fallback if decode_time is missing
+            service_time = _valid_time(resp.get("decode_time") if isinstance(resp, dict) else None)
             if service_time is None:
-                service_time = req.get("processing_latency_raw", None)
+                st = _valid_time(req.get("start_time"))
+                ct = _valid_time(req.get("completion_time"))
+                if st is not None and ct is not None and ct > st:
+                    service_time = ct - st
+
             if service_time is None:
-                service_time = req.get("processing_latency", None)
-
-            try:
-                service_time = float(service_time)
-            except Exception:
-                continue
-
-            if not np.isfinite(service_time) or service_time <= 0:
                 continue
 
             counts[sid] += 1

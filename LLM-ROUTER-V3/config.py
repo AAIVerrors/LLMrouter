@@ -113,7 +113,7 @@ class Config:
             "name": "cais/mmlu",
             "config": "all",
             "split": "auxiliary_train[:20000]",
-            "weight": 1/3,
+            "weight": 0,
             "metric": "mmlu",
             "task_type": "mmlu",
         },
@@ -125,7 +125,7 @@ class Config:
             "name": "TIGER-Lab/MMLU-Pro",
             "config": None,
             "split": "test",
-            "weight": 0,
+            "weight": 1/3,
             "metric": "mmlu",
             "task_type": "mmlu_pro",
             "max_samples": 20000,
@@ -135,7 +135,7 @@ class Config:
             "name": "openai/gsm8k",
             "config": "main",
             "split": "train[:20000]",
-            "weight": 1/3,
+            "weight": 0,
             "metric": "number",
             "task_type": "math",
         },
@@ -147,7 +147,7 @@ class Config:
             "name": "qwedsacf/competition_math",
             "config": None,
             "split": "train",
-            "weight": 0,
+            "weight": 1/3,
             "metric": "math_verify",
             "task_type": "math_hard",
             "filter": "boxed",
@@ -266,21 +266,21 @@ class Config:
     POLICY_COEF = 1       # Policy loss weight
     VALUE_COEF = 1      # Reduced value function weight
     ENTROPY_COEF = 0.0   # Increased entropy for more exploration
-    ACTOR_LEARNING_RATE = 2e-6
-    CRITIC_LEARNING_RATE = 1e-5
+    ACTOR_LEARNING_RATE = 1e-4
+    CRITIC_LEARNING_RATE = 3e-4
     USE_LR_DECAY = True
     LR_DECAY_TYPE = "cosine"
     LR_DECAY_MIN_RATIO = 0.1
     LR_WARMUP_EPISODES = 0
     KL_COEF = 0.00
     MAX_GRAD_NORM = 0.5 # Reduced for more stable training
-    PPO_EPOCHS = 4   # Increased for more thorough updates
+    PPO_EPOCHS = 6   # Increased for more thorough updates
     BATCH_SIZE = 1      # Increased batch size
 
     TARGET_KL = 0.04
-    USE_TARGET_KL_STOP = False
+    USE_TARGET_KL_STOP = True
 
-    USE_PER_INTERVAL_MINIBATCH = True
+    USE_PER_INTERVAL_MINIBATCH = False
     PPO_INTERVAL_MINIBATCH_SIZE = 2
     PPO_SHUFFLE_INTERVALS = False
     USE_SERVERWISE_MLP = False
@@ -323,7 +323,7 @@ class Config:
     PLOT_INTERVAL = 50    # Plot progress every 50 episodes
     
     # Router QA generation controls (keeps answers short & deterministic)
-    GEN_MAX_NEW_TOKENS = 512         # hard cap on answer length
+    GEN_MAX_NEW_TOKENS = 768         # hard cap on answer length
     GEN_MIN_NEW_TOKENS = 0
     GEN_TEMPERATURE = 0.1         
     GEN_TOP_P = 1
@@ -416,7 +416,7 @@ class Config:
 
     ENABLE_QUEUE_PENALTY = False
 
-    JSQ = True
+    JSQ = False
 
     P2C = False
 
@@ -464,8 +464,8 @@ class Config:
     T_REWARD = -2
     FAIR_WARMUP_EPISODES = 0
     FAIRNESS_MODE = "quota"
-    FAIR_TARGET = 0      # 最终的 FAIR 值
-    FAIR = 0             # 起始（trainer 会覆盖）
+    FAIR_TARGET = 1      # 最终的 FAIR 值
+    FAIR = 1            # 起始（trainer 会覆盖）
 
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL
