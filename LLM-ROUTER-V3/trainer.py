@@ -915,6 +915,9 @@ class EnhancedLLMRouterTrainer:
                         # queue_spread>0 => queue tower fires on load.
                         "dual/quality_spread": training_metrics.get('dual_quality_spread') if training_metrics else None,
                         "dual/queue_spread": training_metrics.get('dual_queue_spread') if training_metrics else None,
+                        # Learnable per-tower balance scales (s_q*quality + s_k*queue).
+                        "dual/scale_q": training_metrics.get('dual_scale_q') if training_metrics else None,
+                        "dual/scale_k": training_metrics.get('dual_scale_k') if training_metrics else None,
                     })
 
 

@@ -303,9 +303,26 @@ class RouterNetwork(nn.Module):
                     nn.GELU(),
                     nn.Linear(max(d_model // 4, 8), 1),
                 )
+            # Learnable per-tower scale to balance logit = s_q*quality +
+            # s_k*queue. Quality naturally grows a much larger spread and mutes
+            # the queue tower; give queue a boosted init scale and let the
+            # reward tune both (exp keeps them positive).
+            self.use_dual_learn_scale = self.use_actor_dual_tower and bool(
+                getattr(Config, "ACTOR_DUAL_LEARN_SCALE", False)
+            )
+            if self.use_dual_learn_scale:
+                import math as _math
+                k_init = float(_math.log(max(
+                    float(getattr(Config, "ACTOR_DUAL_QUEUE_INIT_SCALE", 5.0)), 1e-6)))
+                # [quality, queue] log-scales; quality starts at exp(0)=1.
+                self.tower_log_scale = nn.Parameter(
+                    torch.tensor([0.0, k_init], dtype=torch.float32)
+                )
             # last-batch score spreads (std across servers) for logging
             self._dual_quality_spread = None
             self._dual_queue_spread = None
+            self._dual_scale_q = None
+            self._dual_scale_k = None
 
             # Critic attention pooling over servers.
             # route_h tells the critic which server states are important for this prompt/state.
@@ -798,7 +815,13 @@ class RouterNetwork(nn.Module):
                     torch.cat([stat_h, route_expand], dim=-1)
                 ).squeeze(-1)                                       # [B, M]
                 queue_score = self.queue_head(queue_desc).squeeze(-1)  # [B, M]
-                logits = quality_score + queue_score
+                if getattr(self, "use_dual_learn_scale", False):
+                    scales = torch.exp(self.tower_log_scale)
+                    logits = scales[0] * quality_score + scales[1] * queue_score
+                    self._dual_scale_q = float(scales[0].detach().cpu().item())
+                    self._dual_scale_k = float(scales[1].detach().cpu().item())
+                else:
+                    logits = quality_score + queue_score
                 # log spreads (how differentiated each tower is across servers)
                 self._dual_quality_spread = float(
                     quality_score.std(dim=-1).mean().detach().cpu().item()
@@ -2717,6 +2740,8 @@ class PPOAgent:
             "policy_entropy": -float(total_entropy_loss / den),
             "dual_quality_spread": getattr(self.network, "_dual_quality_spread", None),
             "dual_queue_spread": getattr(self.network, "_dual_queue_spread", None),
+            "dual_scale_q": getattr(self.network, "_dual_scale_q", None),
+            "dual_scale_k": getattr(self.network, "_dual_scale_k", None),
             "actual_updates": actual_updates,
             "early_stopped_kl": int(early_stopped),
             "quota_f_load": float(np.mean(quota_f_load)) if quota_f_load else None,

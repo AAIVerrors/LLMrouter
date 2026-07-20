@@ -295,8 +295,8 @@ class Config:
     VALUE_COEF = 1        # Value loss weight
     # Anti-collapse brake: 0 collapses onto few servers; 0.02 only delayed
     # the slide to ~ep20; 0.03 is the current setting.
-    ENTROPY_COEF = 0.03
-    ACTOR_LEARNING_RATE = 5e-5
+    ENTROPY_COEF = 0
+    ACTOR_LEARNING_RATE = 3e-5
     CRITIC_LEARNING_RATE = 3e-4
     USE_LR_DECAY = True
     LR_DECAY_TYPE = "cosine"
@@ -362,6 +362,16 @@ class Config:
     # so you can see whether the quality tower learns and the queue tower fires.
     # Overrides ACTOR_QUEUE_SKIP when True. Requires a fresh model.
     ACTOR_DUAL_TOWER = True
+
+    # Balance the two towers in logit = s_q*quality + s_k*queue via learnable
+    # per-tower scales (exp-parameterized, logged as dual/scale_q, dual/scale_k).
+    # Quality grows a ~30x larger spread and mutes the queue tower; queue starts
+    # at scale ACTOR_DUAL_QUEUE_INIT_SCALE so it has a comparable voice, then the
+    # reward tunes both. NOTE: the imbalance is largely reward-driven — at low
+    # load / FAIR=0 the reward may still shrink s_k. To make the queue tower
+    # actually matter, pair with a load-relevant regime (higher load / FAIR=1).
+    ACTOR_DUAL_LEARN_SCALE = True
+    ACTOR_DUAL_QUEUE_INIT_SCALE = 5.0
 
     # (dead config, nothing reads it; the episode-completion wait loop in
     # trainer.py is unbounded — API-client timeouts/retries bound it in
@@ -450,7 +460,7 @@ class Config:
 
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)
-    INTERVAL_LENGTH = 8 # The length of interval
+    INTERVAL_LENGTH = 6 # The length of interval
     MAX_EPISODES = 200   # match LR_DECAY_EPISODES above
 
     # Queue score settings
