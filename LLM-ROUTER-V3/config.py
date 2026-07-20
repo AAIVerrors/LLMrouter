@@ -295,7 +295,7 @@ class Config:
     VALUE_COEF = 1        # Value loss weight
     # Anti-collapse brake: 0 collapses onto few servers; 0.02 only delayed
     # the slide to ~ep20; 0.03 is the current setting.
-    ENTROPY_COEF = 0.01
+    ENTROPY_COEF = 0.03
     ACTOR_LEARNING_RATE = 5e-5
     CRITIC_LEARNING_RATE = 3e-4
     USE_LR_DECAY = True
@@ -308,7 +308,7 @@ class Config:
     LR_WARMUP_EPISODES = 0
     KL_COEF = 0.00
     MAX_GRAD_NORM = 1
-    PPO_EPOCHS = 4   # small interval batch: more epochs overfit noise
+    PPO_EPOCHS = 2   # small interval batch: more epochs overfit noise
     BATCH_SIZE = 1
 
     PPO_RATIO_AGGREGATION = "per_request_mean"

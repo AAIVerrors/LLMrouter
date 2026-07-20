@@ -2231,8 +2231,10 @@ class PPOAgent:
         ):
             """Return an equal-interval-weighted clipped PPO policy loss."""
             interval_surrogates = []
+            interval_counts = []
 
             for pos, idxs in enumerate(grouped_indices):
+                interval_counts.append(int(len(idxs)))
                 log_ratio_i = current_log_probs[idxs] - behavior_log_probs[idxs]
 
                 if ratio_aggregation == "per_request_mean":
@@ -2265,7 +2267,17 @@ class PPOAgent:
                         )
                     )
 
-            return -torch.stack(interval_surrogates).mean()
+            surrogates = torch.stack(interval_surrogates)
+            if bool(getattr(Config, "PPO_LOSS_WEIGHT_BY_ARRIVALS", False)):
+                # Weight each interval by its arrival count N_t => equal weight
+                # per REQUEST (grand mean over all decisions). Default (False)
+                # keeps equal weight per interval (mean of per-interval means),
+                # under which a request in a sparse interval counts more.
+                w = torch.tensor(
+                    interval_counts, dtype=surrogates.dtype, device=surrogates.device
+                )
+                return -(surrogates * w).sum() / torch.clamp(w.sum(), min=1.0)
+            return -surrogates.mean()
 
         # ============================================================
         # PPO update
