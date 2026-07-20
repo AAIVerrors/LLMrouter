@@ -526,6 +526,7 @@ class Request:
     episode: Optional[int] = None
     price: Optional[float] = None
     price_raw: Optional[float] = None
+    dollar_cost: Optional[float] = None   # actual $ = in_tok*price_in + out_tok*price_out
 
 
 def _is_mistral_api_name(model_name: str) -> bool:
@@ -713,8 +714,14 @@ def server_worker_process(
     gpu_id: Optional[int] = None,
     queue_monitor: Optional[QueueUpdateMonitor] = None,
     pause_event=None,
+    inflight_start=None,
 ):
-    """Worker function for server process (no inflight counter)."""
+    """Worker function for server process.
+
+    Writes the currently-serving request's start time to `inflight_start`
+    (a shared Value; 0.0 = idle) so the main process can read per-server
+    residual (in-flight elapsed) service time for the RL state.
+    """
     try:
         if gpu_id is not None:
             os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
@@ -808,6 +815,8 @@ def server_worker_process(
 
                 request.status = "processing"
                 request.start_time = time.time()
+                if inflight_start is not None:
+                    inflight_start.value = request.start_time
 
                 queue_state_added = {
                     "current_load": current_queue_length + 1,
@@ -1044,6 +1053,8 @@ def server_worker_process(
                     }
 
                     response_queue.put([request, queue_state_added, queue_state_final])
+                    if inflight_start is not None:
+                        inflight_start.value = 0.0  # idle until next dequeue
 
                 except Exception as e:
                     err_msg = (
@@ -1078,6 +1089,8 @@ def server_worker_process(
                     request.processing_latency = raw_lat if round_minmax_lat else request.processing_latency_clipped
                     request.response = {"error": repr(e)}
                     response_queue.put([request, queue_state_before, None])
+                    if inflight_start is not None:
+                        inflight_start.value = 0.0  # idle until next dequeue
                     continue
 
             except Empty:
@@ -1115,6 +1128,11 @@ class LLMServerWrapper:
         self.request_queue = mp.Queue()
         self.response_queue = response_queue
 
+        # Shared start-time of the currently-serving request (0.0 = idle),
+        # written by the worker process, read from the main process to
+        # expose per-server residual (in-flight elapsed) service time.
+        self.inflight_start = mp.Value("d", 0.0)
+
         self.process = mp.Process(
             target=server_worker_process,
             args=(
@@ -1127,6 +1145,7 @@ class LLMServerWrapper:
                 gpu_id,
                 queue_monitor,
                 self.pause_event,
+                self.inflight_start,
             ),
         )
         self.process.start()
@@ -1158,6 +1177,13 @@ class LLMServerWrapper:
 
     def get_current_load(self) -> int:
         return int(self.request_queue.qsize())
+
+    def get_residual_service(self) -> float:
+        """Elapsed service time of the in-flight request (0.0 if idle)."""
+        s = float(self.inflight_start.value)
+        if s <= 0.0:
+            return 0.0
+        return max(time.time() - s, 0.0)
 
     def get_server_id(self) -> int:
         return self.server_id
@@ -1455,6 +1481,9 @@ def response_collector_worker(
                         Config.PRICE[request.server_id][0] * prompt_tokens
                         + Config.PRICE[request.server_id][1] * resp_tokens
                     )
+                    # Actual dollar cost of this request (unnormalized),
+                    # for reporting real spend per method.
+                    request.dollar_cost = float(num)
 
                     all_server_real_costs = [
                         p_in * prompt_tokens
@@ -1714,6 +1743,13 @@ class EnhancedRouterEnvironment:
             load = server.get_current_load()
             state.extend([load])
         return np.array(state, dtype=np.float32)
+
+    def get_residuals(self) -> np.ndarray:
+        """Per-server residual (in-flight elapsed) service time in seconds."""
+        return np.array(
+            [server.get_residual_service() for server in self.servers],
+            dtype=np.float32,
+        )
 
     def get_action_mask(self) -> np.ndarray:
         mask = torch.tensor([server.can_accept_request() for server in self.servers], dtype=torch.float32)

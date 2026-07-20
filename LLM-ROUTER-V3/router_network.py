@@ -1776,7 +1776,7 @@ class PPOAgent:
 
         if getattr(Config, "JSQ", False):
             M = len(Config.MODEL_NAMES)
-            sf = np.asarray(state, dtype=np.float32).reshape(M, 4)
+            sf = np.asarray(state, dtype=np.float32).reshape(M, -1)  # util at col 0
             u = sf[:, 0]
             C = np.asarray(Config.SERVER_CAPACITIES, dtype=np.float32)
             q = u * C
@@ -1803,6 +1803,37 @@ class PPOAgent:
             )
             return action, 0.0, 0.0, round_robin_counter
 
+        # Capacity-weighted JSQ: route to the shortest EXPECTED DRAIN TIME
+        # queue/mu, not the shortest raw queue. Accounts for heterogeneous
+        # service rates (a queue of 5 at a fast server drains before a queue
+        # of 5 at a slow one).
+        if getattr(Config, "CAP_WEIGHTED_JSQ", False):
+            M = len(Config.MODEL_NAMES)
+            sf = np.asarray(state, dtype=np.float64).reshape(M, -1)
+            dyn_dim = int(getattr(Config, "SERVER_DYN_DIM", 2))
+            C = np.asarray(Config.SERVER_CAPACITIES, dtype=np.float64)
+            q = (sf[:, 0] * C) / np.maximum(sf[:, dyn_dim], 1e-6)  # queue / mu
+            if action_mask is not None:
+                valid = (np.asarray(action_mask[:M], dtype=np.float64) > 0)
+                q = np.where(valid, q, np.inf)
+            if not np.isfinite(q).any():
+                return int(np.random.randint(0, M)), 0.0, 0.0, round_robin_counter
+            candidates = np.where(np.isclose(q, np.min(q)))[0]
+            return int(np.random.choice(candidates)), 0.0, 0.0, round_robin_counter
+
+        # Power-of-d-choices: sample d admissible servers, route to shortest
+        # (generalizes P2C, which is d=2). Optionally capacity-weighted.
+        if getattr(Config, "POWER_OF_D", False):
+            action_mask_np = None if action_mask is None else np.asarray(action_mask, dtype=np.float32)
+            action = self.p2c_select_action(
+                state=np.asarray(state, dtype=np.float32),
+                action_mask=action_mask_np,
+                capacities=Config.SERVER_CAPACITIES,
+                d=int(getattr(Config, "POWER_OF_D_CHOICES", 3)),
+                weighted=bool(getattr(Config, "POWER_OF_D_WEIGHTED", False)),
+            )
+            return action, 0.0, 0.0, round_robin_counter
+
         return int(action.cpu().item()), float(log_prob.cpu().item()), float(value.cpu().item()), round_robin_counter
 
     @staticmethod
@@ -1812,16 +1843,26 @@ class PPOAgent:
         capacities: list[float],
         rng: np.random.Generator | None = None,
         eps: float = 1e-8,
+        d: int = 2,
+        weighted: bool = False,
     ) -> int:
+        """Power-of-d-choices: sample d admissible servers, route to the
+        shortest. d=2 is classic P2C. If `weighted`, rank by expected drain
+        time queue/mu (capacity/rate-weighted) instead of raw queue length.
+        """
         if rng is None:
             rng = np.random.default_rng()
 
         M = len(capacities)
-        # State uses the interleaved per-server layout [util, mu, price_in, price_out],
-        # so utilization sits in column 0 of the (M, F) view (same as the JSQ branch).
-        util = np.asarray(state, dtype=np.float64).reshape(M, -1)[:, 0]
+        # Per-server layout [util, residual, mu, price_in, price_out];
+        # util at col 0, mu at col SERVER_DYN_DIM.
+        sf = np.asarray(state, dtype=np.float64).reshape(M, -1)
         cap = np.asarray(capacities, dtype=np.float64)
-        q = util * cap
+        q = sf[:, 0] * cap
+        if weighted:
+            dyn_dim = int(getattr(Config, "SERVER_DYN_DIM", 2))
+            mu = sf[:, dyn_dim]
+            q = q / np.maximum(mu, 1e-6)
 
         if action_mask is None:
             valid = np.arange(M, dtype=np.int64)
@@ -1834,22 +1875,21 @@ class PPOAgent:
         if valid.size == 1:
             return int(valid[0])
 
-        c1, c2 = rng.choice(valid, size=2, replace=False)
-        q1, q2 = q[c1], q[c2]
-
-        min_q = min(q1, q2)
-        candidates = np.array([c1, c2], dtype=np.int64)
-        qs = np.array([q1, q2], dtype=np.float64)
-
-        tie_idx = np.where(np.isclose(qs, min_q, atol=eps, rtol=0.0))[0]
-        chosen = int(rng.choice(candidates[tie_idx]))
-        return chosen
+        dd = int(min(max(d, 1), valid.size))
+        chosen = rng.choice(valid, size=dd, replace=False)
+        qs = q[chosen]
+        min_q = qs.min()
+        tie = chosen[np.where(np.isclose(qs, min_q, atol=eps, rtol=0.0))[0]]
+        return int(rng.choice(tie))
 
     def update_new(self, trajectories):
         """
         PPO update on ACTIVE intervals only (N_t > 0), with:
         - fair reward normalization: 1/M if N_t >= M, else 1/N_t
-        - interval importance weight rho_t = exp(mean_i(new_logp_i - old_logp_i))
+        - Config-controlled importance-ratio aggregation:
+          * per_request_mean: clip each request ratio, then average its
+            surrogate within the interval (GRPO-style)
+          * interval_geometric: legacy exp(mean_i(log-ratio)) interval ratio
 
         Added:
         - Config-controlled interval mini-batch PPO:
@@ -1859,7 +1899,6 @@ class PPOAgent:
 
         Important:
         - Does NOT change your interval objective.
-        - Does NOT change rho formula.
         - Does NOT change value target style.
 
         Interval reward aggregation is selected by Config.FAIRNESS_MODE:
@@ -1966,14 +2005,19 @@ class PPOAgent:
                 f_frac = float(getattr(Config, "FAIR", 1.0))
                 f_frac = max(0.0, min(1.0, f_frac))
 
-                # Decode the frozen snapshot: state layout is
-                # [util, mu, price_in, price_out] per server, with
-                # util = load / capacity (trainer.build_state).
+                # Decode the frozen snapshot. Per-server layout is
+                # [dyn features..., stat features...] = [util, residual,
+                # mu, price_in, price_out] (trainer.build_state), so util
+                # is at offset 0 and mu is the first stat feature at offset
+                # SERVER_DYN_DIM. Infer the stride F from the state length
+                # so this stays correct if the dyn/stat dims change.
                 snap = states_np[int(idxs[0].item())]
                 caps = np.asarray(Config.SERVER_CAPACITIES[:M], dtype=np.float64)
-                if snap.shape[-1] >= M * 4:
-                    d_snap = np.clip(snap[0:M * 4:4].astype(np.float64), 0.0, None) * caps
-                    mu_snap = snap[1:M * 4:4].astype(np.float64)
+                dyn_dim = int(getattr(Config, "SERVER_DYN_DIM", 2))
+                F_stride = snap.shape[-1] // M if M > 0 else 0
+                if F_stride >= dyn_dim + 1 and snap.shape[-1] == M * F_stride:
+                    d_snap = np.clip(snap[0::F_stride][:M].astype(np.float64), 0.0, None) * caps
+                    mu_snap = snap[dyn_dim::F_stride][:M].astype(np.float64)
                 else:
                     # Unknown state layout: fall back to a backlog-free
                     # quota with configured service rates.
@@ -2142,6 +2186,61 @@ class PPOAgent:
         for pos, idxs in enumerate(interval_indices):
             step_to_interval_pos[idxs] = pos
 
+        ratio_aggregation = str(
+            getattr(Config, "PPO_RATIO_AGGREGATION", "per_request_mean")
+        ).lower()
+        valid_ratio_aggregations = {"per_request_mean", "interval_geometric"}
+        if ratio_aggregation not in valid_ratio_aggregations:
+            raise ValueError(
+                "Unsupported PPO_RATIO_AGGREGATION="
+                f"{ratio_aggregation!r}; expected one of "
+                f"{sorted(valid_ratio_aggregations)}"
+            )
+
+        def interval_policy_loss(
+            current_log_probs,
+            behavior_log_probs,
+            grouped_indices,
+            interval_advantages,
+        ):
+            """Return an equal-interval-weighted clipped PPO policy loss."""
+            interval_surrogates = []
+
+            for pos, idxs in enumerate(grouped_indices):
+                log_ratio_i = current_log_probs[idxs] - behavior_log_probs[idxs]
+
+                if ratio_aggregation == "per_request_mean":
+                    # GRPO-style: form and clip one ratio per request, average
+                    # request surrogates inside the interval, then give every
+                    # interval equal weight in the outer mean.
+                    ratio_i = torch.exp(log_ratio_i)
+                    advantage_t = interval_advantages[pos]
+                    surrogate_i = torch.min(
+                        ratio_i * advantage_t,
+                        torch.clamp(
+                            ratio_i,
+                            1.0 - Config.CLIP_EPSILON,
+                            1.0 + Config.CLIP_EPSILON,
+                        ) * advantage_t,
+                    )
+                    interval_surrogates.append(surrogate_i.mean())
+                else:
+                    # Legacy length-normalized joint likelihood ratio.
+                    ratio_t = torch.exp(log_ratio_i.mean())
+                    advantage_t = interval_advantages[pos]
+                    interval_surrogates.append(
+                        torch.min(
+                            ratio_t * advantage_t,
+                            torch.clamp(
+                                ratio_t,
+                                1.0 - Config.CLIP_EPSILON,
+                                1.0 + Config.CLIP_EPSILON,
+                            ) * advantage_t,
+                        )
+                    )
+
+            return -torch.stack(interval_surrogates).mean()
+
         # ============================================================
         # PPO update
         # ============================================================
@@ -2160,10 +2259,28 @@ class PPOAgent:
         # Do not mutate original action_masks.
         train_action_masks = action_masks if (Config.MASK and action_masks is not None) else None
 
+        # Fixed-heuristic baselines (JSQ / P2C / round-robin / random /
+        # greedy) route with a rule, not this policy. Skip the PPO epoch
+        # loop for them: it would train a never-used network on garbage
+        # gradients (stored log_prob=0 -> meaningless ratio) and produce
+        # misleading policy_loss / entropy_loss / approx_kl curves, wasting
+        # GPU. All interval/fairness metrics above are still returned.
+        is_baseline = any([
+            bool(getattr(Config, "JSQ", False)),
+            bool(getattr(Config, "P2C", False)),
+            bool(getattr(Config, "CAP_WEIGHTED_JSQ", False)),
+            bool(getattr(Config, "POWER_OF_D", False)),
+            bool(getattr(Config, "ROUND_ROBIN", False)),
+            bool(getattr(Config, "RANDOM_SELECT", False)),
+            bool(getattr(Config, "GREEDY_UTILITY", False)),
+        ])
+
         # ============================================================
         # Path A: original full-episode PPO update
         # ============================================================
-        if not use_interval_mb:
+        if is_baseline:
+            pass  # no policy update for fixed-heuristic baselines
+        elif not use_interval_mb:
             for epoch in range(Config.PPO_EPOCHS):
                 if getattr(Config, "USE_MERGE_TO_TRAIN", False):
                     _, new_log_probs, entropy, new_values, dist, _queue_scores = (
@@ -2186,24 +2303,12 @@ class PPOAgent:
                         )
                     )
 
-                # ----------------------------------------------------
-                # Interval-level rho_t, unchanged:
-                # rho_t = exp(mean_i(new_logp_i - old_logp_i))
-                # ----------------------------------------------------
-                rhos = []
-                for idxs in interval_indices:
-                    rho_t = torch.exp((new_log_probs[idxs] - old_log_probs[idxs]).mean())
-                    rhos.append(rho_t)
-                rhos = torch.stack(rhos)
-
-                surr1 = rhos * term_adv
-                surr2 = torch.clamp(
-                    rhos,
-                    1.0 - Config.CLIP_EPSILON,
-                    1.0 + Config.CLIP_EPSILON,
-                ) * term_adv
-
-                policy_loss = -torch.min(surr1, surr2).mean()
+                policy_loss = interval_policy_loss(
+                    new_log_probs,
+                    old_log_probs,
+                    interval_indices,
+                    term_adv,
+                )
 
                 # ----------------------------------------------------
                 # Value loss:
@@ -2367,30 +2472,15 @@ class PPOAgent:
                             )
                         )
 
-                    # ------------------------------------------------
-                    # Interval-level rho_t, same formula as full path:
-                    # rho_t = exp(mean_i(new_logp_i - old_logp_i))
-                    # ------------------------------------------------
-                    rhos = []
-                    for local_idxs in local_interval_indices:
-                        rho_t = torch.exp(
-                            (new_log_probs[local_idxs] - mb_old_log_probs[local_idxs]).mean()
-                        )
-                        rhos.append(rho_t)
-
-                    rhos = torch.stack(rhos)
-
                     mb_term_adv = term_adv[mb_pos]
                     mb_term_ret = term_ret[mb_pos]
 
-                    surr1 = rhos * mb_term_adv
-                    surr2 = torch.clamp(
-                        rhos,
-                        1.0 - Config.CLIP_EPSILON,
-                        1.0 + Config.CLIP_EPSILON,
-                    ) * mb_term_adv
-
-                    policy_loss = -torch.min(surr1, surr2).mean()
+                    policy_loss = interval_policy_loss(
+                        new_log_probs,
+                        mb_old_log_probs,
+                        local_interval_indices,
+                        mb_term_adv,
+                    )
 
                     v_all = new_values.squeeze(-1)
 

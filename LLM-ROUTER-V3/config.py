@@ -21,6 +21,14 @@ class Config:
         # "gpt-4.1-2025-04-14",
         "together/openai/gpt-oss-120b",
     ]
+    # MODEL_NAMES = [
+    #     "ministral-3b-2512",                            # 0 Mistral
+    #     "gpt-4.1-nano-2025-04-14",                      # 1 OpenAI
+    #     "mistral-small-2603",                           # 2 Mistral
+    #     "gpt-4.1-mini-2025-04-14",                      # 3 OpenAI
+    #     "novita/meta-llama/llama-3.3-70b-instruct",     # 4 Novita
+    #     "novita/deepseek/deepseek-v3.2",                # 5 Novita  ⚠️核对ID
+    # ]
 
     PRICE = [
         # ===== Tier 1: 最便宜 =====
@@ -43,6 +51,15 @@ class Config:
         (0.00000015, 0.00000060),  # gpt-oss-120b
 
     ]
+
+    # PRICE = [
+    #     (0.00000010, 0.00000010),   # 0 ministral-3b
+    #     (0.00000010, 0.00000040),   # 1 gpt-4.1-nano
+    #     (0.00000015, 0.00000060),   # 2 mistral-small
+    #     (0.00000040, 0.00000160),   # 3 gpt-4.1-mini
+    #     (0.000000135, 0.00000040),  # 4 novita llama-3.3-70b
+    #     (0.000000269, 0.00000040),  # 5 novita deepseek-v3.2
+    # ]
 
     SERVICE_RATE = [
         0.663,   # ministral-3b
@@ -255,7 +272,11 @@ class Config:
     ENV_DEFER_LAT_PRICE_REWARD_WHEN_MINMAX = True
 
     LAMBDA = 5  # Capacity penalty weight (increased to strongly discourage invalid actions)
-    MAX_LAT = 30
+    MAX_LAT = 60
+    # SLO latency thresholds (seconds). Logged as violation rate =
+    # fraction of completed requests with end-to-end latency > T.
+    # Report a few (tight/moderate/loose); keep all below MAX_LAT.
+    SLO_LATENCIES = [5.0, 10.0, 20.0]
     FAIR_REWARD_MIN_FLOOR = False # True the missing server will be set min rewards, False will use the floor reward -Beta-REWARD_GAMMA
 
     # =========================================================
@@ -269,32 +290,34 @@ class Config:
     LEARNING_RATE = 1e-4  # legacy fallback, unused when ACTOR/CRITIC set
     GAMMA = 0.99          # discount factor
     GAE_LAMBDA = 0.95     # advantage estimation
-    CLIP_EPSILON = 0.2    # PPO clip
+    CLIP_EPSILON = 0.5    # PPO clip
     POLICY_COEF = 1       # Policy loss weight
     VALUE_COEF = 1        # Value loss weight
     # Anti-collapse brake: 0 collapses onto few servers; 0.02 only delayed
     # the slide to ~ep20; 0.03 is the current setting.
-    ENTROPY_COEF = 0.03
-    ACTOR_LEARNING_RATE = 5e-5
+    ENTROPY_COEF = 0
+    ACTOR_LEARNING_RATE = 3e-5
     CRITIC_LEARNING_RATE = 3e-4
-    USE_LR_DECAY = True
+    USE_LR_DECAY = False
     LR_DECAY_TYPE = "cosine"
     LR_DECAY_MIN_RATIO = 0.1
     # Spread the cosine over the ACTUAL run length (= MAX_EPISODES).
     # Unset, it falls back to 200 and the decay never bites in a 60-ep run
     # (LR would still be ~97% at ep25) -> no stable end-of-training phase.
-    LR_DECAY_EPISODES = 100
+    LR_DECAY_EPISODES = 200
     LR_WARMUP_EPISODES = 0
     KL_COEF = 0.00
-    MAX_GRAD_NORM = 0.5
+    MAX_GRAD_NORM = 1
     PPO_EPOCHS = 3   # small interval batch: more epochs overfit noise
     BATCH_SIZE = 1
+
+    PPO_RATIO_AGGREGATION = "per_request_mean"
 
     # The ep20+ slide happened at KL 0.007-0.015 — entirely below the old
     # 0.04 target, so the early stop never fired. 0.012 clamps the late
     # acceleration while passing normal mid-run learning (0.002-0.003).
     TARGET_KL = 0.012
-    USE_TARGET_KL_STOP = True
+    USE_TARGET_KL_STOP = False
 
     # Full-batch Path A over all intervals: every stability number above
     # (LR / KL / entropy) was measured on this path; minibatching the tiny
@@ -385,7 +408,7 @@ class Config:
     # [CHANNEL] Dual-channel attention router: split per-server features
     # into dynamic (util only) and static (mu, prices) channels.
     # ====================================================================
-    SERVER_DYN_DIM  = 1    # util, slot_count, interval_norm, time_remaining_norm
+    SERVER_DYN_DIM  = 2    # util, residual (in-flight elapsed service time)
     SERVER_STAT_DIM = 3    # mu, price_in, price_out
 
 
@@ -397,14 +420,14 @@ class Config:
     FINAL_EVAL_EPISODES = 10  # Number of episodes for final evaluation
 
     # Poisson prompt generation settings
-    POISSON_ARRIVAL_RATE = 4  # Average arrival rate of prompts per second
+    POISSON_ARRIVAL_RATE = 2  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
-    EPISODE_TIME_INTERVAL = 12 # How many intervals in current episode
+    EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
 
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)
-    INTERVAL_LENGTH = 4 # The length of interval
-    MAX_EPISODES = 100   # match LR_DECAY_EPISODES above
+    INTERVAL_LENGTH = 8 # The length of interval
+    MAX_EPISODES = 200   # match LR_DECAY_EPISODES above
 
     # Queue score settings
     QUEUE_SCORE_FACTOR = 0.2  # Factor to adjust queue score impact
@@ -413,7 +436,7 @@ class Config:
 
     # Drop action
     INVALID_ROUTE_PENALTY = 2/3   # try 0.5 ~ 2.0 depending how hard you want to avoid full servers
-    FAIL_LATENCY_CAP = 30.0       # just for logging; failed branch uses penalty not latency
+    FAIL_LATENCY_CAP = 60.0       # just for logging; failed branch uses penalty not latency
     REWARD_CLIP = -2             # optional, set <=0 to disable
 
     MASK = False
@@ -436,9 +459,21 @@ class Config:
 
     ENABLE_QUEUE_PENALTY = False
 
+    # JSQ on the frozen telemetry snapshot = "stale-JSQ" (routes to the
+    # shortest raw queue using interval-boundary state).
     JSQ = False
 
     P2C = False
+
+    # Capacity-weighted JSQ: route to the shortest EXPECTED DRAIN TIME
+    # (queue / mu), accounting for heterogeneous service rates.
+    CAP_WEIGHTED_JSQ = False
+
+    # Power-of-d-choices: sample d admissible servers, route to the shortest
+    # (P2C is d=2). POWER_OF_D_WEIGHTED ranks by queue/mu instead of queue.
+    POWER_OF_D = False
+    POWER_OF_D_CHOICES = 3
+    POWER_OF_D_WEIGHTED = False
 
     # GREEDY = False
 

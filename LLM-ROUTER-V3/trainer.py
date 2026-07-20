@@ -255,6 +255,7 @@ class EnhancedLLMRouterTrainer:
             'valid_actions': 0,
             'service_rate': [],
             'prices': [],
+            'dollar_costs': [],
             'prices_norm': [],
             'queue_length': [],
             'reward_sum_per_server': {i: 0.0 for i in range(num_servers)},
@@ -308,6 +309,8 @@ class EnhancedLLMRouterTrainer:
                 episode_info['prices'].append(req.get('price_raw', req.get('price')))
                 if req.get('price_norm') is not None:
                     episode_info['prices_norm'].append(req.get('price_norm'))
+                if req.get('dollar_cost') is not None:
+                    episode_info['dollar_costs'].append(req.get('dollar_cost'))
                 
             if req['status'] == 'completed' and req['episode'] == self.current_episode:
                 episode_info['valid_actions'] += 1
@@ -353,21 +356,23 @@ class EnhancedLLMRouterTrainer:
             float(Config.POISSON_ARRIVAL_RATE) * float(Config.INTERVAL_LENGTH), 1.0
         )
 
-        def build_state(loads):
+        def build_state(loads, residuals):
             M = len(Config.SERVER_CAPACITIES)
             PRICE_SCALE = 1e6
             price_in  = [float(a[0]) * PRICE_SCALE for a in Config.PRICE]
             price_out = [float(a[1]) * PRICE_SCALE for a in Config.PRICE]
+            max_lat = max(float(getattr(Config, "MAX_LAT", 30.0)), 1e-6)
 
-            F = 4
+            F = 5
             feats_flat = []
             for i in range(M):
                 cap  = float(Config.SERVER_CAPACITIES[i])
                 load = float(loads[i])
                 util = load / max(cap, 1.0)
+                resid = float(residuals[i]) / max_lat   # in-flight elapsed, normalized
                 mu   = float(self.last_service_rate[i])
                 feats_flat.extend([
-                    util,                            # dyn (1)
+                    util, resid,                     # dyn (2)
                     mu, price_in[i], price_out[i],   # stat (3)
                 ])
 
@@ -376,9 +381,9 @@ class EnhancedLLMRouterTrainer:
             return np.array(feats_flat, dtype=np.float32)
 
         M = len(Config.SERVER_CAPACITIES)
-        F = 4
+        F = 5
         slot_counts = np.zeros(M, dtype=np.float32)
-        state = build_state(self.env.reset()) 
+        state = build_state(self.env.reset(), self.env.get_residuals())
         self.env.clean_prompt_queue()
         
         # state = [self.env.reset()[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + [1] * len(Config.SERVER_CAPACITIES) + price
@@ -428,17 +433,17 @@ class EnhancedLLMRouterTrainer:
 
             if Config.NAIVE_PPO:
                 current_loads = self.env.get_state()
-                state = build_state(current_loads)
+                state = build_state(current_loads, self.env.get_residuals())
             else:
                 if current != current_time_slot:
                     current_loads = self.env.get_state()
-                    # slot_counts[:] = 0.0          ← 删掉
-                    state = build_state(current_loads)       # fresh loads
+                    # fresh telemetry snapshot at the interval boundary
+                    state = build_state(current_loads, self.env.get_residuals())
                     current = current_time_slot
                 else:
-                    state = build_state(
-                        [state[i * F] * float(Config.SERVER_CAPACITIES[i]) for i in range(M)]   # 复用 util，F=4 仍正确
-                    )
+                    # within the interval: reuse the frozen snapshot as-is
+                    # (util / residual / mu / prices are all frozen)
+                    pass
 
             action_mask = self.env.get_action_mask()
 
@@ -837,8 +842,27 @@ class EnhancedLLMRouterTrainer:
                     # Fix price mean
                     price_mean = float(np.mean(episode_info['prices'])) if episode_info.get('prices') else None
 
+                    # SLO violation rate = fraction of completed requests with
+                    # end-to-end latency above each threshold (tail metric).
+                    _slo_lats = episode_info.get('latencies') or []
+                    slo_dict = {}
+                    for _T in getattr(Config, "SLO_LATENCIES", [10.0]):
+                        slo_dict[f"slo/violation_rate_{int(_T)}s"] = (
+                            float(np.mean([1.0 if float(l) > float(_T) else 0.0 for l in _slo_lats]))
+                            if _slo_lats else None
+                        )
+
+                    # Actual dollar cost: total $ spent this episode and $/request.
+                    _dollars = episode_info.get('dollar_costs') or []
+                    cost_dict = {
+                        "cost/dollar_total_per_episode": float(np.sum(_dollars)) if _dollars else None,
+                        "cost/dollar_per_request": float(np.mean(_dollars)) if _dollars else None,
+                    }
+
                     wandb.log({
                         "episode": episode,
+                        **slo_dict,
+                        **cost_dict,
                         "total_reward": float(np.sum(episode_info['rewards'])) if episode_info.get('rewards') else None,
                         "mean_reward": float(np.mean(episode_info['rewards'])) if episode_info.get('rewards') else None,
                         "std_reward": float(np.std(episode_info['rewards'])) if episode_info.get('rewards') else None,
