@@ -290,7 +290,23 @@ class RouterNetwork(nn.Module):
                 depth=3,
                 dropout=attn_drop,
             )
-            
+
+            # Additive queue "highway": a dedicated head on the raw per-server
+            # dynamic features [util, residual, util/mu] whose scalar output is
+            # ADDED to each server's logit, bypassing the prompt-dominated
+            # fusion attention so queue state cannot be drowned by prompt tokens.
+            self.use_actor_queue_skip = bool(getattr(Config, "ACTOR_QUEUE_SKIP", False))
+            self.use_actor_dual_tower = bool(getattr(Config, "ACTOR_DUAL_TOWER", False))
+            if self.use_actor_queue_skip or self.use_actor_dual_tower:
+                self.queue_head = nn.Sequential(
+                    nn.Linear(3, max(d_model // 4, 8)),
+                    nn.GELU(),
+                    nn.Linear(max(d_model // 4, 8), 1),
+                )
+            # last-batch score spreads (std across servers) for logging
+            self._dual_quality_spread = None
+            self._dual_queue_spread = None
+
             # Critic attention pooling over servers.
             # route_h tells the critic which server states are important for this prompt/state.
             self.critic_server_score = nn.Sequential(
@@ -760,8 +776,41 @@ class RouterNetwork(nn.Module):
             # ---- Actor: one logit per server ----
             # logits = self.actor_head(server_h).squeeze(-1)  # [B, M]
             route_expand = route_h.unsqueeze(1).expand(-1, M, -1)
-            actor_in = torch.cat([server_h, route_expand], dim=-1)
-            logits = self.actor_head(actor_in).squeeze(-1)
+
+            # Raw per-server queue descriptor [util, residual, util/mu] used by
+            # both the additive queue highway and the dual tower.
+            need_queue = getattr(self, "use_actor_queue_skip", False) or getattr(
+                self, "use_actor_dual_tower", False
+            )
+            if need_queue:
+                util = sf[..., 0]                                   # [B, M]
+                residual = sf[..., 1] if F_dyn > 1 else torch.zeros_like(util)
+                mu = sf[..., F_dyn]                                 # first static feat = mu
+                drain = util / (mu + 1e-6)                          # queue/mu proxy (JSQ signal)
+                queue_desc = torch.stack([util, residual, drain], dim=-1)  # [B, M, 3]
+
+            if getattr(self, "use_actor_dual_tower", False):
+                # Dual tower: quality (prompt x STATIC capability channel, no
+                # queue) + queue (raw dynamic only). Each answers its own
+                # question; the two scores are ADDED into the logit.
+                quality_score = self.actor_head(
+                    torch.cat([stat_h, route_expand], dim=-1)
+                ).squeeze(-1)                                       # [B, M]
+                queue_score = self.queue_head(queue_desc).squeeze(-1)  # [B, M]
+                logits = quality_score + queue_score
+                # log spreads (how differentiated each tower is across servers)
+                self._dual_quality_spread = float(
+                    quality_score.std(dim=-1).mean().detach().cpu().item()
+                )
+                self._dual_queue_spread = float(
+                    queue_score.std(dim=-1).mean().detach().cpu().item()
+                )
+            else:
+                actor_in = torch.cat([server_h, route_expand], dim=-1)
+                logits = self.actor_head(actor_in).squeeze(-1)
+                # Additive queue highway: dedicated, un-diluted queue term.
+                if getattr(self, "use_actor_queue_skip", False):
+                    logits = logits + self.queue_head(queue_desc).squeeze(-1)
 
             # temp = torch.exp(self.actor_log_temp).clamp(min=0.1, max=10.0)
             # logits = logits / temp
@@ -2646,6 +2695,8 @@ class PPOAgent:
             "raw_adv_absmean": _raw_adv_absmean,
             "explained_variance": _explained_var,
             "policy_entropy": -float(total_entropy_loss / den),
+            "dual_quality_spread": getattr(self.network, "_dual_quality_spread", None),
+            "dual_queue_spread": getattr(self.network, "_dual_queue_spread", None),
             "actual_updates": actual_updates,
             "early_stopped_kl": int(early_stopped),
             "quota_f_load": float(np.mean(quota_f_load)) if quota_f_load else None,

@@ -295,7 +295,7 @@ class Config:
     VALUE_COEF = 1        # Value loss weight
     # Anti-collapse brake: 0 collapses onto few servers; 0.02 only delayed
     # the slide to ~ep20; 0.03 is the current setting.
-    ENTROPY_COEF = 0.03
+    ENTROPY_COEF = 0.01
     ACTOR_LEARNING_RATE = 5e-5
     CRITIC_LEARNING_RATE = 3e-4
     USE_LR_DECAY = True
@@ -308,10 +308,19 @@ class Config:
     LR_WARMUP_EPISODES = 0
     KL_COEF = 0.00
     MAX_GRAD_NORM = 1
-    PPO_EPOCHS = 2   # small interval batch: more epochs overfit noise
+    PPO_EPOCHS = 4   # small interval batch: more epochs overfit noise
     BATCH_SIZE = 1
 
     PPO_RATIO_AGGREGATION = "per_request_mean"
+
+    # Interval weighting in the PPO policy loss.
+    #   False (default): equal weight per INTERVAL (mean of per-interval means)
+    #                    -> a request in a sparse interval counts more.
+    #   True           : weight each interval by its arrival count N_t
+    #                    -> equal weight per REQUEST (grand mean), lower
+    #                    variance from small intervals. Reward normalization
+    #                    (1/M or 1/N_t) is unaffected; this only reweights loss.
+    PPO_LOSS_WEIGHT_BY_ARRIVALS = False
 
     # The ep20+ slide happened at KL 0.007-0.015 — entirely below the old
     # 0.04 target, so the early stop never fired. 0.012 clamps the late
@@ -338,6 +347,21 @@ class Config:
     ATTN_FF_MULT  = 4
     ATTN_DROPOUT  = 0
     CLIP_INIT_TEMP = 0.2
+
+    # Additive queue "highway" for the actor: adds a dedicated queue-based
+    # term (from raw [util, residual, util/mu] per server) directly to each
+    # server's logit, bypassing the prompt-token-dominated fusion attention.
+    # Fixes weak queue-state perception without competing with prompt tokens.
+    ACTOR_QUEUE_SKIP = False
+
+    # Dual-tower actor: split the per-server logit into two dedicated scores
+    #   quality_score = actor_head(prompt x STATIC capability channel)  ("is m capable?")
+    #   queue_score   = queue_head([util, residual, util/mu])           ("is m free?")
+    #   logit_m = quality_score_m + queue_score_m
+    # The two scores are logged separately (dual/quality_spread, dual/queue_spread)
+    # so you can see whether the quality tower learns and the queue tower fires.
+    # Overrides ACTOR_QUEUE_SKIP when True. Requires a fresh model.
+    ACTOR_DUAL_TOWER = False
 
     # (dead config, nothing reads it; the episode-completion wait loop in
     # trainer.py is unbounded — API-client timeouts/retries bound it in

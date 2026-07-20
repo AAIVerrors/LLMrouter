@@ -910,6 +910,11 @@ class EnhancedLLMRouterTrainer:
                         "raw_adv_absmean": training_metrics.get('raw_adv_absmean') if training_metrics else None,
                         "explained_variance": training_metrics.get('explained_variance') if training_metrics else None,
                         "policy_entropy": training_metrics.get('policy_entropy') if training_metrics else None,
+                        # Dual-tower actor: per-server spread of each score.
+                        # quality_spread>0 => quality tower differentiates servers;
+                        # queue_spread>0 => queue tower fires on load.
+                        "dual/quality_spread": training_metrics.get('dual_quality_spread') if training_metrics else None,
+                        "dual/queue_spread": training_metrics.get('dual_queue_spread') if training_metrics else None,
                     })
 
 
