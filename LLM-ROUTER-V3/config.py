@@ -290,15 +290,15 @@ class Config:
     LEARNING_RATE = 1e-4  # legacy fallback, unused when ACTOR/CRITIC set
     GAMMA = 0.99          # discount factor
     GAE_LAMBDA = 0.95     # advantage estimation
-    CLIP_EPSILON = 0.5    # PPO clip
+    CLIP_EPSILON = 0.2    # PPO clip
     POLICY_COEF = 1       # Policy loss weight
     VALUE_COEF = 1        # Value loss weight
     # Anti-collapse brake: 0 collapses onto few servers; 0.02 only delayed
     # the slide to ~ep20; 0.03 is the current setting.
-    ENTROPY_COEF = 0
-    ACTOR_LEARNING_RATE = 3e-5
+    ENTROPY_COEF = 0.01
+    ACTOR_LEARNING_RATE = 5e-5
     CRITIC_LEARNING_RATE = 3e-4
-    USE_LR_DECAY = False
+    USE_LR_DECAY = True
     LR_DECAY_TYPE = "cosine"
     LR_DECAY_MIN_RATIO = 0.1
     # Spread the cosine over the ACTUAL run length (= MAX_EPISODES).
@@ -308,7 +308,7 @@ class Config:
     LR_WARMUP_EPISODES = 0
     KL_COEF = 0.00
     MAX_GRAD_NORM = 1
-    PPO_EPOCHS = 3   # small interval batch: more epochs overfit noise
+    PPO_EPOCHS = 4   # small interval batch: more epochs overfit noise
     BATCH_SIZE = 1
 
     PPO_RATIO_AGGREGATION = "per_request_mean"
@@ -420,13 +420,13 @@ class Config:
     FINAL_EVAL_EPISODES = 10  # Number of episodes for final evaluation
 
     # Poisson prompt generation settings
-    POISSON_ARRIVAL_RATE = 2  # Average arrival rate of prompts per second
+    POISSON_ARRIVAL_RATE = 3  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
     EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
 
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)
-    INTERVAL_LENGTH = 8 # The length of interval
+    INTERVAL_LENGTH = 5 # The length of interval
     MAX_EPISODES = 200   # match LR_DECAY_EPISODES above
 
     # Queue score settings
