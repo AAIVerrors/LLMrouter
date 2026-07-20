@@ -295,7 +295,7 @@ class Config:
     VALUE_COEF = 1        # Value loss weight
     # Anti-collapse brake: 0 collapses onto few servers; 0.02 only delayed
     # the slide to ~ep20; 0.03 is the current setting.
-    ENTROPY_COEF = 0.01
+    ENTROPY_COEF = 0
     ACTOR_LEARNING_RATE = 5e-5
     CRITIC_LEARNING_RATE = 3e-4
     USE_LR_DECAY = True
@@ -320,7 +320,7 @@ class Config:
     #                    -> equal weight per REQUEST (grand mean), lower
     #                    variance from small intervals. Reward normalization
     #                    (1/M or 1/N_t) is unaffected; this only reweights loss.
-    PPO_LOSS_WEIGHT_BY_ARRIVALS = False
+    PPO_LOSS_WEIGHT_BY_ARRIVALS = True
 
     # The ep20+ slide happened at KL 0.007-0.015 — entirely below the old
     # 0.04 target, so the early stop never fired. 0.012 clamps the late
@@ -361,7 +361,7 @@ class Config:
     # The two scores are logged separately (dual/quality_spread, dual/queue_spread)
     # so you can see whether the quality tower learns and the queue tower fires.
     # Overrides ACTOR_QUEUE_SKIP when True. Requires a fresh model.
-    ACTOR_DUAL_TOWER = False
+    ACTOR_DUAL_TOWER = True
 
     # (dead config, nothing reads it; the episode-completion wait loop in
     # trainer.py is unbounded — API-client timeouts/retries bound it in
@@ -444,13 +444,13 @@ class Config:
     FINAL_EVAL_EPISODES = 10  # Number of episodes for final evaluation
 
     # Poisson prompt generation settings
-    POISSON_ARRIVAL_RATE = 3  # Average arrival rate of prompts per second
+    POISSON_ARRIVAL_RATE = 2  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
     EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
 
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)
-    INTERVAL_LENGTH = 5 # The length of interval
+    INTERVAL_LENGTH = 8 # The length of interval
     MAX_EPISODES = 200   # match LR_DECAY_EPISODES above
 
     # Queue score settings

@@ -299,7 +299,7 @@ class RouterNetwork(nn.Module):
             self.use_actor_dual_tower = bool(getattr(Config, "ACTOR_DUAL_TOWER", False))
             if self.use_actor_queue_skip or self.use_actor_dual_tower:
                 self.queue_head = nn.Sequential(
-                    nn.Linear(3, max(d_model // 4, 8)),
+                    nn.Linear(4, max(d_model // 4, 8)),   # [util, residual, mu, util/mu]
                     nn.GELU(),
                     nn.Linear(max(d_model // 4, 8), 1),
                 )
@@ -787,7 +787,8 @@ class RouterNetwork(nn.Module):
                 residual = sf[..., 1] if F_dyn > 1 else torch.zeros_like(util)
                 mu = sf[..., F_dyn]                                 # first static feat = mu
                 drain = util / (mu + 1e-6)                          # queue/mu proxy (JSQ signal)
-                queue_desc = torch.stack([util, residual, drain], dim=-1)  # [B, M, 3]
+                # raw ingredients (util, residual, mu) + the drain inductive bias.
+                queue_desc = torch.stack([util, residual, mu, drain], dim=-1)  # [B, M, 4]
 
             if getattr(self, "use_actor_dual_tower", False):
                 # Dual tower: quality (prompt x STATIC capability channel, no
