@@ -2066,7 +2066,15 @@ class PPOAgent:
                 dyn_dim = int(getattr(Config, "SERVER_DYN_DIM", 2))
                 F_stride = snap.shape[-1] // M if M > 0 else 0
                 if F_stride >= dyn_dim + 1 and snap.shape[-1] == M * F_stride:
-                    d_snap = np.clip(snap[0::F_stride][:M].astype(np.float64), 0.0, None) * caps
+                    util_snap = np.clip(snap[0::F_stride][:M].astype(np.float64), 0.0, None)
+                    d_snap = util_snap * caps                       # waiting (qsize)
+                    if bool(getattr(Config, "QUOTA_COUNT_INFLIGHT", True)) and dyn_dim > 1:
+                        # util excludes the in-flight request (dequeued from
+                        # qsize). residual (offset 1) > 0 => the server is
+                        # serving 1 request; add it so the backlog counts
+                        # committed work, not just the waiting queue.
+                        resid_snap = snap[1::F_stride][:M].astype(np.float64)
+                        d_snap = d_snap + (resid_snap > 0.0).astype(np.float64)
                     mu_snap = snap[dyn_dim::F_stride][:M].astype(np.float64)
                 else:
                     # Unknown state layout: fall back to a backlog-free
@@ -2074,9 +2082,20 @@ class PPOAgent:
                     d_snap = np.zeros(M, dtype=np.float64)
                     mu_snap = np.asarray(Config.SERVICE_RATE[:M], dtype=np.float64)
                 eps_mu = float(getattr(Config, "QUOTA_EPS_MU", 1e-3))
-                s_budget = np.maximum(
-                    mu_snap * float(Config.INTERVAL_LENGTH), eps_mu
-                )
+                if str(getattr(Config, "QUOTA_NORMALIZE_BY", "service_rate")) == "queue_capacity":
+                    # Normalize fairness by QUEUE capacity (exogenous, fixed,
+                    # difficulty-independent) instead of service rate mu, which
+                    # is endogenous: harder prompts -> more tokens -> lower
+                    # measured req/s, so mu-weighted fairness is circular.
+                    # Water-filling then equalizes post-dispatch occupancy
+                    # (D + n) / capacity; jain_normalized_load below inherits
+                    # this S, so quota_jain_norm_load becomes queue-capacity-
+                    # normalized fairness automatically.
+                    s_budget = np.maximum(caps, eps_mu)
+                else:
+                    s_budget = np.maximum(
+                        mu_snap * float(Config.INTERVAL_LENGTH), eps_mu
+                    )
 
                 counts_np = np.bincount(
                     a_t.detach().cpu().numpy().astype(np.int64), minlength=M

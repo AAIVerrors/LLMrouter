@@ -295,7 +295,7 @@ class Config:
     VALUE_COEF = 1        # Value loss weight
     # Anti-collapse brake: 0 collapses onto few servers; 0.02 only delayed
     # the slide to ~ep20; 0.03 is the current setting.
-    ENTROPY_COEF = 0
+    ENTROPY_COEF = 0.03
     ACTOR_LEARNING_RATE = 5e-5
     CRITIC_LEARNING_RATE = 3e-4
     USE_LR_DECAY = True
@@ -543,6 +543,19 @@ class Config:
     T_REWARD = -2
     FAIR_WARMUP_EPISODES = 0
     FAIRNESS_MODE = "quota"
+    # Quota fairness normalizer:
+    #   "service_rate"  : S_m = mu_m * dt  (mu-weighted; but mu=req/s is
+    #                     endogenous — harder prompts lower measured mu).
+    #   "queue_capacity": S_m = SERVER_CAPACITIES  (exogenous, fixed,
+    #                     difficulty-independent). Water-filling equalizes
+    #                     post-dispatch occupancy (D+n)/capacity, and
+    #                     quota_jain_norm_load becomes queue-capacity-normalized.
+    QUOTA_NORMALIZE_BY = "queue_capacity"
+    # Count the in-flight (currently-serving) request in the water-filling
+    # backlog D. util = qsize excludes it (it is dequeued while generating),
+    # so without this a server busy on a long generation looks empty and the
+    # quota over-allocates to it. Derived from residual>0 (single worker).
+    QUOTA_COUNT_INFLIGHT = False
     FAIR_TARGET = 1      # 最终的 FAIR 值
     FAIR = 1            # 起始（trainer 会覆盖）
 
