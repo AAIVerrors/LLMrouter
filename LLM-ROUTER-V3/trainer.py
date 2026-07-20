@@ -904,6 +904,12 @@ class EnhancedLLMRouterTrainer:
                         "cumulated_avg_rewards_return": training_metrics['cumulated_avg_rewards'] if training_metrics else None,
                         "entropy of route distribution": training_metrics['entropy of route distribution'] if training_metrics else None,
                         "approx_kl": training_metrics['approx_kl'] if training_metrics else None,
+                        # PPO signal diagnostics: is the policy stuck because the
+                        # advantage signal collapsed? explained_variance says why.
+                        "raw_adv_std": training_metrics.get('raw_adv_std') if training_metrics else None,
+                        "raw_adv_absmean": training_metrics.get('raw_adv_absmean') if training_metrics else None,
+                        "explained_variance": training_metrics.get('explained_variance') if training_metrics else None,
+                        "policy_entropy": training_metrics.get('policy_entropy') if training_metrics else None,
                     })
 
 

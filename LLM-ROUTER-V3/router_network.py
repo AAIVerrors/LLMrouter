@@ -2175,6 +2175,32 @@ class PPOAgent:
         term_adv = self.compute_gae(term_rewards, term_values_old, dones=dones)
         term_ret = term_adv + term_values_old
 
+        # --- diagnostics captured BEFORE advantage normalization ---
+        # raw_adv_std -> 0 means the interval advantages carry no spread:
+        #   either the critic ate the signal (overfit) or returns are noise.
+        # explained_variance discriminates the two:
+        #   ~1  => critic predicts returns almost perfectly (overfit risk on
+        #          the tiny interval batch => advantages collapse to 0)
+        #   ~0  => critic cannot predict returns at all (reward is noise /
+        #          state is uninformative => nothing to learn)
+        with torch.no_grad():
+            _raw_adv_std = (
+                float(term_adv.std(unbiased=False).detach().cpu().item())
+                if term_adv.numel() > 1 else 0.0
+            )
+            _raw_adv_absmean = (
+                float(term_adv.abs().mean().detach().cpu().item())
+                if term_adv.numel() > 0 else 0.0
+            )
+            if term_ret.numel() > 1:
+                _ret_var = float(term_ret.var(unbiased=False).detach().cpu().item())
+                _resid_var = float(
+                    (term_ret - term_values_old).var(unbiased=False).detach().cpu().item()
+                )
+                _explained_var = 1.0 - (_resid_var / (_ret_var + 1e-8))
+            else:
+                _explained_var = 0.0
+
         # Keep your single-interval fix:
         # if only one interval, do not subtract itself.
         if term_adv.numel() > 1:
@@ -2604,6 +2630,10 @@ class PPOAgent:
             "route distribution": route_dist,
             "entropy of route distribution": ent_usage,
             "approx_kl": float(approx_kl.detach().cpu().item()),
+            "raw_adv_std": _raw_adv_std,
+            "raw_adv_absmean": _raw_adv_absmean,
+            "explained_variance": _explained_var,
+            "policy_entropy": -float(total_entropy_loss / den),
             "actual_updates": actual_updates,
             "early_stopped_kl": int(early_stopped),
             "quota_f_load": float(np.mean(quota_f_load)) if quota_f_load else None,
