@@ -1380,13 +1380,19 @@ class PPOAgent:
 
         critic_params = []
         actor_params = []
+        scale_params = []
 
         for name, param in self.network.named_parameters():
             if not param.requires_grad:
                 continue
 
+            if "tower_log_scale" in name:
+                # Dual-tower balance scale: its gradient is tiny (∝ queue_score
+                # ~0.02), so at the actor LR it barely moves. Give it its own
+                # much higher LR so it can actually adapt the tower balance.
+                scale_params.append(param)
             # Critic/value-specific modules
-            if (
+            elif (
                 "critic" in name
                 or "value" in name
                 or "server_critic" in name
@@ -1416,10 +1422,17 @@ class PPOAgent:
         #     eps=1e-5,
         # )
         
-        self.actor_params  = actor_params
+        # actor_params includes scale_params for grad clipping.
+        self.actor_params  = actor_params + scale_params
         self.critic_params = critic_params
 
-        self.actor_optimizer  = torch.optim.Adam(actor_params,  lr=actor_lr,  eps=1e-5)
+        scale_lr = float(getattr(Config, "ACTOR_DUAL_SCALE_LR", actor_lr * 30.0))
+        actor_groups = [{"params": actor_params, "lr": actor_lr}]
+        if scale_params:
+            actor_groups.append({"params": scale_params, "lr": scale_lr})
+            print(f"[dual-tower] tower_log_scale on separate LR={scale_lr:.1e} "
+                  f"(actor LR={actor_lr:.1e})")
+        self.actor_optimizer  = torch.optim.Adam(actor_groups, eps=1e-5)
         self.critic_optimizer = torch.optim.Adam(critic_params, lr=critic_lr, eps=1e-5)
 
         # ============================================================

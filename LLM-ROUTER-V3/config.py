@@ -372,6 +372,10 @@ class Config:
     # actually matter, pair with a load-relevant regime (higher load / FAIR=1).
     ACTOR_DUAL_LEARN_SCALE = True
     ACTOR_DUAL_QUEUE_INIT_SCALE = 5.0
+    # Dedicated (higher) LR for the tower balance scales. Their gradient is
+    # ~30x smaller than normal weights (chain rule multiplies by queue_score
+    # ~0.02), so at the actor LR they barely move; this lets them adapt.
+    ACTOR_DUAL_SCALE_LR = 1e-3
 
     # (dead config, nothing reads it; the episode-completion wait loop in
     # trainer.py is unbounded — API-client timeouts/retries bound it in
