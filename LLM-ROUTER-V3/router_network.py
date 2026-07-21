@@ -485,7 +485,7 @@ class RouterNetwork(nn.Module):
         actor_out, critic_out = self._get_output_layers()
 
         if actor_out is not None:
-            nn.init.orthogonal_(actor_out.weight, gain=0.5)
+            nn.init.orthogonal_(actor_out.weight, gain=1)
             if actor_out.bias is not None:
                 nn.init.zeros_(actor_out.bias)
 
@@ -493,6 +493,12 @@ class RouterNetwork(nn.Module):
             nn.init.orthogonal_(critic_out.weight, gain=1)
             if critic_out.bias is not None:
                 nn.init.zeros_(critic_out.bias)
+        
+        if hasattr(self, "queue_head"):
+            queue_out = self.queue_head[-1]
+            nn.init.orthogonal_(queue_out.weight, gain=1)
+            if queue_out.bias is not None:
+                nn.init.zeros_(queue_out.bias)
 
     def _get_output_layers(self):
         def last_linear(module):

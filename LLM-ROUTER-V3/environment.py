@@ -116,13 +116,20 @@ def mistral_chat_complete_with_retry(client, model_name, prompt, max_retries=2):
 
     for attempt in range(max_retries + 1):
         try:
-            return client.chat.complete(
+            request_kwargs = dict(
                 model=model_name,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=getattr(Config, "GEN_MAX_NEW_TOKENS", 128),
                 temperature=getattr(Config, "GEN_TEMPERATURE", 0.1),
                 top_p=getattr(Config, "GEN_TOP_P", 1.0),
             )
+
+            # Mistral Small 4 is hybrid; force direct/non-reasoning output
+            # so all models in this fleet use the same inference mode.
+            if model_name == "mistral-small-2603":
+                request_kwargs["reasoning_effort"] = "none"
+
+            return client.chat.complete(**request_kwargs)
 
         except Exception as e:
             last_e = e

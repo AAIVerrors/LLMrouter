@@ -2,44 +2,44 @@ import torch
 
 class Config:
     # ================================================================
-    # 8-way ALL NON-REASONING fleet, ordered from weak/cheap to strong.
+    # 8-way ALL NON-REASONING fleet, ordered roughly by output price.
     # Keep MODEL_NAMES, PRICE, SERVICE_RATE, and all per-server arrays in
     # exactly the same order: the router action is the list index.
     # ================================================================
     MODEL_NAMES = [
-        "ministral-3b-2512",                                  # 0 Mistral  weakest floor
-        "ministral-8b-2512",                                  # 1 Mistral  weak, inexpensive
-        "together/Qwen/Qwen2.5-7B-Instruct-Turbo",             # 2 Together weak, open model
-        "gpt-4.1-nano-2025-04-14",                             # 3 OpenAI   weak-mid, fast
-        "mistral-small-2603",                                  # 4 Mistral  general mid-tier
-        "gpt-4.1-mini-2025-04-14",                             # 5 OpenAI   mid-strong
+        "ministral-3b-2512",                                  # 0 Mistral
+        "together/google/gemma-3n-E4B-it",                     # 1 Google / Together
+        "ministral-8b-2512",                                  # 2 Mistral
+        "ministral-14b-2512",                                 # 3 Mistral
+        "gpt-4.1-nano-2025-04-14",                            # 4 OpenAI
+        "mistral-small-2603",                                 # 5 Mistral (reasoning disabled)
         "together/meta-llama/Llama-3.3-70B-Instruct-Turbo",    # 6 Together strong, fast, expensive
         "mistral-large-2512",                                  # 7 Mistral  strongest
     ]
 
     PRICE = [
-        (0.00000010, 0.00000010),   # 0 ministral-3b
-        (0.00000015, 0.00000015),   # 1 ministral-8b
-        (0.00000030, 0.00000030),   # 2 Qwen2.5-7B-Turbo
-        (0.00000010, 0.00000040),   # 3 gpt-4.1-nano
-        (0.00000015, 0.00000060),   # 4 mistral-small
-        (0.00000040, 0.00000160),   # 5 gpt-4.1-mini
-        (0.00000104, 0.00000104),   # 6 Llama-3.3-70B
-        (0.00000050, 0.00000150),   # 7 mistral-large
+        (0.00000010, 0.00000010),   # 0 Ministral 3B:   $0.10 / $0.10 per 1M tokens
+        (0.00000006, 0.00000012),   # 1 Gemma 3n E4B:  $0.06 / $0.12 per 1M tokens
+        (0.00000015, 0.00000015),   # 2 Ministral 8B:   $0.15 / $0.15 per 1M tokens
+        (0.00000020, 0.00000020),   # 3 Ministral 14B:  $0.20 / $0.20 per 1M tokens
+        (0.00000010, 0.00000040),   # 4 GPT-4.1 nano:   $0.10 / $0.40 per 1M tokens
+        (0.00000015, 0.00000060),   # 5 Mistral Small:  $0.15 / $0.60 per 1M tokens
+        (0.00000104, 0.00000104),   # 6 Llama 3.3 70B: $1.04 / $1.04 per 1M tokens
+        (0.00000050, 0.00000150),   # 7 Mistral Large: $0.50 / $1.50 per 1M tokens
     ]
 
     # Initial requests/second estimates. The online EMA adapts them during
     # training; re-benchmark all models under GEN_MAX_NEW_TOKENS=768 before
     # the final experiments so queue load is comparable.
     SERVICE_RATE = [
-        0.6630,  # 0 ministral-3b
-        0.4924,  # 1 ministral-8b
-        0.4137,  # 2 Qwen2.5-7B-Turbo
-        0.7450,  # 3 gpt-4.1-nano
-        0.6390,  # 4 mistral-small
-        0.5650,  # 5 gpt-4.1-mini
-        0.4710,  # 6 Llama-3.3-70B
-        0.2065,  # 7 mistral-large
+        0.58964, # 0 Ministral 3B (measured)
+        0.50000, # 1 Gemma 3n E4B (placeholder; re-benchmark)
+        0.38045, # 2 Ministral 8B (measured)
+        0.50000, # 3 Ministral 14B (placeholder; re-benchmark)
+        0.52166, # 4 GPT-4.1 nano (measured)
+        0.58840, # 5 Mistral Small (measured)
+        0.26016, # 6 Llama 3.3 70B (measured)
+        0.29904, # 7 Mistral Large (measured)
     ]
     SERVER_CAPACITIES = [50] * 8
 
@@ -263,10 +263,10 @@ class Config:
     VALUE_COEF = 1        # Value loss weight
     # Anti-collapse brake: 0 collapses onto few servers; 0.02 only delayed
     # the slide to ~ep20; 0.03 is the current setting.
-    ENTROPY_COEF = 0.03
-    ACTOR_LEARNING_RATE = 3e-5
-    CRITIC_LEARNING_RATE = 3e-4
-    USE_LR_DECAY = True
+    ENTROPY_COEF = 0.0
+    ACTOR_LEARNING_RATE = 1e-5
+    CRITIC_LEARNING_RATE = 1e-4
+    USE_LR_DECAY = False
     LR_DECAY_TYPE = "cosine"
     LR_DECAY_MIN_RATIO = 0.1
     # Spread the cosine over the ACTUAL run length (= MAX_EPISODES).
@@ -275,7 +275,7 @@ class Config:
     LR_DECAY_EPISODES = 200
     LR_WARMUP_EPISODES = 0
     KL_COEF = 0.00
-    MAX_GRAD_NORM = 0.5
+    MAX_GRAD_NORM = 1
     PPO_EPOCHS = 4   # small interval batch: more epochs overfit noise
     BATCH_SIZE = 1
 
@@ -339,7 +339,7 @@ class Config:
     # load / FAIR=0 the reward may still shrink s_k. To make the queue tower
     # actually matter, pair with a load-relevant regime (higher load / FAIR=1).
     ACTOR_DUAL_LEARN_SCALE = False
-    ACTOR_DUAL_QUEUE_INIT_SCALE = 5.0
+    ACTOR_DUAL_QUEUE_INIT_SCALE = 1.0
     # Dedicated (higher) LR for the tower balance scales. Their gradient is
     # ~30x smaller than normal weights (chain rule multiplies by queue_score
     # ~0.02), so at the actor LR they barely move; this lets them adapt.
@@ -421,16 +421,17 @@ class Config:
     API_TRANSIENT_FAIL_PENALTY = 0.0
 
 
-    # Quality scoring settings
-    # Realigned to the 6-server list (the old dict was keyed for 10
-    # servers; after the cut, index 4 = Llama-70B would have read 700).
+    # Quality scoring settings. With USE_EM_EXACT_MATCH=True, keep the
+    # synthetic capability prior neutral and use observed answer quality.
     MODEL_ELO_SCORES = {
-        0: 700,   # ministral-3b
-        1: 1200,  # gpt-4.1-nano
-        2: 1100,  # mistral-small
-        3: 1300,  # gpt-4.1-mini
-        4: 1500,  # Llama-3.3-70B
-        5: 1500,  # gpt-oss-120b
+        0: 1150,
+        1: 1150,
+        2: 1150,
+        3: 1150,
+        4: 1150,
+        5: 1150,
+        6: 1150,
+        7: 1150,
     }
 
     USE_ATTN_ROUTER = False
@@ -451,13 +452,13 @@ class Config:
     FINAL_EVAL_EPISODES = 10  # Number of episodes for final evaluation
 
     # Poisson prompt generation settings
-    POISSON_ARRIVAL_RATE = 4  # Average arrival rate of prompts per second
+    POISSON_ARRIVAL_RATE = 3  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
     EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
 
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)
-    INTERVAL_LENGTH = 5 # The length of interval
+    INTERVAL_LENGTH = 6 # The length of interval
     MAX_EPISODES = 200   # match LR_DECAY_EPISODES above
 
     # Queue score settings
