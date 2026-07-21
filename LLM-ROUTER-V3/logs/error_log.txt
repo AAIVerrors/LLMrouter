@@ -160203,3 +160203,1176 @@ together.APITimeoutError: Request timed out.
 
 ================================================================================
 
+[2026-07-22 03:26:51] [Server 2 | together/Qwen/Qwen2.5-7B-Instruct-Turbo] Error processing request 28: APITimeoutError('Request timed out.')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 217, in _receive_event
+    data = self._network_stream.read(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_backends/sync.py", line 126, in read
+    with map_exceptions(exc_map):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1007, in request
+    response = self._client.send(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 849, in server_worker_process
+    response = together_client.chat.completions.create(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_utils/_utils.py", line 283, in wrapper
+    return func(*args, **kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/resources/chat/completions.py", line 526, in create
+    return self._post(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1284, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1025, in request
+    raise APITimeoutError(request=request) from err
+together.APITimeoutError: Request timed out.
+
+================================================================================
+
+[2026-07-22 03:29:36] [Server 2 | together/Qwen/Qwen2.5-7B-Instruct-Turbo] Error processing request 27: APITimeoutError('Request timed out.')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 217, in _receive_event
+    data = self._network_stream.read(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_backends/sync.py", line 126, in read
+    with map_exceptions(exc_map):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1007, in request
+    response = self._client.send(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 849, in server_worker_process
+    response = together_client.chat.completions.create(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_utils/_utils.py", line 283, in wrapper
+    return func(*args, **kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/resources/chat/completions.py", line 526, in create
+    return self._post(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1284, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1025, in request
+    raise APITimeoutError(request=request) from err
+together.APITimeoutError: Request timed out.
+
+================================================================================
+
+[2026-07-22 03:31:20] [Server 2 | together/Qwen/Qwen2.5-7B-Instruct-Turbo] Error processing request 83: InternalServerError("Error code: 503 - {'id': 'ot2rkHc-6Ng1vN-a1ebf026781cf36a', 'error': {'message': 'Service unavailable', 'type': 'service_unavailable', 'param': None, 'code': None}}")
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 849, in server_worker_process
+    response = together_client.chat.completions.create(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_utils/_utils.py", line 283, in wrapper
+    return func(*args, **kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/resources/chat/completions.py", line 526, in create
+    return self._post(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1284, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1071, in request
+    raise self._make_status_error_from_response(err.response) from None
+together.InternalServerError: Error code: 503 - {'id': 'ot2rkHc-6Ng1vN-a1ebf026781cf36a', 'error': {'message': 'Service unavailable', 'type': 'service_unavailable', 'param': None, 'code': None}}
+
+================================================================================
+
+[2026-07-22 03:31:40] [Server 2 | together/Qwen/Qwen2.5-7B-Instruct-Turbo] Error processing request 46: InternalServerError("Error code: 503 - {'id': 'ot2rr8S-6Ng1vN-a1ebf0a4aaebd111', 'error': {'message': 'Service unavailable', 'type': 'service_unavailable', 'param': None, 'code': None}}")
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 849, in server_worker_process
+    response = together_client.chat.completions.create(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_utils/_utils.py", line 283, in wrapper
+    return func(*args, **kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/resources/chat/completions.py", line 526, in create
+    return self._post(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1284, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1071, in request
+    raise self._make_status_error_from_response(err.response) from None
+together.InternalServerError: Error code: 503 - {'id': 'ot2rr8S-6Ng1vN-a1ebf0a4aaebd111', 'error': {'message': 'Service unavailable', 'type': 'service_unavailable', 'param': None, 'code': None}}
+
+================================================================================
+
+[2026-07-22 03:32:12] [Server 2 | together/Qwen/Qwen2.5-7B-Instruct-Turbo] Error processing request 16: APITimeoutError('Request timed out.')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 217, in _receive_event
+    data = self._network_stream.read(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_backends/sync.py", line 126, in read
+    with map_exceptions(exc_map):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1007, in request
+    response = self._client.send(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 849, in server_worker_process
+    response = together_client.chat.completions.create(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_utils/_utils.py", line 283, in wrapper
+    return func(*args, **kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/resources/chat/completions.py", line 526, in create
+    return self._post(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1284, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1025, in request
+    raise APITimeoutError(request=request) from err
+together.APITimeoutError: Request timed out.
+
+================================================================================
+
+[2026-07-22 03:32:53] [Server 2 | together/Qwen/Qwen2.5-7B-Instruct-Turbo] Error processing request 49: APITimeoutError('Request timed out.')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 217, in _receive_event
+    data = self._network_stream.read(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_backends/sync.py", line 126, in read
+    with map_exceptions(exc_map):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1007, in request
+    response = self._client.send(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 849, in server_worker_process
+    response = together_client.chat.completions.create(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_utils/_utils.py", line 283, in wrapper
+    return func(*args, **kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/resources/chat/completions.py", line 526, in create
+    return self._post(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1284, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1025, in request
+    raise APITimeoutError(request=request) from err
+together.APITimeoutError: Request timed out.
+
+================================================================================
+
+[2026-07-22 03:34:22] [Server 2 | together/Qwen/Qwen2.5-7B-Instruct-Turbo] Error processing request 47: InternalServerError("Error code: 503 - {'id': 'ot2sgFc-6Ng1vN-a1ebf4977e460147', 'error': {'message': 'Service unavailable', 'type': 'service_unavailable', 'param': None, 'code': None}}")
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 849, in server_worker_process
+    response = together_client.chat.completions.create(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_utils/_utils.py", line 283, in wrapper
+    return func(*args, **kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/resources/chat/completions.py", line 526, in create
+    return self._post(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1284, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1071, in request
+    raise self._make_status_error_from_response(err.response) from None
+together.InternalServerError: Error code: 503 - {'id': 'ot2sgFc-6Ng1vN-a1ebf4977e460147', 'error': {'message': 'Service unavailable', 'type': 'service_unavailable', 'param': None, 'code': None}}
+
+================================================================================
+
+[2026-07-22 03:34:27] [Server 2 | together/Qwen/Qwen2.5-7B-Instruct-Turbo] Error processing request 51: InternalServerError("Error code: 503 - {'id': 'ot2she5-6Ng1vN-a1ebf4b68e1b6cd5', 'error': {'message': 'Service unavailable', 'type': 'service_unavailable', 'param': None, 'code': None}}")
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 849, in server_worker_process
+    response = together_client.chat.completions.create(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_utils/_utils.py", line 283, in wrapper
+    return func(*args, **kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/resources/chat/completions.py", line 526, in create
+    return self._post(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1284, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1071, in request
+    raise self._make_status_error_from_response(err.response) from None
+together.InternalServerError: Error code: 503 - {'id': 'ot2she5-6Ng1vN-a1ebf4b68e1b6cd5', 'error': {'message': 'Service unavailable', 'type': 'service_unavailable', 'param': None, 'code': None}}
+
+================================================================================
+
+[2026-07-22 03:34:41] [Server 2 | together/Qwen/Qwen2.5-7B-Instruct-Turbo] Error processing request 0: InternalServerError("Error code: 503 - {'id': 'ot2smqs-6Ng1vN-a1ebf50d0c0929fa', 'error': {'message': 'Service unavailable', 'type': 'service_unavailable', 'param': None, 'code': None}}")
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 849, in server_worker_process
+    response = together_client.chat.completions.create(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_utils/_utils.py", line 283, in wrapper
+    return func(*args, **kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/resources/chat/completions.py", line 526, in create
+    return self._post(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1284, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1071, in request
+    raise self._make_status_error_from_response(err.response) from None
+together.InternalServerError: Error code: 503 - {'id': 'ot2smqs-6Ng1vN-a1ebf50d0c0929fa', 'error': {'message': 'Service unavailable', 'type': 'service_unavailable', 'param': None, 'code': None}}
+
+================================================================================
+
+[2026-07-22 03:34:45] [Server 2 | together/Qwen/Qwen2.5-7B-Instruct-Turbo] Error processing request 56: InternalServerError("Error code: 503 - {'id': 'ot2soKd-6Ng1vN-a1ebf52c0c2f6cd5', 'error': {'message': 'Service unavailable', 'type': 'service_unavailable', 'param': None, 'code': None}}")
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 849, in server_worker_process
+    response = together_client.chat.completions.create(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_utils/_utils.py", line 283, in wrapper
+    return func(*args, **kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/resources/chat/completions.py", line 526, in create
+    return self._post(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1284, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1071, in request
+    raise self._make_status_error_from_response(err.response) from None
+together.InternalServerError: Error code: 503 - {'id': 'ot2soKd-6Ng1vN-a1ebf52c0c2f6cd5', 'error': {'message': 'Service unavailable', 'type': 'service_unavailable', 'param': None, 'code': None}}
+
+================================================================================
+
+[2026-07-22 03:34:56] [Server 2 | together/Qwen/Qwen2.5-7B-Instruct-Turbo] Error processing request 80: InternalServerError("Error code: 503 - {'id': 'ot2srUU-6Ng1vN-a1ebf56eea4a0147', 'error': {'message': 'Service unavailable', 'type': 'service_unavailable', 'param': None, 'code': None}}")
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 849, in server_worker_process
+    response = together_client.chat.completions.create(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_utils/_utils.py", line 283, in wrapper
+    return func(*args, **kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/resources/chat/completions.py", line 526, in create
+    return self._post(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1284, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1071, in request
+    raise self._make_status_error_from_response(err.response) from None
+together.InternalServerError: Error code: 503 - {'id': 'ot2srUU-6Ng1vN-a1ebf56eea4a0147', 'error': {'message': 'Service unavailable', 'type': 'service_unavailable', 'param': None, 'code': None}}
+
+================================================================================
+
+[2026-07-22 03:59:26] [Server 2 | together/Qwen/Qwen2.5-7B-Instruct-Turbo] Error processing request 44: APITimeoutError('Request timed out.')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 217, in _receive_event
+    data = self._network_stream.read(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_backends/sync.py", line 126, in read
+    with map_exceptions(exc_map):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1007, in request
+    response = self._client.send(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 849, in server_worker_process
+    response = together_client.chat.completions.create(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_utils/_utils.py", line 283, in wrapper
+    return func(*args, **kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/resources/chat/completions.py", line 526, in create
+    return self._post(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1284, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1025, in request
+    raise APITimeoutError(request=request) from err
+together.APITimeoutError: Request timed out.
+
+================================================================================
+
+[2026-07-22 04:02:00] [Server 2 | together/Qwen/Qwen2.5-7B-Instruct-Turbo] Error processing request 3: InternalServerError("Error code: 503 - {'id': 'ot32BCJ-6Ng1vN-a1ec1d13ed17417b', 'error': {'message': 'Service unavailable', 'type': 'service_unavailable', 'param': None, 'code': None}}")
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 849, in server_worker_process
+    response = together_client.chat.completions.create(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_utils/_utils.py", line 283, in wrapper
+    return func(*args, **kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/resources/chat/completions.py", line 526, in create
+    return self._post(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1284, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1071, in request
+    raise self._make_status_error_from_response(err.response) from None
+together.InternalServerError: Error code: 503 - {'id': 'ot32BCJ-6Ng1vN-a1ec1d13ed17417b', 'error': {'message': 'Service unavailable', 'type': 'service_unavailable', 'param': None, 'code': None}}
+
+================================================================================
+
+[2026-07-22 04:02:21] [Server 2 | together/Qwen/Qwen2.5-7B-Instruct-Turbo] Error processing request 23: APITimeoutError('Request timed out.')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 217, in _receive_event
+    data = self._network_stream.read(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_backends/sync.py", line 126, in read
+    with map_exceptions(exc_map):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1007, in request
+    response = self._client.send(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 849, in server_worker_process
+    response = together_client.chat.completions.create(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_utils/_utils.py", line 283, in wrapper
+    return func(*args, **kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/resources/chat/completions.py", line 526, in create
+    return self._post(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1284, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1025, in request
+    raise APITimeoutError(request=request) from err
+together.APITimeoutError: Request timed out.
+
+================================================================================
+
+[2026-07-22 04:02:44] [Server 2 | together/Qwen/Qwen2.5-7B-Instruct-Turbo] Error processing request 25: InternalServerError("Error code: 503 - {'id': 'ot32QL9-6Ng1vN-a1ec1e282c6cde0c', 'error': {'message': 'Service unavailable', 'type': 'service_unavailable', 'param': None, 'code': None}}")
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 849, in server_worker_process
+    response = together_client.chat.completions.create(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_utils/_utils.py", line 283, in wrapper
+    return func(*args, **kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/resources/chat/completions.py", line 526, in create
+    return self._post(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1284, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1071, in request
+    raise self._make_status_error_from_response(err.response) from None
+together.InternalServerError: Error code: 503 - {'id': 'ot32QL9-6Ng1vN-a1ec1e282c6cde0c', 'error': {'message': 'Service unavailable', 'type': 'service_unavailable', 'param': None, 'code': None}}
+
+================================================================================
+
+[2026-07-22 04:03:14] [Server 2 | together/Qwen/Qwen2.5-7B-Instruct-Turbo] Error processing request 8: APITimeoutError('Request timed out.')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 217, in _receive_event
+    data = self._network_stream.read(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_backends/sync.py", line 126, in read
+    with map_exceptions(exc_map):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1007, in request
+    response = self._client.send(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 849, in server_worker_process
+    response = together_client.chat.completions.create(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_utils/_utils.py", line 283, in wrapper
+    return func(*args, **kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/resources/chat/completions.py", line 526, in create
+    return self._post(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1284, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1025, in request
+    raise APITimeoutError(request=request) from err
+together.APITimeoutError: Request timed out.
+
+================================================================================
+
+[2026-07-22 04:03:58] [Server 2 | together/Qwen/Qwen2.5-7B-Instruct-Turbo] Error processing request 28: APITimeoutError('Request timed out.')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 217, in _receive_event
+    data = self._network_stream.read(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_backends/sync.py", line 126, in read
+    with map_exceptions(exc_map):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1007, in request
+    response = self._client.send(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 849, in server_worker_process
+    response = together_client.chat.completions.create(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_utils/_utils.py", line 283, in wrapper
+    return func(*args, **kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/resources/chat/completions.py", line 526, in create
+    return self._post(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1284, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/together/_base_client.py", line 1025, in request
+    raise APITimeoutError(request=request) from err
+together.APITimeoutError: Request timed out.
+
+================================================================================
+
+[2026-07-22 05:41:00] [Server 0 | ministral-3b-2512] Error processing request 13: ReadTimeout('The read operation timed out')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 217, in _receive_event
+    data = self._network_stream.read(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_backends/sync.py", line 126, in read
+    with map_exceptions(exc_map):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 911, in server_worker_process
+    chat_response = mistral_chat_complete_with_retry(
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 119, in mistral_chat_complete_with_retry
+    return client.chat.complete(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/chat.py", line 262, in complete
+    http_res = self.do_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 294, in do_request
+    http_res = do()
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 275, in do
+    raise e
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 270, in do
+    http_res = client.send(req, stream=stream)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ReadTimeout: The read operation timed out
+
+================================================================================
+
+[2026-07-22 05:41:03] [Server 0 | ministral-3b-2512] Error processing request 114: ReadTimeout('The read operation timed out')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 217, in _receive_event
+    data = self._network_stream.read(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_backends/sync.py", line 126, in read
+    with map_exceptions(exc_map):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 911, in server_worker_process
+    chat_response = mistral_chat_complete_with_retry(
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 119, in mistral_chat_complete_with_retry
+    return client.chat.complete(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/chat.py", line 262, in complete
+    http_res = self.do_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 294, in do_request
+    http_res = do()
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 275, in do
+    raise e
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 270, in do
+    http_res = client.send(req, stream=stream)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ReadTimeout: The read operation timed out
+
+================================================================================
+
+[2026-07-22 05:42:42] [Server 0 | ministral-3b-2512] Error processing request 90: ReadTimeout('The read operation timed out')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 217, in _receive_event
+    data = self._network_stream.read(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_backends/sync.py", line 126, in read
+    with map_exceptions(exc_map):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 911, in server_worker_process
+    chat_response = mistral_chat_complete_with_retry(
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 119, in mistral_chat_complete_with_retry
+    return client.chat.complete(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/chat.py", line 262, in complete
+    http_res = self.do_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 294, in do_request
+    http_res = do()
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 275, in do
+    raise e
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 270, in do
+    http_res = client.send(req, stream=stream)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ReadTimeout: The read operation timed out
+
+================================================================================
+
+[2026-07-22 05:44:34] [Server 1 | ministral-8b-2512] Error processing request 107: ReadTimeout('The read operation timed out')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 217, in _receive_event
+    data = self._network_stream.read(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_backends/sync.py", line 126, in read
+    with map_exceptions(exc_map):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 911, in server_worker_process
+    chat_response = mistral_chat_complete_with_retry(
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 119, in mistral_chat_complete_with_retry
+    return client.chat.complete(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/chat.py", line 262, in complete
+    http_res = self.do_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 294, in do_request
+    http_res = do()
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 275, in do
+    raise e
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 270, in do
+    http_res = client.send(req, stream=stream)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ReadTimeout: The read operation timed out
+
+================================================================================
+
+[2026-07-22 05:57:23] [Server 0 | ministral-3b-2512] Error processing request 92: ReadTimeout('The read operation timed out')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 217, in _receive_event
+    data = self._network_stream.read(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_backends/sync.py", line 126, in read
+    with map_exceptions(exc_map):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 911, in server_worker_process
+    chat_response = mistral_chat_complete_with_retry(
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 119, in mistral_chat_complete_with_retry
+    return client.chat.complete(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/chat.py", line 262, in complete
+    http_res = self.do_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 294, in do_request
+    http_res = do()
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 275, in do
+    raise e
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 270, in do
+    http_res = client.send(req, stream=stream)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ReadTimeout: The read operation timed out
+
+================================================================================
+
+[2026-07-22 06:17:38] [Server 0 | ministral-3b-2512] Error processing request 64: ReadTimeout('The read operation timed out')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 217, in _receive_event
+    data = self._network_stream.read(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_backends/sync.py", line 126, in read
+    with map_exceptions(exc_map):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 911, in server_worker_process
+    chat_response = mistral_chat_complete_with_retry(
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 119, in mistral_chat_complete_with_retry
+    return client.chat.complete(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/chat.py", line 262, in complete
+    http_res = self.do_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 294, in do_request
+    http_res = do()
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 275, in do
+    raise e
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 270, in do
+    http_res = client.send(req, stream=stream)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ReadTimeout: The read operation timed out
+
+================================================================================
+
+[2026-07-22 06:35:37] [Server 1 | ministral-8b-2512] Error processing request 22: ReadTimeout('The read operation timed out')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 217, in _receive_event
+    data = self._network_stream.read(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_backends/sync.py", line 126, in read
+    with map_exceptions(exc_map):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 911, in server_worker_process
+    chat_response = mistral_chat_complete_with_retry(
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 119, in mistral_chat_complete_with_retry
+    return client.chat.complete(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/chat.py", line 262, in complete
+    http_res = self.do_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 294, in do_request
+    http_res = do()
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 275, in do
+    raise e
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/mistralai/client/basesdk.py", line 270, in do
+    http_res = client.send(req, stream=stream)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ReadTimeout: The read operation timed out
+
+================================================================================
+
+[2026-07-22 07:43:10] [Server 3 | gpt-4.1-nano-2025-04-14] Error processing request 109: APITimeoutError('Request timed out.')
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 101, in map_httpcore_exceptions
+    yield
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 250, in handle_request
+    resp = self._pool.handle_request(req)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 256, in handle_request
+    raise exc from None
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection_pool.py", line 236, in handle_request
+    response = connection.handle_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/connection.py", line 103, in handle_request
+    return self._connection.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 136, in handle_request
+    raise exc
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 106, in handle_request
+    ) = self._receive_response_headers(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 177, in _receive_response_headers
+    event = self._receive_event(timeout=timeout)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_sync/http11.py", line 217, in _receive_event
+    data = self._network_stream.read(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_backends/sync.py", line 126, in read
+    with map_exceptions(exc_map):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpcore/_exceptions.py", line 14, in map_exceptions
+    raise to_exc(exc) from exc
+httpcore.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/openai/_base_client.py", line 1019, in request
+    response = self._send_request(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/openai/_client.py", line 400, in _send_request
+    return self._send_with_auth_retry(request, stream=stream, **kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/openai/_client.py", line 378, in _send_with_auth_retry
+    response = super()._send_request(request, stream=stream, **kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/openai/_base_client.py", line 947, in _send_request
+    return self._client.send(request, stream=stream, **kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 914, in send
+    response = self._send_handling_auth(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 942, in _send_handling_auth
+    response = self._send_handling_redirects(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 979, in _send_handling_redirects
+    response = self._send_single_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_client.py", line 1014, in _send_single_request
+    response = transport.handle_request(request)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 249, in handle_request
+    with map_httpcore_exceptions():
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/contextlib.py", line 153, in __exit__
+    self.gen.throw(typ, value, traceback)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/httpx/_transports/default.py", line 118, in map_httpcore_exceptions
+    raise mapped_exc(message) from exc
+httpx.ReadTimeout: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 870, in server_worker_process
+    response_text = _get_openai_like_text_response(
+  File "/srv/home/hshu3770/LLMrouter/LLM-ROUTER-V3/environment.py", line 587, in _get_openai_like_text_response
+    response = client.chat.completions.create(**kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/openai/_utils/_utils.py", line 287, in wrapper
+    return func(*args, **kwargs)
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/openai/resources/chat/completions/completions.py", line 1211, in create
+    return self._post(
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/openai/_base_client.py", line 1314, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+  File "/home/hshu3770/miniconda3/envs/p2l/lib/python3.10/site-packages/openai/_base_client.py", line 1037, in request
+    raise APITimeoutError(request=request) from err
+openai.APITimeoutError: Request timed out.
+
+================================================================================
+

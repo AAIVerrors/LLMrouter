@@ -9,7 +9,7 @@ class Config:
     MODEL_NAMES = [
         "ministral-3b-2512",                                  # 0 Mistral  weakest floor
         "ministral-8b-2512",                                  # 1 Mistral  weak, inexpensive
-        "together/Qwen/Qwen2.5-7B-Instruct-Turbo",             # 2 Together weak, open model
+        "together/Qwen/Qwen3.5-9B",             # 2 Together weak, open model
         "gpt-4.1-nano-2025-04-14",                             # 3 OpenAI   weak-mid, fast
         "mistral-small-2603",                                  # 4 Mistral  general mid-tier
         "gpt-4.1-mini-2025-04-14",                             # 5 OpenAI   mid-strong
@@ -20,7 +20,7 @@ class Config:
     PRICE = [
         (0.00000010, 0.00000010),   # 0 ministral-3b
         (0.00000015, 0.00000015),   # 1 ministral-8b
-        (0.00000030, 0.00000030),   # 2 Qwen2.5-7B-Turbo
+        (0.00000017, 0.00000025),   # 2 Qwen2.5-7B-Turbo
         (0.00000010, 0.00000040),   # 3 gpt-4.1-nano
         (0.00000015, 0.00000060),   # 4 mistral-small
         (0.00000040, 0.00000160),   # 5 gpt-4.1-mini
@@ -32,14 +32,14 @@ class Config:
     # training; re-benchmark all models under GEN_MAX_NEW_TOKENS=768 before
     # the final experiments so queue load is comparable.
     SERVICE_RATE = [
-        0.6630,  # 0 ministral-3b
-        0.4924,  # 1 ministral-8b
-        0.4137,  # 2 Qwen2.5-7B-Turbo
-        0.7450,  # 3 gpt-4.1-nano
-        0.6390,  # 4 mistral-small
-        0.5650,  # 5 gpt-4.1-mini
-        0.4710,  # 6 Llama-3.3-70B
-        0.2065,  # 7 mistral-large
+        0.58964, # 0 ministral-3b
+        0.38045, # 1 ministral-8b
+        0.56050, # 2 Qwen3.5-9B (prior measured seed; re-benchmark in this fleet)
+        0.52166, # 3 gpt-4.1-nano
+        0.58840, # 4 mistral-small
+        0.45636, # 5 gpt-4.1-mini
+        0.26016, # 6 Llama-3.3-70B
+        0.29904, # 7 mistral-large
     ]
     SERVER_CAPACITIES = [50] * 8
 
@@ -263,7 +263,7 @@ class Config:
     VALUE_COEF = 1        # Value loss weight
     # Anti-collapse brake: 0 collapses onto few servers; 0.02 only delayed
     # the slide to ~ep20; 0.03 is the current setting.
-    ENTROPY_COEF = 0.01
+    ENTROPY_COEF = 0.0
     ACTOR_LEARNING_RATE = 1e-5
     CRITIC_LEARNING_RATE = 1e-4
     USE_LR_DECAY = False
@@ -338,7 +338,7 @@ class Config:
     # reward tunes both. NOTE: the imbalance is largely reward-driven — at low
     # load / FAIR=0 the reward may still shrink s_k. To make the queue tower
     # actually matter, pair with a load-relevant regime (higher load / FAIR=1).
-    ACTOR_DUAL_LEARN_SCALE = True
+    ACTOR_DUAL_LEARN_SCALE = False
     ACTOR_DUAL_QUEUE_INIT_SCALE = 1.0
     # Dedicated (higher) LR for the tower balance scales. Their gradient is
     # ~30x smaller than normal weights (chain rule multiplies by queue_score
