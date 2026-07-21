@@ -299,7 +299,8 @@ class RouterNetwork(nn.Module):
             self.use_actor_dual_tower = bool(getattr(Config, "ACTOR_DUAL_TOWER", False))
             if self.use_actor_queue_skip or self.use_actor_dual_tower:
                 self.queue_head = nn.Sequential(
-                    nn.Linear(4, max(d_model // 4, 8)),   # [util, residual, mu, util/mu]
+                    # [load, capacity, residual, mu, drain=load/mu]
+                    nn.Linear(5, max(d_model // 4, 8)),
                     nn.GELU(),
                     nn.Linear(max(d_model // 4, 8), 1),
                 )
@@ -803,9 +804,30 @@ class RouterNetwork(nn.Module):
                 util = sf[..., 0]                                   # [B, M]
                 residual = sf[..., 1] if F_dyn > 1 else torch.zeros_like(util)
                 mu = sf[..., F_dyn]                                 # first static feat = mu
-                drain = util / (mu + 1e-6)                          # queue/mu proxy (JSQ signal)
-                # raw ingredients (util, residual, mu) + the drain inductive bias.
-                queue_desc = torch.stack([util, residual, mu, drain], dim=-1)  # [B, M, 4]
+                caps_t = torch.as_tensor(
+                    Config.SERVER_CAPACITIES[:M],
+                    dtype=util.dtype, device=util.device,
+                )
+                if bool(getattr(Config, "QUEUE_DESC_RAW_LOAD", False)):
+                    # Feed the RAW queue length (util*cap: 10 vs 6 vs 9, not
+                    # 0.20 vs 0.12 vs 0.18) so server differences reach the
+                    # queue head at full size instead of squashed by /cap.
+                    # State layout is untouched (util stays at offset 0 for
+                    # quota/JSQ decode).
+                    qload = util * caps_t
+                else:
+                    qload = util
+                # Capacity as an explicit feature: redundant while caps are
+                # equal (constant -> absorbed into the bias) but makes the
+                # tower correct for heterogeneous capacities (queue 10 at
+                # cap 50 is idle, at cap 12 nearly full).
+                caps_bm = caps_t.expand(util.shape)                 # [B, M]
+                # drain = queue/mu; with raw load this is the expected drain
+                # time in SECONDS (JSQ-with-heterogeneous-mu signal).
+                drain = qload / (mu + 1e-6)
+                queue_desc = torch.stack(
+                    [qload, caps_bm, residual, mu, drain], dim=-1
+                )                                                    # [B, M, 5]
 
             if getattr(self, "use_actor_dual_tower", False):
                 # Dual tower: quality (prompt x STATIC capability channel, no

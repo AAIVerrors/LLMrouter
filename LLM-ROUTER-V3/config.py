@@ -295,7 +295,7 @@ class Config:
     VALUE_COEF = 1        # Value loss weight
     # Anti-collapse brake: 0 collapses onto few servers; 0.02 only delayed
     # the slide to ~ep20; 0.03 is the current setting.
-    ENTROPY_COEF = 0
+    ENTROPY_COEF = 0.03
     ACTOR_LEARNING_RATE = 3e-5
     CRITIC_LEARNING_RATE = 3e-4
     USE_LR_DECAY = True
@@ -376,6 +376,14 @@ class Config:
     # ~30x smaller than normal weights (chain rule multiplies by queue_score
     # ~0.02), so at the actor LR they barely move; this lets them adapt.
     ACTOR_DUAL_SCALE_LR = 1e-3
+
+    # Queue tower input scale: feed raw queue LENGTH (util*capacity, e.g.
+    # 10 vs 6 vs 9) instead of util (0.20 vs 0.12 vs 0.18). 50x bigger
+    # server differences reach the queue head immediately, instead of
+    # waiting for its weights to grow 50x at LR 3e-5. State layout is
+    # unchanged (util stays at offset 0). drain becomes queue/mu = expected
+    # drain time in seconds. Requires a fresh model.
+    QUEUE_DESC_RAW_LOAD = True
 
     # (dead config, nothing reads it; the episode-completion wait loop in
     # trainer.py is unbounded — API-client timeouts/retries bound it in
@@ -458,13 +466,13 @@ class Config:
     FINAL_EVAL_EPISODES = 10  # Number of episodes for final evaluation
 
     # Poisson prompt generation settings
-    POISSON_ARRIVAL_RATE = 2  # Average arrival rate of prompts per second
+    POISSON_ARRIVAL_RATE = 3  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
     EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
 
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)
-    INTERVAL_LENGTH = 6 # The length of interval
+    INTERVAL_LENGTH = 5 # The length of interval
     MAX_EPISODES = 200   # match LR_DECAY_EPISODES above
 
     # Queue score settings
