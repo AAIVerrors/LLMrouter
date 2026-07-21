@@ -1,47 +1,79 @@
 import torch
 
 class Config:
-    # ================================================================
-    # 8-way ALL NON-REASONING fleet, ordered from weak/cheap to strong.
-    # Keep MODEL_NAMES, PRICE, SERVICE_RATE, and all per-server arrays in
-    # exactly the same order: the router action is the list index.
-    # ================================================================
     MODEL_NAMES = [
-        "ministral-3b-2512",                                  # 0 Mistral  weakest floor
-        "ministral-8b-2512",                                  # 1 Mistral  weak, inexpensive
-        "together/Qwen/Qwen2.5-7B-Instruct-Turbo",             # 2 Together weak, open model
-        "gpt-4.1-nano-2025-04-14",                             # 3 OpenAI   weak-mid, fast
-        "mistral-small-2603",                                  # 4 Mistral  general mid-tier
-        "gpt-4.1-mini-2025-04-14",                             # 5 OpenAI   mid-strong
-        "together/meta-llama/Llama-3.3-70B-Instruct-Turbo",    # 6 Together strong, fast, expensive
-        "mistral-large-2512",                                  # 7 Mistral  strongest
+        # ===== Tier 1: 最便宜 =====
+        "ministral-3b-2512",
+
+        # ===== Tier 2: 便宜 weak baseline =====
+        # "together/Qwen/Qwen3.5-9B",
+        # "ministral-8b-2512",
+        "gpt-4.1-nano-2025-04-14",
+
+        # ===== Tier 3: mid-tier =====
+        # "together/Qwen/Qwen2.5-7B-Instruct-Turbo",
+        "mistral-small-2603",
+        "gpt-4.1-mini-2025-04-14",
+
+        # ===== Tier 4: 强模型 =====
+        "together/meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        # "mistral-large-2512",
+        # "gpt-4.1-2025-04-14",
+        "together/openai/gpt-oss-120b",
     ]
+    # MODEL_NAMES = [
+    #     "ministral-3b-2512",                            # 0 Mistral
+    #     "gpt-4.1-nano-2025-04-14",                      # 1 OpenAI
+    #     "mistral-small-2603",                           # 2 Mistral
+    #     "gpt-4.1-mini-2025-04-14",                      # 3 OpenAI
+    #     "novita/meta-llama/llama-3.3-70b-instruct",     # 4 Novita
+    #     "novita/deepseek/deepseek-v3.2",                # 5 Novita  ⚠️核对ID
+    # ]
 
     PRICE = [
-        (0.00000010, 0.00000010),   # 0 ministral-3b
-        (0.00000015, 0.00000015),   # 1 ministral-8b
-        (0.00000030, 0.00000030),   # 2 Qwen2.5-7B-Turbo
-        (0.00000010, 0.00000040),   # 3 gpt-4.1-nano
-        (0.00000015, 0.00000060),   # 4 mistral-small
-        (0.00000040, 0.00000160),   # 5 gpt-4.1-mini
-        (0.00000104, 0.00000104),   # 6 Llama-3.3-70B
-        (0.00000050, 0.00000150),   # 7 mistral-large
+        # ===== Tier 1: 最便宜 =====
+        (0.00000010, 0.00000010),  # ministral-3b-2512
+
+        # ===== Tier 2: 便宜 weak baseline =====
+        # (0.00000017, 0.00000025),  # novita/meta-llama/llama-3.1-8b-instruct
+        # (0.00000015, 0.00000015),  # ministral-8b-2512
+        (0.00000010, 0.00000040),  # gpt-4.1-nano-2025-04-14
+
+        # ===== Tier 3: mid-tier =====
+        # (0.00000030, 0.00000030),  # together/Qwen/Qwen2.5-7B-Instruct-Turbo
+        (0.00000015, 0.00000060),  # mistral-small-2506
+        (0.00000040, 0.00000160),  # gpt-4.1-mini-2025-04-14
+
+        # ===== Tier 4: 强模型 =====
+        (0.00000104, 0.00000104),  # together/meta-llama/Llama-3.3-70B-Instruct-Turbo
+        # (0.00000050, 0.00000150),  # mistral-large-2512
+        # (0.00000200, 0.00000800),  # gpt-4.1-2025-04-14
+        (0.00000015, 0.00000060),  # gpt-oss-120b
+
     ]
 
-    # Initial requests/second estimates. The online EMA adapts them during
-    # training; re-benchmark all models under GEN_MAX_NEW_TOKENS=768 before
-    # the final experiments so queue load is comparable.
+    # PRICE = [
+    #     (0.00000010, 0.00000010),   # 0 ministral-3b
+    #     (0.00000010, 0.00000040),   # 1 gpt-4.1-nano
+    #     (0.00000015, 0.00000060),   # 2 mistral-small
+    #     (0.00000040, 0.00000160),   # 3 gpt-4.1-mini
+    #     (0.000000135, 0.00000040),  # 4 novita llama-3.3-70b
+    #     (0.000000269, 0.00000040),  # 5 novita deepseek-v3.2
+    # ]
+
     SERVICE_RATE = [
-        0.6630,  # 0 ministral-3b
-        0.4924,  # 1 ministral-8b
-        0.4137,  # 2 Qwen2.5-7B-Turbo
-        0.7450,  # 3 gpt-4.1-nano
-        0.6390,  # 4 mistral-small
-        0.5650,  # 5 gpt-4.1-mini
-        0.4710,  # 6 Llama-3.3-70B
-        0.2065,  # 7 mistral-large
+        0.663,   # ministral-3b
+        # 0.5605,   # llama-3.1-8b (novita)
+        # 0.4924,   # ministral-8b
+        0.745,   # gpt-4.1-nano
+        # 0.4137,   # Qwen2.5-7B
+        0.639,   # mistral-small
+        0.565,   # gpt-4.1-mini
+        0.471,   # Llama-3.3-70B
+        # 0.2065,   # mistral-large
+        0.313,   # gpt-oss-120b
     ]
-    SERVER_CAPACITIES = [50] * 8
+    SERVER_CAPACITIES = [50] * 6
 
     USE_UTIL = True  # in the state use load/capability or load + capability
 
@@ -264,9 +296,9 @@ class Config:
     # Anti-collapse brake: 0 collapses onto few servers; 0.02 only delayed
     # the slide to ~ep20; 0.03 is the current setting.
     ENTROPY_COEF = 0.01
-    ACTOR_LEARNING_RATE = 1e-5
-    CRITIC_LEARNING_RATE = 1e-4
-    USE_LR_DECAY = False
+    ACTOR_LEARNING_RATE = 3e-5
+    CRITIC_LEARNING_RATE = 3e-4
+    USE_LR_DECAY = True
     LR_DECAY_TYPE = "cosine"
     LR_DECAY_MIN_RATIO = 0.1
     # Spread the cosine over the ACTUAL run length (= MAX_EPISODES).
@@ -338,8 +370,8 @@ class Config:
     # reward tunes both. NOTE: the imbalance is largely reward-driven — at low
     # load / FAIR=0 the reward may still shrink s_k. To make the queue tower
     # actually matter, pair with a load-relevant regime (higher load / FAIR=1).
-    ACTOR_DUAL_LEARN_SCALE = True
-    ACTOR_DUAL_QUEUE_INIT_SCALE = 1.0
+    ACTOR_DUAL_LEARN_SCALE = False
+    ACTOR_DUAL_QUEUE_INIT_SCALE = 5.0
     # Dedicated (higher) LR for the tower balance scales. Their gradient is
     # ~30x smaller than normal weights (chain rule multiplies by queue_score
     # ~0.02), so at the actor LR they barely move; this lets them adapt.
@@ -399,7 +431,7 @@ class Config:
     PLOT_INTERVAL = 50    # Plot progress every 50 episodes
 
     # Router QA generation controls (keeps answers short & deterministic)
-    GEN_MAX_NEW_TOKENS = 768         # hard cap on answer length
+    GEN_MAX_NEW_TOKENS = 1024         # hard cap on answer length
     GEN_MIN_NEW_TOKENS = 0
     GEN_TEMPERATURE = 0.1
     GEN_TOP_P = 1
@@ -457,7 +489,7 @@ class Config:
 
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)
-    INTERVAL_LENGTH = 6 # The length of interval
+    INTERVAL_LENGTH = 5 # The length of interval
     MAX_EPISODES = 200   # match LR_DECAY_EPISODES above
 
     # Queue score settings
