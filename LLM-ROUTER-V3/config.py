@@ -295,7 +295,7 @@ class Config:
     VALUE_COEF = 1        # Value loss weight
     # Anti-collapse brake: 0 collapses onto few servers; 0.02 only delayed
     # the slide to ~ep20; 0.03 is the current setting.
-    ENTROPY_COEF = 0.03
+    ENTROPY_COEF = 0.01
     ACTOR_LEARNING_RATE = 3e-5
     CRITIC_LEARNING_RATE = 3e-4
     USE_LR_DECAY = True
@@ -370,7 +370,7 @@ class Config:
     # reward tunes both. NOTE: the imbalance is largely reward-driven — at low
     # load / FAIR=0 the reward may still shrink s_k. To make the queue tower
     # actually matter, pair with a load-relevant regime (higher load / FAIR=1).
-    ACTOR_DUAL_LEARN_SCALE = True
+    ACTOR_DUAL_LEARN_SCALE = False
     ACTOR_DUAL_QUEUE_INIT_SCALE = 5.0
     # Dedicated (higher) LR for the tower balance scales. Their gradient is
     # ~30x smaller than normal weights (chain rule multiplies by queue_score
@@ -392,7 +392,7 @@ class Config:
     # becomes the unified numeric tower [load, cap, residual, mu, drain,
     # price_in, price_out] (prices x1e6, from Config.PRICE). State layout,
     # critic, quota decode and all baselines are untouched. Fresh model.
-    DUAL_TOWER_PRICE_IN_QUEUE = True
+    DUAL_TOWER_PRICE_IN_QUEUE = False
 
     # Unify numeric-tower feature magnitudes to O(0.1-3): load/10, cap/50,
     # drain/10; residual, mu, prices already O(1). Differences stay full-size
@@ -400,7 +400,7 @@ class Config:
     # initialized queue head no longer injects +-5-logit noise from raw
     # 0-30-range drains (amplified by scale_k), which would wreck early
     # exploration and conditioning.
-    QUEUE_DESC_UNIT_SCALE = True
+    QUEUE_DESC_UNIT_SCALE = False
 
     # (dead config, nothing reads it; the episode-completion wait loop in
     # trainer.py is unbounded — API-client timeouts/retries bound it in
@@ -431,7 +431,7 @@ class Config:
     PLOT_INTERVAL = 50    # Plot progress every 50 episodes
 
     # Router QA generation controls (keeps answers short & deterministic)
-    GEN_MAX_NEW_TOKENS = 768         # hard cap on answer length
+    GEN_MAX_NEW_TOKENS = 1024         # hard cap on answer length
     GEN_MIN_NEW_TOKENS = 0
     GEN_TEMPERATURE = 0.1
     GEN_TOP_P = 1
