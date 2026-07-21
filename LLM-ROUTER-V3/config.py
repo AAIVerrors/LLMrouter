@@ -385,6 +385,23 @@ class Config:
     # drain time in seconds. Requires a fresh model.
     QUEUE_DESC_RAW_LOAD = True
 
+    # Move price from the semantic (quality) tower into the numeric queue
+    # tower. Quality tower then reads a [mu]-only static channel and matches
+    # pure capability — dual/quality_spread becomes cost-free and finally
+    # answers "does the quality tower learn?" unambiguously. Queue tower
+    # becomes the unified numeric tower [load, cap, residual, mu, drain,
+    # price_in, price_out] (prices x1e6, from Config.PRICE). State layout,
+    # critic, quota decode and all baselines are untouched. Fresh model.
+    DUAL_TOWER_PRICE_IN_QUEUE = True
+
+    # Unify numeric-tower feature magnitudes to O(0.1-3): load/10, cap/50,
+    # drain/10; residual, mu, prices already O(1). Differences stay full-size
+    # (10 vs 6 -> 1.0 vs 0.6, still 5x the old util spread), but the freshly
+    # initialized queue head no longer injects +-5-logit noise from raw
+    # 0-30-range drains (amplified by scale_k), which would wreck early
+    # exploration and conditioning.
+    QUEUE_DESC_UNIT_SCALE = True
+
     # (dead config, nothing reads it; the episode-completion wait loop in
     # trainer.py is unbounded — API-client timeouts/retries bound it in
     # practice)

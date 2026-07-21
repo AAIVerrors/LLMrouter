@@ -223,9 +223,19 @@ class RouterNetwork(nn.Module):
             self.stat_feat_dim = int(getattr(Config, "SERVER_STAT_DIM", 3))
             self.server_feat_dim = self.dyn_feat_dim + self.stat_feat_dim
 
+            # Move price out of the semantic (quality) pathway into the numeric
+            # queue tower: the stat channel the fusion sees narrows to [mu]
+            # only, and prices go to the queue head as raw per-server scalars.
+            # quality_spread then measures PURE capability matching (no cost
+            # mixed in). Only meaningful with the dual tower.
+            self.price_in_queue = bool(
+                getattr(Config, "ACTOR_DUAL_TOWER", False)
+            ) and bool(getattr(Config, "DUAL_TOWER_PRICE_IN_QUEUE", False))
+            stat_in_dim = 1 if self.price_in_queue else self.stat_feat_dim
+
             # Dynamic/static server channel projections
             self.server_dyn_proj = nn.Linear(self.dyn_feat_dim, d_model)
-            self.server_stat_proj = nn.Linear(self.stat_feat_dim, d_model)
+            self.server_stat_proj = nn.Linear(stat_in_dim, d_model)
 
             self.dyn_type_emb = nn.Parameter(torch.zeros(1, 1, d_model))
             self.stat_type_emb = nn.Parameter(torch.zeros(1, 1, d_model))
@@ -300,7 +310,9 @@ class RouterNetwork(nn.Module):
             if self.use_actor_queue_skip or self.use_actor_dual_tower:
                 self.queue_head = nn.Sequential(
                     # [load, capacity, residual, mu, drain=load/mu]
-                    nn.Linear(5, max(d_model // 4, 8)),
+                    # (+ price_in, price_out when DUAL_TOWER_PRICE_IN_QUEUE)
+                    nn.Linear(7 if self.price_in_queue else 5,
+                              max(d_model // 4, 8)),
                     nn.GELU(),
                     nn.Linear(max(d_model // 4, 8), 1),
                 )
@@ -749,7 +761,12 @@ class RouterNetwork(nn.Module):
             # ---- Server tower ----
             sf = state.view(B, M, F_total)
             dyn_in = sf[..., :F_dyn]
-            stat_in = sf[..., F_dyn:]
+            # price_in_queue: semantic pathway sees [mu] only; prices go to
+            # the numeric queue tower instead.
+            if getattr(self, "price_in_queue", False):
+                stat_in = sf[..., F_dyn:F_dyn + 1]
+            else:
+                stat_in = sf[..., F_dyn:]
 
             dyn_tok = self.server_dyn_proj(dyn_in) + self.dyn_type_emb
             stat_tok = self.server_stat_proj(stat_in) + self.stat_type_emb
@@ -825,9 +842,28 @@ class RouterNetwork(nn.Module):
                 # drain = queue/mu; with raw load this is the expected drain
                 # time in SECONDS (JSQ-with-heterogeneous-mu signal).
                 drain = qload / (mu + 1e-6)
-                queue_desc = torch.stack(
-                    [qload, caps_bm, residual, mu, drain], dim=-1
-                )                                                    # [B, M, 5]
+                if bool(getattr(Config, "QUEUE_DESC_UNIT_SCALE", False)):
+                    # Unify magnitudes to O(0.1-3): load/10, cap/50, drain/10
+                    # (residual, mu, prices already O(1)). Differences stay
+                    # full-size (10 vs 6 -> 1.0 vs 0.6), but a freshly
+                    # initialized head no longer emits +-5 logit noise from
+                    # 0-30-range drain inputs (x scale_k would wreck early
+                    # exploration).
+                    q_feats = [qload / 10.0, caps_bm / 50.0, residual, mu,
+                               drain / 10.0]
+                else:
+                    q_feats = [qload, caps_bm, residual, mu, drain]
+                if getattr(self, "price_in_queue", False):
+                    # Prices as raw per-server scalars (x1e6, same scale as
+                    # build_state) — moved here from the quality pathway.
+                    pr = torch.as_tensor(
+                        [(float(p[0]) * 1e6, float(p[1]) * 1e6)
+                         for p in Config.PRICE[:M]],
+                        dtype=util.dtype, device=util.device,
+                    )                                                # [M, 2]
+                    q_feats.append(pr[:, 0].expand(util.shape))
+                    q_feats.append(pr[:, 1].expand(util.shape))
+                queue_desc = torch.stack(q_feats, dim=-1)            # [B, M, 5|7]
 
             if getattr(self, "use_actor_dual_tower", False):
                 # Dual tower: quality (prompt x STATIC capability channel, no
