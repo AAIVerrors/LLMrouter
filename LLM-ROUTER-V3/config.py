@@ -1,79 +1,47 @@
 import torch
 
 class Config:
+    # ================================================================
+    # 8-way ALL NON-REASONING fleet, ordered from weak/cheap to strong.
+    # Keep MODEL_NAMES, PRICE, SERVICE_RATE, and all per-server arrays in
+    # exactly the same order: the router action is the list index.
+    # ================================================================
     MODEL_NAMES = [
-        # ===== Tier 1: 最便宜 =====
-        "ministral-3b-2512",
-
-        # ===== Tier 2: 便宜 weak baseline =====
-        # "together/Qwen/Qwen3.5-9B",
-        # "ministral-8b-2512",
-        "gpt-4.1-nano-2025-04-14",
-
-        # ===== Tier 3: mid-tier =====
-        # "together/Qwen/Qwen2.5-7B-Instruct-Turbo",
-        "mistral-small-2603",
-        "gpt-4.1-mini-2025-04-14",
-
-        # ===== Tier 4: 强模型 =====
-        "together/meta-llama/Llama-3.3-70B-Instruct-Turbo",
-        # "mistral-large-2512",
-        # "gpt-4.1-2025-04-14",
-        "together/openai/gpt-oss-120b",
+        "ministral-3b-2512",                                  # 0 Mistral  weakest floor
+        "ministral-8b-2512",                                  # 1 Mistral  weak, inexpensive
+        "together/Qwen/Qwen2.5-7B-Instruct-Turbo",             # 2 Together weak, open model
+        "gpt-4.1-nano-2025-04-14",                             # 3 OpenAI   weak-mid, fast
+        "mistral-small-2603",                                  # 4 Mistral  general mid-tier
+        "gpt-4.1-mini-2025-04-14",                             # 5 OpenAI   mid-strong
+        "together/meta-llama/Llama-3.3-70B-Instruct-Turbo",    # 6 Together strong, fast, expensive
+        "mistral-large-2512",                                  # 7 Mistral  strongest
     ]
-    # MODEL_NAMES = [
-    #     "ministral-3b-2512",                            # 0 Mistral
-    #     "gpt-4.1-nano-2025-04-14",                      # 1 OpenAI
-    #     "mistral-small-2603",                           # 2 Mistral
-    #     "gpt-4.1-mini-2025-04-14",                      # 3 OpenAI
-    #     "novita/meta-llama/llama-3.3-70b-instruct",     # 4 Novita
-    #     "novita/deepseek/deepseek-v3.2",                # 5 Novita  ⚠️核对ID
-    # ]
 
     PRICE = [
-        # ===== Tier 1: 最便宜 =====
-        (0.00000010, 0.00000010),  # ministral-3b-2512
-
-        # ===== Tier 2: 便宜 weak baseline =====
-        # (0.00000017, 0.00000025),  # novita/meta-llama/llama-3.1-8b-instruct
-        # (0.00000015, 0.00000015),  # ministral-8b-2512
-        (0.00000010, 0.00000040),  # gpt-4.1-nano-2025-04-14
-
-        # ===== Tier 3: mid-tier =====
-        # (0.00000030, 0.00000030),  # together/Qwen/Qwen2.5-7B-Instruct-Turbo
-        (0.00000015, 0.00000060),  # mistral-small-2506
-        (0.00000040, 0.00000160),  # gpt-4.1-mini-2025-04-14
-
-        # ===== Tier 4: 强模型 =====
-        (0.00000104, 0.00000104),  # together/meta-llama/Llama-3.3-70B-Instruct-Turbo
-        # (0.00000050, 0.00000150),  # mistral-large-2512
-        # (0.00000200, 0.00000800),  # gpt-4.1-2025-04-14
-        (0.00000015, 0.00000060),  # gpt-oss-120b
-
+        (0.00000010, 0.00000010),   # 0 ministral-3b
+        (0.00000015, 0.00000015),   # 1 ministral-8b
+        (0.00000030, 0.00000030),   # 2 Qwen2.5-7B-Turbo
+        (0.00000010, 0.00000040),   # 3 gpt-4.1-nano
+        (0.00000015, 0.00000060),   # 4 mistral-small
+        (0.00000040, 0.00000160),   # 5 gpt-4.1-mini
+        (0.00000104, 0.00000104),   # 6 Llama-3.3-70B
+        (0.00000050, 0.00000150),   # 7 mistral-large
     ]
 
-    # PRICE = [
-    #     (0.00000010, 0.00000010),   # 0 ministral-3b
-    #     (0.00000010, 0.00000040),   # 1 gpt-4.1-nano
-    #     (0.00000015, 0.00000060),   # 2 mistral-small
-    #     (0.00000040, 0.00000160),   # 3 gpt-4.1-mini
-    #     (0.000000135, 0.00000040),  # 4 novita llama-3.3-70b
-    #     (0.000000269, 0.00000040),  # 5 novita deepseek-v3.2
-    # ]
-
+    # Initial requests/second estimates. The online EMA adapts them during
+    # training; re-benchmark all models under GEN_MAX_NEW_TOKENS=768 before
+    # the final experiments so queue load is comparable.
     SERVICE_RATE = [
-        0.663,   # ministral-3b
-        # 0.5605,   # llama-3.1-8b (novita)
-        # 0.4924,   # ministral-8b
-        0.745,   # gpt-4.1-nano
-        # 0.4137,   # Qwen2.5-7B
-        0.639,   # mistral-small
-        0.565,   # gpt-4.1-mini
-        0.471,   # Llama-3.3-70B
-        # 0.2065,   # mistral-large
-        0.313,   # gpt-oss-120b
+        0.6630,  # 0 ministral-3b
+        0.4924,  # 1 ministral-8b
+        0.4137,  # 2 Qwen2.5-7B-Turbo
+        0.7450,  # 3 gpt-4.1-nano
+        0.6390,  # 4 mistral-small
+        0.5650,  # 5 gpt-4.1-mini
+        0.4710,  # 6 Llama-3.3-70B
+        0.2065,  # 7 mistral-large
     ]
-    SERVER_CAPACITIES = [50] * 6
+    SERVER_CAPACITIES = [50] * 8
 
     USE_UTIL = True  # in the state use load/capability or load + capability
 
@@ -307,7 +275,7 @@ class Config:
     LR_DECAY_EPISODES = 200
     LR_WARMUP_EPISODES = 0
     KL_COEF = 0.00
-    MAX_GRAD_NORM = 1
+    MAX_GRAD_NORM = 0.5
     PPO_EPOCHS = 4   # small interval batch: more epochs overfit noise
     BATCH_SIZE = 1
 
@@ -370,7 +338,7 @@ class Config:
     # reward tunes both. NOTE: the imbalance is largely reward-driven — at low
     # load / FAIR=0 the reward may still shrink s_k. To make the queue tower
     # actually matter, pair with a load-relevant regime (higher load / FAIR=1).
-    ACTOR_DUAL_LEARN_SCALE = True
+    ACTOR_DUAL_LEARN_SCALE = False
     ACTOR_DUAL_QUEUE_INIT_SCALE = 5.0
     # Dedicated (higher) LR for the tower balance scales. Their gradient is
     # ~30x smaller than normal weights (chain rule multiplies by queue_score
@@ -392,7 +360,7 @@ class Config:
     # becomes the unified numeric tower [load, cap, residual, mu, drain,
     # price_in, price_out] (prices x1e6, from Config.PRICE). State layout,
     # critic, quota decode and all baselines are untouched. Fresh model.
-    DUAL_TOWER_PRICE_IN_QUEUE = True
+    DUAL_TOWER_PRICE_IN_QUEUE = False
 
     # Unify numeric-tower feature magnitudes to O(0.1-3): load/10, cap/50,
     # drain/10; residual, mu, prices already O(1). Differences stay full-size
@@ -400,7 +368,7 @@ class Config:
     # initialized queue head no longer injects +-5-logit noise from raw
     # 0-30-range drains (amplified by scale_k), which would wreck early
     # exploration and conditioning.
-    QUEUE_DESC_UNIT_SCALE = True
+    QUEUE_DESC_UNIT_SCALE = False
 
     # (dead config, nothing reads it; the episode-completion wait loop in
     # trainer.py is unbounded — API-client timeouts/retries bound it in
@@ -483,7 +451,7 @@ class Config:
     FINAL_EVAL_EPISODES = 10  # Number of episodes for final evaluation
 
     # Poisson prompt generation settings
-    POISSON_ARRIVAL_RATE = 3  # Average arrival rate of prompts per second
+    POISSON_ARRIVAL_RATE = 4  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
     EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
 

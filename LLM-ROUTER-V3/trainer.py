@@ -859,6 +859,7 @@ class EnhancedLLMRouterTrainer:
                         "cost/dollar_per_request": float(np.mean(_dollars)) if _dollars else None,
                     }
 
+
                     wandb.log({
                         "episode": episode,
                         **slo_dict,
