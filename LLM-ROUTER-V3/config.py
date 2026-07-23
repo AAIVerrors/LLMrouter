@@ -278,8 +278,8 @@ class Config:
     VALUE_COEF = 1        # Value loss weight
     # Anti-collapse brake: 0 collapses onto few servers; 0.02 only delayed
     # the slide to ~ep20; 0.03 is the current setting.
-    ENTROPY_COEF = 0.01
-    ACTOR_LEARNING_RATE = 1e-5
+    ENTROPY_COEF = 0.03
+    ACTOR_LEARNING_RATE = 3e-5
     CRITIC_LEARNING_RATE = 1e-4
     USE_LR_DECAY = False
     LR_DECAY_TYPE = "cosine"
@@ -290,7 +290,7 @@ class Config:
     LR_DECAY_EPISODES = 200
     LR_WARMUP_EPISODES = 0
     KL_COEF = 0.00
-    MAX_GRAD_NORM = 1
+    MAX_GRAD_NORM = 0.5
     PPO_EPOCHS = 4   # small interval batch: more epochs overfit noise
     BATCH_SIZE = 1
 
@@ -307,8 +307,8 @@ class Config:
     # NOTE: LOO does not control for prompt difficulty (a learned V^task head
     # would; that is a follow-up). Requires USE_PER_INTERVAL_MINIBATCH=False
     # and PPO_RATIO_AGGREGATION="per_request_mean". False = unchanged behavior.
-    USE_BANDIT_ADVANTAGE = True
-    BANDIT_ADV_WEIGHT = 1.0
+    USE_BANDIT_ADVANTAGE = False
+    BANDIT_ADV_WEIGHT = 0.5
 
     # Use a learned V^task head as the bandit baseline instead of the LOO mean.
     # V^task(o_t, x_i) predicts the expected per-request task reward given state
@@ -318,7 +318,7 @@ class Config:
     # is stable at small N_t, and doubles as a quality/value predictor. Adds a
     # small critic-side head -> needs a fresh model when turned on. Requires
     # USE_BANDIT_ADVANTAGE=True and the dual-tower CLIP path. False = LOO.
-    BANDIT_USE_VTASK = True
+    BANDIT_USE_VTASK = False
     BANDIT_VTASK_COEF = 0.5   # weight of the V^task regression loss (critic side)
 
     # Interval weighting in the PPO policy loss.
@@ -378,8 +378,18 @@ class Config:
     # reward tunes both. NOTE: the imbalance is largely reward-driven — at low
     # load / FAIR=0 the reward may still shrink s_k. To make the queue tower
     # actually matter, pair with a load-relevant regime (higher load / FAIR=1).
-    ACTOR_DUAL_LEARN_SCALE = False
-    ACTOR_DUAL_QUEUE_INIT_SCALE = 1.0
+    ACTOR_DUAL_LEARN_SCALE = True
+    ACTOR_DUAL_QUEUE_INIT_SCALE = 5.0
+
+    # Learned FUSION of the two towers instead of a plain (scaled) sum. A small
+    # per-server MLP reads [quality_score, queue_score] and outputs a scalar that
+    # is ADDED as a correction to the additive base (logit = s_q*q + s_k*k + corr).
+    # The correction head is ZERO-initialized, so training starts *identical* to
+    # the current additive path and learns a nonlinear/gated fusion on top (e.g.
+    # let quality dominate on easy prompts, let queue veto when a server is hot).
+    # Cheap, permutation-equivariant (shared across servers), safe to toggle.
+    ACTOR_DUAL_FUSE = False
+    ACTOR_DUAL_FUSE_HIDDEN = 16
     # Dedicated (higher) LR for the tower balance scales. Their gradient is
     # ~30x smaller than normal weights (chain rule multiplies by queue_score
     # ~0.02), so at the actor LR they barely move; this lets them adapt.
@@ -418,7 +428,7 @@ class Config:
     # absolute (fixed capability). Overrides QUEUE_DESC_UNIT_SCALE. Pure
     # forward-side change (state layout / baselines / critic untouched), but the
     # queue_head input dim changes (5->4) so it needs a fresh model.
-    QUEUE_DESC_ZSCORE = False
+    QUEUE_DESC_ZSCORE = True
 
     # Append a per-server frozen, fleet-normalized ALLOCATION-COUNT feature
     # (counts[m] / mean(counts), CUMULATIVE over the episode so far, snapshotted
@@ -564,7 +574,7 @@ class Config:
     # shortest raw queue using interval-boundary state).
     JSQ = False
 
-    P2C = True
+    P2C = False
 
     # Capacity-weighted JSQ: route to the shortest EXPECTED DRAIN TIME
     # (queue / mu), accounting for heterogeneous service rates.

@@ -356,6 +356,20 @@ class RouterNetwork(nn.Module):
                 self.tower_log_scale = nn.Parameter(
                     torch.tensor([0.0, k_init], dtype=torch.float32)
                 )
+            # Optional learned fusion of the two tower scalars: a small per-server
+            # MLP on [quality_score, queue_score] whose ZERO-init output is ADDED
+            # as a correction to the additive base, so it starts identical to the
+            # (scaled) sum and learns a nonlinear/gated fusion on top. The output
+            # layer is zeroed in _init_weights (which re-inits every Linear).
+            self.use_tower_fuse = self.use_actor_dual_tower and bool(
+                getattr(Config, "ACTOR_DUAL_FUSE", False)
+            )
+            if self.use_tower_fuse:
+                _fh = int(getattr(Config, "ACTOR_DUAL_FUSE_HIDDEN", 16))
+                self.tower_fuse = nn.Sequential(
+                    nn.Linear(2, _fh), nn.GELU(), nn.Linear(_fh, 1),
+                )
+
             # last-batch score spreads (std across servers) for logging
             self._dual_quality_spread = None
             self._dual_queue_spread = None
@@ -524,6 +538,14 @@ class RouterNetwork(nn.Module):
             nn.init.orthogonal_(queue_out.weight, gain=0.5)
             if queue_out.bias is not None:
                 nn.init.zeros_(queue_out.bias)
+
+        # Zero the tower-fusion correction so logits start as the additive base
+        # (quality + queue) and the fusion learns a correction from there.
+        if getattr(self, "use_tower_fuse", False):
+            fuse_out = self.tower_fuse[-1]
+            nn.init.zeros_(fuse_out.weight)
+            if fuse_out.bias is not None:
+                nn.init.zeros_(fuse_out.bias)
 
     def _get_output_layers(self):
         def last_linear(module):
@@ -935,6 +957,10 @@ class RouterNetwork(nn.Module):
                     self._dual_scale_k = float(scales[1].detach().cpu().item())
                 else:
                     logits = quality_score + queue_score
+                if getattr(self, "use_tower_fuse", False):
+                    # zero-init correction: starts at 0, learns a nonlinear fusion
+                    fuse_in = torch.stack([quality_score, queue_score], dim=-1)
+                    logits = logits + self.tower_fuse(fuse_in).squeeze(-1)
                 # log spreads (how differentiated each tower is across servers)
                 self._dual_quality_spread = float(
                     quality_score.std(dim=-1).mean().detach().cpu().item()
