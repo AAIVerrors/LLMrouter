@@ -233,6 +233,19 @@ class RouterNetwork(nn.Module):
             # z(drain)] (drops cap). Forward-side only; changes queue_head dim.
             self.use_queue_zscore = bool(getattr(Config, "QUEUE_DESC_ZSCORE", False))
 
+            # Learned V^task baseline head (contextual value of the per-request
+            # task reward). "value" in the name -> routed to the critic optimizer.
+            # Reads the fused route token (prompt x server-state summary) -> scalar.
+            self.use_vtask = bool(getattr(Config, "USE_BANDIT_ADVANTAGE", False)) and \
+                             bool(getattr(Config, "BANDIT_USE_VTASK", False))
+            self._last_vtask = None
+            if self.use_vtask:
+                self.vtask_value_head = nn.Sequential(
+                    nn.LayerNorm(d_model),
+                    nn.Linear(d_model, d_model // 2), nn.GELU(),
+                    nn.Linear(d_model // 2, 1),
+                )
+
             # Move price out of the semantic (quality) pathway into the numeric
             # queue tower: the stat channel the fusion sees narrows to [mu]
             # only, and prices go to the queue head as raw per-server scalars.
@@ -819,6 +832,13 @@ class RouterNetwork(nn.Module):
             fusion_x = self.fusion_ln(fusion_x)
 
             route_h = fusion_x[:, 0, :]
+
+            # Learned V^task baseline (per-request contextual value). Stored as an
+            # attribute (codebase pattern) so no forward return-signature change.
+            if getattr(self, "use_vtask", False):
+                self._last_vtask = self.vtask_value_head(route_h).squeeze(-1)   # [B]
+            else:
+                self._last_vtask = None
             prompt_len = prompt_tokens.shape[1]
             server_tokens = fusion_x[:, 1 + prompt_len: 1 + prompt_len + 2 * M, :]
 
@@ -2404,6 +2424,28 @@ class PPOAgent:
         if term_adv.numel() > 1:
             term_adv = (term_adv - term_adv.mean()) / (term_adv.std(unbiased=False) + 1e-5)
 
+        # ---- Within-interval contextual-bandit per-request advantage (LOO) ----
+        # A^ind_i = r^task_i - mean_{j!=i}(r^task_j): how much this request's own
+        # task reward beats its interval's leave-one-out mean. Added (weighted)
+        # on top of the shared interval advantage in interval_policy_loss to
+        # sharpen credit from interval- to request-granularity. `rewards` is the
+        # raw per-request task reward (quality-latency-price), pre-quota.
+        use_bandit_adv = bool(getattr(Config, "USE_BANDIT_ADVANTAGE", False))
+        bandit_adv_w = float(getattr(Config, "BANDIT_ADV_WEIGHT", 1.0))
+        bandit_adv = None
+        if use_bandit_adv:
+            bandit_adv = torch.zeros(len(trajectories), device=Config.DEVICE, dtype=rewards.dtype)
+            for idxs in interval_indices:
+                r_i = rewards[idxs]
+                n = r_i.numel()
+                if n > 1:
+                    loo = (r_i.sum() - r_i) / (float(n) - 1.0)   # leave-one-out mean
+                    bandit_adv[idxs] = r_i - loo
+                # n<=1 -> individual advantage undefined -> stays 0
+            _bstd = bandit_adv.std(unbiased=False)
+            if float(_bstd) > 1e-8:
+                bandit_adv = bandit_adv / (_bstd + 1e-8)         # normalize across requests
+
         # This mapping is not required for the current mean-value interval objective,
         # but keeping it here does not change behavior and preserves compatibility.
         step_to_interval_pos = torch.zeros(len(trajectories), device=Config.DEVICE, dtype=torch.long)
@@ -2426,8 +2468,15 @@ class PPOAgent:
             behavior_log_probs,
             grouped_indices,
             interval_advantages,
+            per_request_bandit_adv=None,
+            bandit_w=0.0,
         ):
-            """Return an equal-interval-weighted clipped PPO policy loss."""
+            """Return an equal-interval-weighted clipped PPO policy loss.
+
+            If per_request_bandit_adv is given, the per-request advantage becomes
+            A_i = interval_advantages[pos] + bandit_w * bandit_adv[i], sharpening
+            credit from interval- to request-granularity.
+            """
             interval_surrogates = []
             interval_counts = []
 
@@ -2441,6 +2490,9 @@ class PPOAgent:
                     # interval equal weight in the outer mean.
                     ratio_i = torch.exp(log_ratio_i)
                     advantage_t = interval_advantages[pos]
+                    if per_request_bandit_adv is not None:
+                        # per-request advantage: shared interval + individual band.
+                        advantage_t = advantage_t + bandit_w * per_request_bandit_adv[idxs]
                     surrogate_i = torch.min(
                         ratio_i * advantage_t,
                         torch.clamp(
@@ -2454,6 +2506,10 @@ class PPOAgent:
                     # Legacy length-normalized joint likelihood ratio.
                     ratio_t = torch.exp(log_ratio_i.mean())
                     advantage_t = interval_advantages[pos]
+                    if per_request_bandit_adv is not None:
+                        # geometric path is interval-level: fold in the interval
+                        # mean of the bandit advantage (loses per-request sharpness).
+                        advantage_t = advantage_t + bandit_w * per_request_bandit_adv[idxs].mean()
                     interval_surrogates.append(
                         torch.min(
                             ratio_t * advantage_t,
@@ -2517,6 +2573,16 @@ class PPOAgent:
         if is_baseline:
             pass  # no policy update for fixed-heuristic baselines
         elif not use_interval_mb:
+            # V^task baseline: override the LOO individual advantage with the
+            # difficulty-controlling learned value. Computed under the current
+            # (=behavior, pre-update) params via a no-grad forward.
+            if use_bandit_adv and getattr(self.network, "use_vtask", False):
+                with torch.no_grad():
+                    self.network.get_action_and_value(states, prompts, train_action_masks, actions)
+                    v_task_base = self.network._last_vtask.detach().to(rewards.dtype)
+                _ba = rewards - v_task_base
+                _bstd2 = _ba.std(unbiased=False)
+                bandit_adv = _ba / (_bstd2 + 1e-8) if float(_bstd2) > 1e-8 else _ba
             for epoch in range(Config.PPO_EPOCHS):
                 if getattr(Config, "USE_MERGE_TO_TRAIN", False):
                     _, new_log_probs, entropy, new_values, dist, _queue_scores = (
@@ -2544,6 +2610,8 @@ class PPOAgent:
                     old_log_probs,
                     interval_indices,
                     term_adv,
+                    per_request_bandit_adv=bandit_adv,
+                    bandit_w=bandit_adv_w,
                 )
 
                 # ----------------------------------------------------
@@ -2592,9 +2660,16 @@ class PPOAgent:
                     + float(getattr(Config, "ENTROPY_COEF", 0.0)) * entropy_loss
                 )
 
+                # V^task regression (critic side): train the learned baseline to
+                # predict the observed per-request task reward.
+                vtask_loss = torch.zeros((), device=Config.DEVICE)
+                if getattr(self.network, "use_vtask", False) and self.network._last_vtask is not None:
+                    vtask_loss = F.smooth_l1_loss(self.network._last_vtask, rewards.detach().to(self.network._last_vtask.dtype))
+
                 actor_loss  = (float(getattr(Config, "POLICY_COEF", 1.0)) * policy_loss
                             + float(getattr(Config, "ENTROPY_COEF", 0.0)) * entropy_loss)
-                critic_loss = float(getattr(Config, "VALUE_COEF", 0.5)) * value_loss
+                critic_loss = (float(getattr(Config, "VALUE_COEF", 0.5)) * value_loss
+                            + float(getattr(Config, "BANDIT_VTASK_COEF", 0.5)) * vtask_loss)
 
                 self.actor_optimizer.zero_grad(set_to_none=True)
                 self.critic_optimizer.zero_grad(set_to_none=True)

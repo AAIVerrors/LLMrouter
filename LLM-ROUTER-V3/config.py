@@ -296,6 +296,31 @@ class Config:
 
     PPO_RATIO_AGGREGATION = "per_request_mean"
 
+    # Within-interval contextual-bandit per-request advantage.
+    # The frozen interval state makes within-interval routing a contextual
+    # bandit (actions don't change the observed context). So on top of the
+    # shared interval advantage A^int_t, add a per-request individual advantage
+    # A^ind_i = r^task_i - baseline, which sharpens credit from interval- to
+    # request-granularity. Baseline here is the leave-one-out (LOO) interval
+    # mean of the per-request task reward (unbiased; needs no extra head).
+    # Combined per-request advantage: A_i = A^int_t + BANDIT_ADV_WEIGHT * A^ind_i.
+    # NOTE: LOO does not control for prompt difficulty (a learned V^task head
+    # would; that is a follow-up). Requires USE_PER_INTERVAL_MINIBATCH=False
+    # and PPO_RATIO_AGGREGATION="per_request_mean". False = unchanged behavior.
+    USE_BANDIT_ADVANTAGE = True
+    BANDIT_ADV_WEIGHT = 1.0
+
+    # Use a learned V^task head as the bandit baseline instead of the LOO mean.
+    # V^task(o_t, x_i) predicts the expected per-request task reward given state
+    # + prompt, trained by regression to the observed task reward. Then
+    # A^ind_i = r^task_i - V^task_i. Unlike LOO it CONTROLS FOR PROMPT DIFFICULTY
+    # (an easy prompt has high V^task, so it isn't miscredited as good routing),
+    # is stable at small N_t, and doubles as a quality/value predictor. Adds a
+    # small critic-side head -> needs a fresh model when turned on. Requires
+    # USE_BANDIT_ADVANTAGE=True and the dual-tower CLIP path. False = LOO.
+    BANDIT_USE_VTASK = True
+    BANDIT_VTASK_COEF = 0.5   # weight of the V^task regression loss (critic side)
+
     # Interval weighting in the PPO policy loss.
     #   False (default): equal weight per INTERVAL (mean of per-interval means)
     #                    -> a request in a sparse interval counts more.
