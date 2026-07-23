@@ -1567,7 +1567,8 @@ def response_collector_worker(
 
                     routed_prompts[request.id] = request
                     if completed_prompts is not None:
-                        completed_prompts.value += 1
+                        with completed_prompts.get_lock():
+                            completed_prompts.value += 1
 
                 else:
                     print(f"Warning: Incomplete response data for request {request.id}")
@@ -1583,7 +1584,8 @@ def response_collector_worker(
 
                 routed_prompts[request.id] = request
                 if completed_prompts is not None:
-                    completed_prompts.value += 1
+                    with completed_prompts.get_lock():
+                        completed_prompts.value += 1
 
                 print(f"Response transient-failed - ID: {request.id}, Penalty: {-penalty:.3f}")
             elif request.status == "failed":
@@ -1600,7 +1602,8 @@ def response_collector_worker(
                 request.price = 0.0
                 routed_prompts[request.id] = request
                 if completed_prompts is not None:
-                    completed_prompts.value += 1
+                    with completed_prompts.get_lock():
+                        completed_prompts.value += 1
                 print(f"Response failed - ID: {request.id}, Penalty: {reward:.3f}")
 
         except Empty:
@@ -1652,7 +1655,12 @@ class EnhancedRouterEnvironment:
         self.interval_routed_counts = np.zeros(len(Config.MODEL_NAMES), dtype=np.float32)
 
         self.routed_prompts = self.manager.dict()
-        self.completed_prompts = self.manager.Value("i", 0)
+        # mp.Value (shared memory, has get_lock) NOT manager.Value: with a pool
+        # of response collectors, `value += 1` must be atomic. A manager.Value's
+        # increment is a non-atomic read-modify-write over two RPCs, so parallel
+        # collectors lose increments -> completed_prompts < routed forever ->
+        # the episode-completion wait hangs at N-1. Mirror total_completed.
+        self.completed_prompts = mp.Value("i", 0)
 
         self.quality_scorer = QualityScorer()
 
@@ -1687,22 +1695,35 @@ class EnhancedRouterEnvironment:
         self.response_collector_running = mp.Value("b", True)
         self.total_completed = mp.Value("i", 0)
 
-        self.response_collector = mp.Process(
-            target=response_collector_worker,
-            args=(
-                self.response_queue,
-                self.total_completed,
-                self.response_collector_running,
-                Config.ALPHA,
-                Config.BETA,
-                Config.LAMBDA,
-                self.routed_prompts,
-                self.completed_prompts,
-                self.queue_monitor if self.enable_monitoring else None,
-            ),
-        )
-        self.response_collector.daemon = True
-        self.response_collector.start()
+        # Pool of response-collector processes. Quality scoring (math_verify)
+        # runs here per completed response and can take up to ~10-15s on
+        # pathological symbolic answers; a single collector serializes all
+        # completions and stalls episode wall-clock. mp.Queue is multi-consumer
+        # safe (each response is handed to exactly one collector), and
+        # total_completed (get_lock) / routed_prompts (Manager) are
+        # concurrency-safe, so N collectors run math_verify N-way in parallel.
+        num_collectors = int(getattr(Config, "NUM_RESPONSE_COLLECTORS", 4))
+        self.response_collectors = []
+        for _ in range(max(1, num_collectors)):
+            proc = mp.Process(
+                target=response_collector_worker,
+                args=(
+                    self.response_queue,
+                    self.total_completed,
+                    self.response_collector_running,
+                    Config.ALPHA,
+                    Config.BETA,
+                    Config.LAMBDA,
+                    self.routed_prompts,
+                    self.completed_prompts,
+                    self.queue_monitor if self.enable_monitoring else None,
+                ),
+            )
+            proc.daemon = True
+            proc.start()
+            self.response_collectors.append(proc)
+        # Back-compat alias (first collector) for any external reference.
+        self.response_collector = self.response_collectors[0]
 
         print(f"Initializing {len(Config.MODEL_NAMES)} servers...")
         self.servers = []
@@ -1903,10 +1924,12 @@ class EnhancedRouterEnvironment:
         if hasattr(self, "response_collector_running"):
             self.response_collector_running.value = False
 
-        if hasattr(self, "response_collector") and self.response_collector.is_alive():
-            self.response_collector.join(timeout=2)
-            if self.response_collector.is_alive():
-                self.response_collector.terminate()
+        if hasattr(self, "response_collectors"):
+            for proc in self.response_collectors:
+                if proc.is_alive():
+                    proc.join(timeout=2)
+                    if proc.is_alive():
+                        proc.terminate()
 
         if hasattr(self, "servers"):
             for server in self.servers:

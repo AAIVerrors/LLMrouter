@@ -2,44 +2,59 @@ import torch
 
 class Config:
     # ================================================================
-    # 8-way ALL NON-REASONING fleet, ordered roughly by output price.
-    # Keep MODEL_NAMES, PRICE, SERVICE_RATE, and all per-server arrays in
-    # exactly the same order: the router action is the list index.
+    # 8-way ALL NON-REASONING fleet, DESIGNED for prompt-dependent routing.
+    # Two structural properties (vs the old monotone price ladder) let a
+    # prompt-aware router beat prompt-blind P2C/JSQ:
+    #   * idx 2 Ministral-14B is a cheap MATH specialist on a reliable host
+    #     (Mistral API, no serverless timeout tail) -> on MATH it rivals/beats
+    #     the pricey slow 70B, creating a rank CROSSOVER that queue-based
+    #     baselines cannot see. (Replaced Together Qwen2.5-7B, which timed out
+    #     under concurrent load; validated 5/6 vs 70B's 4/6 on a 6-problem spot
+    #     check -- re-confirm on the full MATH quality matrix before final runs.)
+    #   * idx 6 gpt-4.1-mini is strong AND fast -> decouples quality from
+    #     latency, breaking P2C's "avoid long queue == avoid slow/expensive"
+    #     implicit optimization.
+    # All 8 verified live (serverless / API) on 2026-07-22. Keep MODEL_NAMES,
+    # PRICE, SERVICE_RATE and all per-server arrays in the SAME order: the
+    # router action is the list index.
     # ================================================================
     MODEL_NAMES = [
-        "ministral-3b-2512",                                  # 0 Mistral
-        "together/google/gemma-3n-E4B-it",                     # 1 Google / Together
-        "ministral-8b-2512",                                  # 2 Mistral
-        "ministral-14b-2512",                                 # 3 Mistral
-        "gpt-4.1-nano-2025-04-14",                            # 4 OpenAI
-        "mistral-small-2603",                                 # 5 Mistral (reasoning disabled)
-        "together/meta-llama/Llama-3.3-70B-Instruct-Turbo",    # 6 Together strong, fast, expensive
-        "mistral-large-2512",                                  # 7 Mistral  strongest
+        "ministral-3b-2512",                                     # 0 Mistral   cheap/fast floor
+        "together/google/gemma-3n-E4B-it",                        # 1 Together  cheap floor
+        "ministral-14b-2512",                                    # 2 Mistral   MATH specialist (cheap, reliable host)
+        "gpt-4.1-nano-2025-04-14",                               # 3 OpenAI    cheap general
+        "ministral-8b-2512",                                     # 4 Mistral   mid
+        "mistral-small-2506",                                    # 5 Mistral   mid general (non-hybrid)
+        "gpt-4.1-mini",                                          # 6 OpenAI    strong AND fast
+        "together/meta-llama/Llama-3.3-70B-Instruct-Turbo",       # 7 Together  strong general (slow)
     ]
 
     PRICE = [
-        (0.00000010, 0.00000010),   # 0 Ministral 3B:   $0.10 / $0.10 per 1M tokens
-        (0.00000006, 0.00000012),   # 1 Gemma 3n E4B:  $0.06 / $0.12 per 1M tokens
-        (0.00000015, 0.00000015),   # 2 Ministral 8B:   $0.15 / $0.15 per 1M tokens
-        (0.00000020, 0.00000020),   # 3 Ministral 14B:  $0.20 / $0.20 per 1M tokens
-        (0.00000010, 0.00000040),   # 4 GPT-4.1 nano:   $0.10 / $0.40 per 1M tokens
-        (0.00000015, 0.00000060),   # 5 Mistral Small:  $0.15 / $0.60 per 1M tokens
-        (0.00000104, 0.00000104),   # 6 Llama 3.3 70B: $1.04 / $1.04 per 1M tokens
-        (0.00000050, 0.00000150),   # 7 Mistral Large: $0.50 / $1.50 per 1M tokens
+        (0.00000010, 0.00000010),   # 0 Ministral 3B:      $0.10 / $0.10 per 1M tokens
+        (0.00000006, 0.00000012),   # 1 Gemma 3n E4B:      $0.06 / $0.12 per 1M tokens
+        (0.00000020, 0.00000020),   # 2 Ministral 14B:     $0.20 / $0.20 per 1M tokens
+        (0.00000010, 0.00000040),   # 3 GPT-4.1 nano:      $0.10 / $0.40 per 1M tokens
+        (0.00000015, 0.00000015),   # 4 Ministral 8B:      $0.15 / $0.15 per 1M tokens
+        (0.00000010, 0.00000030),   # 5 Mistral Small:     $0.10 / $0.30 per 1M tokens (verify)
+        (0.00000040, 0.00000160),   # 6 GPT-4.1 mini:      $0.40 / $1.60 per 1M tokens (verify)
+        (0.00000104, 0.00000104),   # 7 Llama 3.3 70B:     $1.04 / $1.04 per 1M tokens
     ]
 
-    # Initial requests/second estimates. The online EMA adapts them during
-    # training; re-benchmark all models under GEN_MAX_NEW_TOKENS=768 before
-    # the final experiments so queue load is comparable.
+    # Initial requests/second estimates. Warm-started from the online EMA of a
+    # live run on the current 8-model fleet (2026-07-22 snapshot), so a fresh
+    # run starts near the true rates instead of climbing from placeholders.
+    # EMA keeps adapting during training. Total ~4.09 req/s -> with arrival 4,
+    # load rho ~0.98 (near-critical); drop POISSON_ARRIVAL_RATE to ~3.7 for
+    # rho ~0.9 if you want more headroom.
     SERVICE_RATE = [
-        0.58964, # 0 Ministral 3B (measured)
-        0.50000, # 1 Gemma 3n E4B (placeholder; re-benchmark)
-        0.38045, # 2 Ministral 8B (measured)
-        0.50000, # 3 Ministral 14B (placeholder; re-benchmark)
-        0.52166, # 4 GPT-4.1 nano (measured)
-        0.58840, # 5 Mistral Small (measured)
-        0.26016, # 6 Llama 3.3 70B (measured)
-        0.29904, # 7 Mistral Large (measured)
+        0.67287, # 0 Ministral 3B   (EMA-adapted)
+        0.28332, # 1 Gemma 3n E4B   (EMA-adapted; slower than placeholder)
+        0.39031, # 2 Ministral 14B  (EMA-adapted)
+        0.74984, # 3 GPT-4.1 nano   (EMA-adapted)
+        0.47101, # 4 Ministral 8B   (EMA-adapted)
+        0.60868, # 5 Mistral Small  (EMA-adapted)
+        0.43722, # 6 GPT-4.1 mini   (EMA-adapted)
+        0.47401, # 7 Llama 3.3 70B  (EMA-adapted; Turbo endpoint faster than 0.26 placeholder)
     ]
     SERVER_CAPACITIES = [50] * 8
 
@@ -120,7 +135,7 @@ class Config:
             "name": "openai/gsm8k",
             "config": "main",
             "split": "train[:20000]",
-            "weight": 0,
+            "weight": 1/3,
             "metric": "number",
             "task_type": "math",
         },
@@ -132,7 +147,7 @@ class Config:
             "name": "qwedsacf/competition_math",
             "config": None,
             "split": "train",
-            "weight": 1/3,
+            "weight": 0,
             "metric": "math_verify",
             "task_type": "math_hard",
             "filter": "boxed",
@@ -240,7 +255,7 @@ class Config:
     ENV_DEFER_LAT_PRICE_REWARD_WHEN_MINMAX = True
 
     LAMBDA = 5  # Capacity penalty weight (increased to strongly discourage invalid actions)
-    MAX_LAT = 60
+    MAX_LAT = 30
     # SLO latency thresholds (seconds). Logged as violation rate =
     # fraction of completed requests with end-to-end latency > T.
     # Report a few (tight/moderate/loose); keep all below MAX_LAT.
@@ -380,6 +395,13 @@ class Config:
     SERVICE_RATE_MIN = 1e-4
     SERVICE_RATE_MAX = 5.0
 
+    # Number of parallel response-collector processes. Each one runs the
+    # per-response quality scoring (math_verify can take up to ~10-15s on
+    # pathological symbolic answers). A single collector serializes all
+    # completions and stalls episode wall-clock; a pool runs math_verify
+    # N-way in parallel so one slow response only ties up 1 of N collectors.
+    NUM_RESPONSE_COLLECTORS = 4
+
 
     # Neural network settings
     HIDDEN_DIM = 512
@@ -399,7 +421,7 @@ class Config:
     PLOT_INTERVAL = 50    # Plot progress every 50 episodes
 
     # Router QA generation controls (keeps answers short & deterministic)
-    GEN_MAX_NEW_TOKENS = 768         # hard cap on answer length
+    GEN_MAX_NEW_TOKENS = 256         # hard cap on answer length
     GEN_MIN_NEW_TOKENS = 0
     GEN_TEMPERATURE = 0.1
     GEN_TOP_P = 1
@@ -458,7 +480,7 @@ class Config:
 
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)
-    INTERVAL_LENGTH = 6 # The length of interval
+    INTERVAL_LENGTH = 5 # The length of interval
     MAX_EPISODES = 200   # match LR_DECAY_EPISODES above
 
     # Queue score settings
@@ -468,7 +490,7 @@ class Config:
 
     # Drop action
     INVALID_ROUTE_PENALTY = 2/3   # try 0.5 ~ 2.0 depending how hard you want to avoid full servers
-    FAIL_LATENCY_CAP = 60.0       # just for logging; failed branch uses penalty not latency
+    FAIL_LATENCY_CAP = 30.0       # just for logging; failed branch uses penalty not latency
     REWARD_CLIP = -2             # optional, set <=0 to disable
 
     MASK = False
@@ -564,8 +586,8 @@ class Config:
     # so without this a server busy on a long generation looks empty and the
     # quota over-allocates to it. Derived from residual>0 (single worker).
     QUOTA_COUNT_INFLIGHT = False
-    FAIR_TARGET = 1      # 最终的 FAIR 值
-    FAIR = 1            # 起始（trainer 会覆盖）
+    FAIR_TARGET = 1     # 最终的 FAIR 值
+    FAIR = 1           # 起始（trainer 会覆盖）
 
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL
