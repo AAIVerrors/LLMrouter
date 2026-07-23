@@ -279,7 +279,7 @@ class Config:
     # Anti-collapse brake: 0 collapses onto few servers; 0.02 only delayed
     # the slide to ~ep20; 0.03 is the current setting.
     ENTROPY_COEF = 0.01
-    ACTOR_LEARNING_RATE = 3e-5
+    ACTOR_LEARNING_RATE = 1e-5
     CRITIC_LEARNING_RATE = 1e-4
     USE_LR_DECAY = False
     LR_DECAY_TYPE = "cosine"
@@ -385,6 +385,16 @@ class Config:
     # exploration and conditioning.
     QUEUE_DESC_UNIT_SCALE = False
 
+    # Cross-server z-score for the queue tower's wide-range features. When True,
+    # the queue descriptor becomes [z(qload), residual, mu, z(drain)]: cap is
+    # DROPPED (constant dead feature), and qload/drain are standardized ACROSS
+    # the M servers, (x - mean_m)/(std_m + eps). This is scale-invariant (no
+    # blow-up at heavy load), preserves who-is-busier ordering, and keeps mu
+    # absolute (fixed capability). Overrides QUEUE_DESC_UNIT_SCALE. Pure
+    # forward-side change (state layout / baselines / critic untouched), but the
+    # queue_head input dim changes (5->4) so it needs a fresh model.
+    QUEUE_DESC_ZSCORE = False
+
     # Append a per-server frozen, fleet-normalized ALLOCATION-COUNT feature
     # (counts[m] / mean(counts), CUMULATIVE over the episode so far, snapshotted
     # at each interval boundary) to the dual-tower QUEUE head only. Rationale:
@@ -395,7 +405,7 @@ class Config:
     # has been over-allocating over the long horizon (smoother than 1 interval).
     # Requires the dual tower (ACTOR_DUAL_TOWER) + CLIP fusion; needs a fresh
     # model (state feature dim 5 -> 6). False = unchanged behavior.
-    QUEUE_USE_ALLOC = False
+    QUEUE_USE_ALLOC = True
 
     # (dead config, nothing reads it; the episode-completion wait loop in
     # trainer.py is unbounded — API-client timeouts/retries bound it in
@@ -529,7 +539,7 @@ class Config:
     # shortest raw queue using interval-boundary state).
     JSQ = False
 
-    P2C = False
+    P2C = True
 
     # Capacity-weighted JSQ: route to the shortest EXPECTED DRAIN TIME
     # (queue / mu), accounting for heterogeneous service rates.

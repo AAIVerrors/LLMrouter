@@ -229,6 +229,9 @@ class RouterNetwork(nn.Module):
             self.use_queue_alloc = bool(getattr(Config, "QUEUE_USE_ALLOC", False))
             self.alloc_feat_dim = 1 if self.use_queue_alloc else 0
             self.server_feat_dim = self.dyn_feat_dim + self.stat_feat_dim + self.alloc_feat_dim
+            # Cross-server z-score queue descriptor [z(qload), residual, mu,
+            # z(drain)] (drops cap). Forward-side only; changes queue_head dim.
+            self.use_queue_zscore = bool(getattr(Config, "QUEUE_DESC_ZSCORE", False))
 
             # Move price out of the semantic (quality) pathway into the numeric
             # queue tower: the stat channel the fusion sees narrows to [mu]
@@ -318,7 +321,9 @@ class RouterNetwork(nn.Module):
                 self.queue_head = nn.Sequential(
                     # [load, capacity, residual, mu, drain=load/mu]
                     # (+ price_in, price_out when DUAL_TOWER_PRICE_IN_QUEUE)
-                    nn.Linear((7 if self.price_in_queue else 5) + (1 if self.use_queue_alloc else 0),
+                    nn.Linear(((6 if self.price_in_queue else 4) if self.use_queue_zscore
+                               else (7 if self.price_in_queue else 5))
+                              + (1 if self.use_queue_alloc else 0),
                               max(d_model // 4, 8)),
                     nn.GELU(),
                     nn.Linear(max(d_model // 4, 8), 1),
@@ -492,7 +497,7 @@ class RouterNetwork(nn.Module):
         actor_out, critic_out = self._get_output_layers()
 
         if actor_out is not None:
-            nn.init.orthogonal_(actor_out.weight, gain=1)
+            nn.init.orthogonal_(actor_out.weight, gain=0.5)
             if actor_out.bias is not None:
                 nn.init.zeros_(actor_out.bias)
 
@@ -503,7 +508,7 @@ class RouterNetwork(nn.Module):
         
         if hasattr(self, "queue_head"):
             queue_out = self.queue_head[-1]
-            nn.init.orthogonal_(queue_out.weight, gain=1)
+            nn.init.orthogonal_(queue_out.weight, gain=0.5)
             if queue_out.bias is not None:
                 nn.init.zeros_(queue_out.bias)
 
@@ -857,7 +862,18 @@ class RouterNetwork(nn.Module):
                 # drain = queue/mu; with raw load this is the expected drain
                 # time in SECONDS (JSQ-with-heterogeneous-mu signal).
                 drain = qload / (mu + 1e-6)
-                if bool(getattr(Config, "QUEUE_DESC_UNIT_SCALE", False)):
+                if getattr(self, "use_queue_zscore", False):
+                    # Cross-server z-score: standardize qload/drain ACROSS the M
+                    # servers -> "how busy is m relative to the fleet". Scale-
+                    # invariant (no heavy-load blow-up), preserves ordering. cap
+                    # dropped (constant dead feature); mu kept absolute (fixed
+                    # capability); residual already O(1).
+                    def _zsrv(x):
+                        m = x.mean(dim=-1, keepdim=True)
+                        s = x.std(dim=-1, keepdim=True, unbiased=False)
+                        return (x - m) / (s + 1e-6)
+                    q_feats = [_zsrv(qload), residual, mu, _zsrv(drain)]
+                elif bool(getattr(Config, "QUEUE_DESC_UNIT_SCALE", False)):
                     # Unify magnitudes to O(0.1-3): load/10, cap/50, drain/10
                     # (residual, mu, prices already O(1)). Differences stay
                     # full-size (10 vs 6 -> 1.0 vs 0.6), but a freshly
