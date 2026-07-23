@@ -221,7 +221,14 @@ class RouterNetwork(nn.Module):
             #   [util, slot_count, mu, price_in, price_out]
             self.dyn_feat_dim = int(getattr(Config, "SERVER_DYN_DIM", 2))
             self.stat_feat_dim = int(getattr(Config, "SERVER_STAT_DIM", 3))
-            self.server_feat_dim = self.dyn_feat_dim + self.stat_feat_dim
+            # Optional extra per-server feature appended AFTER the stat channel:
+            # frozen fleet-normalized allocation count (counts[m]/mean, CUMULATIVE
+            # over the episode). Feeds the queue tower only; captures the
+            # long-horizon per-server burden (a cumulative "flow") that the
+            # instantaneous util "stock" misses.
+            self.use_queue_alloc = bool(getattr(Config, "QUEUE_USE_ALLOC", False))
+            self.alloc_feat_dim = 1 if self.use_queue_alloc else 0
+            self.server_feat_dim = self.dyn_feat_dim + self.stat_feat_dim + self.alloc_feat_dim
 
             # Move price out of the semantic (quality) pathway into the numeric
             # queue tower: the stat channel the fusion sees narrows to [mu]
@@ -311,7 +318,7 @@ class RouterNetwork(nn.Module):
                 self.queue_head = nn.Sequential(
                     # [load, capacity, residual, mu, drain=load/mu]
                     # (+ price_in, price_out when DUAL_TOWER_PRICE_IN_QUEUE)
-                    nn.Linear(7 if self.price_in_queue else 5,
+                    nn.Linear((7 if self.price_in_queue else 5) + (1 if self.use_queue_alloc else 0),
                               max(d_model // 4, 8)),
                     nn.GELU(),
                     nn.Linear(max(d_model // 4, 8), 1),
@@ -749,7 +756,7 @@ class RouterNetwork(nn.Module):
             M = int(self.M)
             F_dyn = int(self.dyn_feat_dim)
             F_stat = int(self.stat_feat_dim)
-            F_total = F_dyn + F_stat
+            F_total = F_dyn + F_stat + int(getattr(self, "alloc_feat_dim", 0))
 
             if state.shape[1] != M * F_total:
                 raise ValueError(
@@ -772,7 +779,9 @@ class RouterNetwork(nn.Module):
             if getattr(self, "price_in_queue", False):
                 stat_in = sf[..., F_dyn:F_dyn + 1]
             else:
-                stat_in = sf[..., F_dyn:]
+                # explicit upper bound so an appended alloc feature (offset
+                # F_dyn+F_stat) does NOT leak into the quality/stat channel.
+                stat_in = sf[..., F_dyn:F_dyn + F_stat]
 
             dyn_tok = self.server_dyn_proj(dyn_in) + self.dyn_type_emb
             stat_tok = self.server_stat_proj(stat_in) + self.stat_type_emb
@@ -869,7 +878,11 @@ class RouterNetwork(nn.Module):
                     )                                                # [M, 2]
                     q_feats.append(pr[:, 0].expand(util.shape))
                     q_feats.append(pr[:, 1].expand(util.shape))
-                queue_desc = torch.stack(q_feats, dim=-1)            # [B, M, 5|7]
+                if getattr(self, "use_queue_alloc", False):
+                    # frozen fleet-normalized allocation count, appended last
+                    # (state offset F_dyn+F_stat). =1 fair, >1 over-allocated.
+                    q_feats.append(sf[..., F_dyn + F_stat])          # [B, M]
+                queue_desc = torch.stack(q_feats, dim=-1)            # [B, M, 5|6|7|8]
 
             if getattr(self, "use_actor_dual_tower", False):
                 # Dual tower: quality (prompt x STATIC capability channel, no

@@ -356,14 +356,15 @@ class EnhancedLLMRouterTrainer:
             float(Config.POISSON_ARRIVAL_RATE) * float(Config.INTERVAL_LENGTH), 1.0
         )
 
-        def build_state(loads, residuals):
+        def build_state(loads, residuals, alloc_ratio=None):
             M = len(Config.SERVER_CAPACITIES)
             PRICE_SCALE = 1e6
             price_in  = [float(a[0]) * PRICE_SCALE for a in Config.PRICE]
             price_out = [float(a[1]) * PRICE_SCALE for a in Config.PRICE]
             max_lat = max(float(getattr(Config, "MAX_LAT", 30.0)), 1e-6)
 
-            F = 5
+            use_alloc = bool(getattr(Config, "QUEUE_USE_ALLOC", False))
+            F = 5 + (1 if use_alloc else 0)
             feats_flat = []
             for i in range(M):
                 cap  = float(Config.SERVER_CAPACITIES[i])
@@ -371,10 +372,15 @@ class EnhancedLLMRouterTrainer:
                 util = load / max(cap, 1.0)
                 resid = float(residuals[i]) / max_lat   # in-flight elapsed, normalized
                 mu   = float(self.last_service_rate[i])
-                feats_flat.extend([
+                row = [
                     util, resid,                     # dyn (2)
                     mu, price_in[i], price_out[i],   # stat (3)
-                ])
+                ]
+                if use_alloc:
+                    # frozen fleet-normalized alloc count, appended AFTER stat
+                    ar = 1.0 if alloc_ratio is None else float(alloc_ratio[i])
+                    row.append(ar)
+                feats_flat.extend(row)
 
             if len(feats_flat) != M * F:
                 raise ValueError(f"build_state length mismatch: got {len(feats_flat)}, expected {M*F}")
@@ -397,6 +403,14 @@ class EnhancedLLMRouterTrainer:
         current_time_slot = 0
         time_slot_buffer = []
         current = -1
+
+        # Cumulative (per-EPISODE) allocation counter for QUEUE_USE_ALLOC.
+        # alloc_counts accumulates every routing decision across the whole
+        # episode (reset here at episode start, NOT per interval); at each
+        # interval boundary its fleet-normalized value (counts/mean, =1 fair)
+        # is frozen into alloc_ratio_frozen as a per-server state feature.
+        alloc_counts = np.zeros(M, dtype=np.float32)
+        alloc_ratio_frozen = np.ones(M, dtype=np.float32)
         
         while True:
             routing_start = time.time()
@@ -433,12 +447,22 @@ class EnhancedLLMRouterTrainer:
 
             if Config.NAIVE_PPO:
                 current_loads = self.env.get_state()
-                state = build_state(current_loads, self.env.get_residuals())
+                state = build_state(current_loads, self.env.get_residuals(), alloc_ratio_frozen)
             else:
                 if current != current_time_slot:
+                    # freeze the CUMULATIVE (episode-so-far) fleet-normalized
+                    # allocation counts. NOT reset per interval: alloc_counts
+                    # accumulates over the whole episode (long-horizon burden),
+                    # so the ratio is smoother than a single interval's ~1-2
+                    # counts. =1 fair, >1 this server got more than its share.
+                    tot = float(alloc_counts.sum())
+                    if tot > 0.0:
+                        alloc_ratio_frozen = alloc_counts / max(tot / M, 1e-6)
+                    else:
+                        alloc_ratio_frozen = np.ones(M, dtype=np.float32)
                     current_loads = self.env.get_state()
                     # fresh telemetry snapshot at the interval boundary
-                    state = build_state(current_loads, self.env.get_residuals())
+                    state = build_state(current_loads, self.env.get_residuals(), alloc_ratio_frozen)
                     current = current_time_slot
                 else:
                     # within the interval: reuse the frozen snapshot as-is
@@ -461,6 +485,7 @@ class EnhancedLLMRouterTrainer:
             # slot_counts[action] += 1.0
 
             next_state, done = self.env.step(action, prompt, ground_truth)
+            alloc_counts[action] += 1.0   # count this routing for the interval
             queue_length = next_state.tolist()
 
             self.buffer.add_step(

@@ -278,8 +278,8 @@ class Config:
     VALUE_COEF = 1        # Value loss weight
     # Anti-collapse brake: 0 collapses onto few servers; 0.02 only delayed
     # the slide to ~ep20; 0.03 is the current setting.
-    ENTROPY_COEF = 0.0
-    ACTOR_LEARNING_RATE = 1e-5
+    ENTROPY_COEF = 0.01
+    ACTOR_LEARNING_RATE = 3e-5
     CRITIC_LEARNING_RATE = 1e-4
     USE_LR_DECAY = False
     LR_DECAY_TYPE = "cosine"
@@ -384,6 +384,18 @@ class Config:
     # 0-30-range drains (amplified by scale_k), which would wreck early
     # exploration and conditioning.
     QUEUE_DESC_UNIT_SCALE = False
+
+    # Append a per-server frozen, fleet-normalized ALLOCATION-COUNT feature
+    # (counts[m] / mean(counts), CUMULATIVE over the episode so far, snapshotted
+    # at each interval boundary) to the dual-tower QUEUE head only. Rationale:
+    # util is an instantaneous "stock" (current queue, drains on fast servers),
+    # while the counts-based quota fairness penalty is on the cumulative "flow"
+    # of requests dispatched to each server. Feeding the episode-cumulative
+    # alloc ratio closes that state<->reward gap so the policy can see who it
+    # has been over-allocating over the long horizon (smoother than 1 interval).
+    # Requires the dual tower (ACTOR_DUAL_TOWER) + CLIP fusion; needs a fresh
+    # model (state feature dim 5 -> 6). False = unchanged behavior.
+    QUEUE_USE_ALLOC = False
 
     # (dead config, nothing reads it; the episode-completion wait loop in
     # trainer.py is unbounded — API-client timeouts/retries bound it in
