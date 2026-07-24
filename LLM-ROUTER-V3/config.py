@@ -555,13 +555,13 @@ class Config:
     FINAL_EVAL_EPISODES = 10  # Number of episodes for final evaluation
 
     # Poisson prompt generation settings
-    POISSON_ARRIVAL_RATE = 3  # Average arrival rate of prompts per second
+    POISSON_ARRIVAL_RATE = 4  # Average arrival rate of prompts per second
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
     EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
 
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)
-    INTERVAL_LENGTH = 5 # The length of interval
+    INTERVAL_LENGTH = 4 # The length of interval
     MAX_EPISODES = 200   # match LR_DECAY_EPISODES above
 
     # Queue score settings
@@ -669,6 +669,36 @@ class Config:
     QUOTA_COUNT_INFLIGHT = False
     FAIR_TARGET = 1     # 最终的 FAIR 值
     FAIR = 1           # 起始（trainer 会覆盖）
+
+    # =========================================================
+    # Lagrangian (adaptive) fairness — RCPO, Tessler et al. 2018
+    # =========================================================
+    # FAIR is a PRICE, not a CONSTRAINT: once the quality gain of concentrating
+    # exceeds the quota penalty, the policy pays it and Jain slides. FAIR=1 is
+    # already the maximum fixed strength (p = max(0, e+f-1) saturates at p=e),
+    # so there is no knob left. This makes the penalty strength an adaptive
+    # multiplier mu instead:
+    #   primal: quota_flair_reward scales its penalty by mu,
+    #           rhat = r_floor + (1 - mu*p)(rbar - r_floor)
+    #   dual:   mu <- clip(mu + MU_LR*(JAIN_FLOOR - Jain_ema), 0, MU_MAX)
+    # mu is UNBOUNDED above, so mu*p can exceed 1 and push an over-allocated
+    # server below the floor -- pressure that fixed f can never reach. Jain
+    # below the floor -> mu rises until it is pushed back; Jain at or above the
+    # floor -> mu decays toward 0 and quality is free to improve. Set the floor
+    # to a value the fleet demonstrably reaches (check the natural Jain first);
+    # an unreachable floor makes mu grow without bound and crushes task reward.
+    # Two-timescale: keep MU_LR small so mu moves slower than the policy.
+    USE_LAGRANGIAN_FAIR = False
+    LAGRANGIAN_JAIN_FLOOR = 0.85
+    # NOTE on scale: the dual gradient is the violation (floor - Jain), which is
+    # only ~0.03 in magnitude, so a "normal-looking" LR like 0.03 moves mu by
+    # ~1e-3 per episode and does nothing within a 200-episode run. 1.0 reaches
+    # the floor in ~100 episodes in simulation without oscillating; raise toward
+    # 2.0 for a faster lock-on, lower if mu overshoots and Jain rings.
+    LAGRANGIAN_MU_LR = 1.0
+    LAGRANGIAN_MU_INIT = 1.0    # 1.0 == current fixed-strength behavior
+    LAGRANGIAN_MU_MAX = 10.0
+    LAGRANGIAN_JAIN_EMA = 0.3   # EMA smoothing of episode Jain for the mu update
 
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL

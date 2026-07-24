@@ -950,6 +950,10 @@ class EnhancedLLMRouterTrainer:
                         # effective weights are s_q and s_k alone.
                         "dual/rms_q": training_metrics.get('dual_rms_q') if training_metrics else None,
                         "dual/rms_k": training_metrics.get('dual_rms_k') if training_metrics else None,
+                        # Lagrangian fairness: mu rises while Jain sits below the
+                        # floor and decays back toward 0 once it is satisfied.
+                        "lagrangian/mu": training_metrics.get('lagrangian_mu') if training_metrics else None,
+                        "lagrangian/jain_ema": training_metrics.get('lagrangian_jain_ema') if training_metrics else None,
                     })
 
 

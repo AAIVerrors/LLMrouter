@@ -113,7 +113,7 @@ def quota_penalties(counts, k, f):
     return e, p
 
 
-def quota_flair_reward(server_means, counts, k, f, beta, r_floor):
+def quota_flair_reward(server_means, counts, k, f, beta, r_floor, mu=1.0):
     """Weighted tilted (soft-min) interval reward.
 
     Args:
@@ -124,6 +124,11 @@ def quota_flair_reward(server_means, counts, k, f, beta, r_floor):
         beta: tilt parameter, beta < 0 (beta ~ 0 falls back to the
             weighted arithmetic mean).
         r_floor: reward floor r_bot with r_floor <= every realized reward.
+        mu: Lagrangian multiplier scaling the quota penalty (>= 0). mu=1
+            reproduces the fixed-strength reward. Unlike f, mu is not capped
+            at 1: mu*p > 1 drives an over-allocated server BELOW r_floor,
+            which is the extra pressure a constrained formulation needs to
+            hold a fairness floor that fixed f cannot reach.
 
     Returns:
         (reward, info) where info holds e, p, rhat, H, W.
@@ -134,6 +139,7 @@ def quota_flair_reward(server_means, counts, k, f, beta, r_floor):
     if not used:
         raise ValueError("quota_flair_reward called with no used server")
     e, p = quota_penalties(counts, k, f)
+    p = float(max(0.0, mu)) * p
 
     rhat = {
         m: float(r_floor) + (1.0 - float(p[m])) * (float(server_means[m]) - float(r_floor))

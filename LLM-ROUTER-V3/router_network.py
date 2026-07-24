@@ -1547,6 +1547,11 @@ class PPOAgent:
         #     self.network.parameters(),
         #     lr=Config.LEARNING_RATE
         # )
+        # Lagrangian dual variable for the Jain fairness floor (RCPO). Persists
+        # across episodes; updated once per update_new from the realized Jain.
+        self.lag_mu = float(getattr(Config, "LAGRANGIAN_MU_INIT", 1.0))
+        self._jain_ema = None
+
         actor_lr = float(getattr(Config, "ACTOR_LEARNING_RATE", Config.LEARNING_RATE))
         critic_lr = float(getattr(Config, "CRITIC_LEARNING_RATE", Config.LEARNING_RATE))
 
@@ -2325,7 +2330,10 @@ class PPOAgent:
                         server_means[m] = float(r_t[mask].mean().item())
 
                 tr_val, _q_info = quota_flair_reward(
-                    server_means, counts_np, k_dag, f_frac, beta, r_floor
+                    server_means, counts_np, k_dag, f_frac, beta, r_floor,
+                    mu=(float(self.lag_mu)
+                        if bool(getattr(Config, "USE_LAGRANGIAN_FAIR", False))
+                        else 1.0),
                 )
                 tr = torch.tensor(tr_val, device=Config.DEVICE, dtype=r_t.dtype)
 
@@ -2962,7 +2970,31 @@ class PPOAgent:
 
         den = max(actual_updates, 1)
 
+        # ---- Lagrangian dual ascent on the Jain floor -------------------
+        # Runs AFTER the policy update, so this episode's reward used the mu
+        # carried in from the previous episode and mu now responds to the Jain
+        # that policy actually realized (standard two-timescale ordering).
+        if bool(getattr(Config, "USE_LAGRANGIAN_FAIR", False)) and quota_jain:
+            jain_ep = float(np.mean(quota_jain))
+            a = float(getattr(Config, "LAGRANGIAN_JAIN_EMA", 0.3))
+            self._jain_ema = (
+                jain_ep if self._jain_ema is None
+                else (1.0 - a) * self._jain_ema + a * jain_ep
+            )
+            floor = float(getattr(Config, "LAGRANGIAN_JAIN_FLOOR", 0.85))
+            mu_lr = float(getattr(Config, "LAGRANGIAN_MU_LR", 0.03))
+            mu_max = float(getattr(Config, "LAGRANGIAN_MU_MAX", 10.0))
+            # violation g = floor - Jain: positive (too unfair) raises mu,
+            # negative (floor satisfied) lets it decay back toward 0.
+            self.lag_mu = float(
+                min(max(self.lag_mu + mu_lr * (floor - self._jain_ema), 0.0), mu_max)
+            )
+
         return {
+            "lagrangian_mu": float(getattr(self, "lag_mu", 1.0)),
+            "lagrangian_jain_ema": (
+                float(self._jain_ema) if self._jain_ema is not None else None
+            ),
             "policy_loss": total_policy_loss / den,
             "value_loss": total_value_loss / den,
             "entropy_loss": total_entropy_loss / den,
