@@ -379,7 +379,12 @@ class Config:
     # load / FAIR=0 the reward may still shrink s_k. To make the queue tower
     # actually matter, pair with a load-relevant regime (higher load / FAIR=1).
     ACTOR_DUAL_LEARN_SCALE = True
-    ACTOR_DUAL_QUEUE_INIT_SCALE = 5.0
+    # With ACTOR_DUAL_RUNNING_NORM on, both scores already enter the logit at
+    # spread ~1, so this is a genuine prior weight rather than a 30x magnitude
+    # patch: 1.0 = start the two towers on equal footing and let the reward
+    # decide. (Values like 5 only made sense before normalization, where they
+    # were compensating the quality tower's much larger raw spread.)
+    ACTOR_DUAL_QUEUE_INIT_SCALE = 1.0
 
     # Learned FUSION of the two towers instead of a plain (scaled) sum. A small
     # per-server MLP reads [quality_score, queue_score] and outputs a scalar that
@@ -390,6 +395,25 @@ class Config:
     # Cheap, permutation-equivariant (shared across servers), safe to toggle.
     ACTOR_DUAL_FUSE = False
     ACTOR_DUAL_FUSE_HIDDEN = 16
+
+    # Divide each tower's score by a DETACHED running estimate of its own
+    # cross-server spread before combining. Fixes a structural asymmetry: the
+    # quality tower has two growth channels (its fusion-transformer
+    # representation keeps sharpening AND its head weights grow), so its raw
+    # spread drifts upward without bound, whereas the queue tower reads a
+    # hand-built z-scored descriptor whose distribution is stationary and can
+    # only grow through head weights. Queue influence therefore decays
+    # monotonically over a run. Dividing by a slow EMA of each spread closes the
+    # magnitude channel, so s_q/s_k become genuine trade-off weights that the
+    # reward tunes instead of being outrun by drift. Unlike a per-sample
+    # z-score this preserves "no opinion": the divisor is a cross-batch
+    # average, so a prompt on which a tower does not discriminate still yields
+    # a small spread. Buffers update in train mode only, frozen at eval.
+    # dual/quality_spread and dual/queue_spread keep logging the RAW (pre-norm)
+    # spreads so they stay diagnostic; dual/rms_q and dual/rms_k log the
+    # divisors. Adds two state_dict buffers -> needs a fresh model.
+    ACTOR_DUAL_RUNNING_NORM = True
+    ACTOR_DUAL_RUNNING_NORM_MOMENTUM = 0.05
     # Dedicated (higher) LR for the tower balance scales. Their gradient is
     # ~30x smaller than normal weights (chain rule multiplies by queue_score
     # ~0.02), so at the actor LR they barely move; this lets them adapt.

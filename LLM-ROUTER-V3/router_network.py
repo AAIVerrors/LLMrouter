@@ -370,6 +370,17 @@ class RouterNetwork(nn.Module):
                     nn.Linear(2, _fh), nn.GELU(), nn.Linear(_fh, 1),
                 )
 
+            # Detached running spread per tower. Registered as buffers so they
+            # persist in the checkpoint and are frozen at eval time.
+            self.use_dual_running_norm = self.use_actor_dual_tower and bool(
+                getattr(Config, "ACTOR_DUAL_RUNNING_NORM", False)
+            )
+            if self.use_dual_running_norm:
+                self.register_buffer("rms_quality", torch.ones(()))
+                self.register_buffer("rms_queue", torch.ones(()))
+            self._dual_rms_q = None
+            self._dual_rms_k = None
+
             # last-batch score spreads (std across servers) for logging
             self._dual_quality_spread = None
             self._dual_queue_spread = None
@@ -950,6 +961,35 @@ class RouterNetwork(nn.Module):
                     torch.cat([stat_h, route_expand], dim=-1)
                 ).squeeze(-1)                                       # [B, M]
                 queue_score = self.queue_head(queue_desc).squeeze(-1)  # [B, M]
+
+                # Log the RAW spreads first: after running-norm both scores sit
+                # at ~1 by construction, so normalized spreads carry no signal.
+                self._dual_quality_spread = float(
+                    quality_score.std(dim=-1).mean().detach().cpu().item()
+                )
+                self._dual_queue_spread = float(
+                    queue_score.std(dim=-1).mean().detach().cpu().item()
+                )
+
+                if getattr(self, "use_dual_running_norm", False):
+                    # Close the quality tower's magnitude-growth channel: divide
+                    # each score by a slow EMA of its own cross-server spread.
+                    # The divisor is detached and cross-batch, so it caps drift
+                    # without forcing per-sample opinions.
+                    _eps = 1e-4
+                    if self.training:
+                        with torch.no_grad():
+                            a = float(getattr(
+                                Config, "ACTOR_DUAL_RUNNING_NORM_MOMENTUM", 0.05))
+                            cur_q = quality_score.std(dim=-1).mean().clamp_min(_eps)
+                            cur_k = queue_score.std(dim=-1).mean().clamp_min(_eps)
+                            self.rms_quality.mul_(1.0 - a).add_(a * cur_q)
+                            self.rms_queue.mul_(1.0 - a).add_(a * cur_k)
+                    quality_score = quality_score / self.rms_quality.clamp_min(_eps)
+                    queue_score = queue_score / self.rms_queue.clamp_min(_eps)
+                    self._dual_rms_q = float(self.rms_quality.detach().cpu().item())
+                    self._dual_rms_k = float(self.rms_queue.detach().cpu().item())
+
                 if getattr(self, "use_dual_learn_scale", False):
                     scales = torch.exp(self.tower_log_scale)
                     logits = scales[0] * quality_score + scales[1] * queue_score
@@ -961,13 +1001,6 @@ class RouterNetwork(nn.Module):
                     # zero-init correction: starts at 0, learns a nonlinear fusion
                     fuse_in = torch.stack([quality_score, queue_score], dim=-1)
                     logits = logits + self.tower_fuse(fuse_in).squeeze(-1)
-                # log spreads (how differentiated each tower is across servers)
-                self._dual_quality_spread = float(
-                    quality_score.std(dim=-1).mean().detach().cpu().item()
-                )
-                self._dual_queue_spread = float(
-                    queue_score.std(dim=-1).mean().detach().cpu().item()
-                )
             else:
                 actor_in = torch.cat([server_h, route_expand], dim=-1)
                 logits = self.actor_head(actor_in).squeeze(-1)
@@ -2949,6 +2982,8 @@ class PPOAgent:
             "dual_queue_spread": getattr(self.network, "_dual_queue_spread", None),
             "dual_scale_q": getattr(self.network, "_dual_scale_q", None),
             "dual_scale_k": getattr(self.network, "_dual_scale_k", None),
+            "dual_rms_q": getattr(self.network, "_dual_rms_q", None),
+            "dual_rms_k": getattr(self.network, "_dual_rms_k", None),
             "actual_updates": actual_updates,
             "early_stopped_kl": int(early_stopped),
             "quota_f_load": float(np.mean(quota_f_load)) if quota_f_load else None,

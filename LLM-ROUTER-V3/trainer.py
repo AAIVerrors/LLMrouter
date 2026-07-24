@@ -944,6 +944,12 @@ class EnhancedLLMRouterTrainer:
                         # Learnable per-tower balance scales (s_q*quality + s_k*queue).
                         "dual/scale_q": training_metrics.get('dual_scale_q') if training_metrics else None,
                         "dual/scale_k": training_metrics.get('dual_scale_k') if training_metrics else None,
+                        # Running-norm divisors (ACTOR_DUAL_RUNNING_NORM). rms_q
+                        # climbing while rms_k stays flat is the magnitude drift
+                        # that used to shrink queue influence; after the norm the
+                        # effective weights are s_q and s_k alone.
+                        "dual/rms_q": training_metrics.get('dual_rms_q') if training_metrics else None,
+                        "dual/rms_k": training_metrics.get('dual_rms_k') if training_metrics else None,
                     })
 
 
