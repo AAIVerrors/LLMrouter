@@ -305,7 +305,7 @@ class Config:
     # rho = 0.85 the M/M/1 estimate S/(1-rho) puts the mean sojourn near 30 s,
     # already above the old cap. Verify against the latency histogram of the
     # first run and re-set if the realised p90 is far from 40.
-    MAX_LAT = 40
+    MAX_LAT = 60
     # SLO latency thresholds (seconds). Logged as violation rate =
     # fraction of completed requests with end-to-end latency > T.
     # Report a few (tight/moderate/loose); keep all below MAX_LAT.
@@ -440,7 +440,7 @@ class Config:
     # voice of quality; measured effect was the entropy bonus flattening the
     # now-low-leverage quality tower (quality_spread 0.19 -> 0.05). 1.0 starts
     # the two on equal footing and lets the reward decide.
-    ACTOR_DUAL_QUEUE_INIT_SCALE = 5.0
+    ACTOR_DUAL_QUEUE_INIT_SCALE = 1.0
 
     # Learned FUSION of the two towers instead of a plain (scaled) sum. A small
     # per-server MLP reads [quality_score, queue_score] and outputs a scalar that
@@ -468,7 +468,7 @@ class Config:
     # dual/quality_spread and dual/queue_spread keep logging the RAW (pre-norm)
     # spreads so they stay diagnostic; dual/rms_q and dual/rms_k log the
     # divisors. Adds two state_dict buffers -> needs a fresh model.
-    ACTOR_DUAL_RUNNING_NORM = False
+    ACTOR_DUAL_RUNNING_NORM = True
     ACTOR_DUAL_RUNNING_NORM_MOMENTUM = 0.05
     # Target cross-server spread each tower is normalized to (only used when
     # ACTOR_DUAL_RUNNING_NORM=True). Dividing by rms forces spread ~1, which
@@ -484,11 +484,11 @@ class Config:
     # initial entropy at ~1.73, matching that settling point, while keeping the
     # anti-drift property intact (tau is applied after the rms division, and
     # equally to both towers, so neither balance nor drift-capping changes).
-    ACTOR_DUAL_NORM_TARGET_SPREAD = 0.7
+    ACTOR_DUAL_NORM_TARGET_SPREAD = 0.1
     # Dedicated (higher) LR for the tower balance scales. Their gradient is
     # ~30x smaller than normal weights (chain rule multiplies by queue_score
     # ~0.02), so at the actor LR they barely move; this lets them adapt.
-    ACTOR_DUAL_SCALE_LR = 3e-3
+    ACTOR_DUAL_SCALE_LR = 1e-3
 
     # Queue tower input scale: feed raw queue LENGTH (util*capacity, e.g.
     # 10 vs 6 vs 9) instead of util (0.20 vs 0.12 vs 0.18). 50x bigger
@@ -536,6 +536,29 @@ class Config:
     # Requires the dual tower (ACTOR_DUAL_TOWER) + CLIP fusion; needs a fresh
     # model (state feature dim 5 -> 6). False = unchanged behavior.
     QUEUE_USE_ALLOC = True
+
+    # Capacity of the dual-tower QUEUE head, which reads the ~5-dim descriptor
+    # [z(qload), residual, mu, z(drain), alloc] and emits one scalar per server.
+    #   QUEUE_HEAD_DEPTH   number of hidden GELU layers. 1 reproduces the
+    #                      original Linear->GELU->Linear head exactly.
+    #   QUEUE_HEAD_HIDDEN  hidden width; 0 keeps the original ATTN_D_MODEL//4.
+    # Changing either needs a fresh model (queue_head shape changes).
+    #
+    # Depth here is not the usual capacity argument: the input is five explicit
+    # hand-built features with the key composition (drain = qload/mu) already
+    # precomputed, and P2C balances this fleet with zero parameters, so the
+    # target function is close to linear. What the extra layer plausibly buys
+    # is a soft threshold -- "veto a server once its drain crosses X" -- that a
+    # single hidden layer represents only coarsely.
+    #
+    # Note what depth CANNOT do: with ACTOR_DUAL_RUNNING_NORM on, the tower's
+    # contribution to the logit is pinned at ACTOR_DUAL_NORM_TARGET_SPREAD
+    # regardless of raw magnitude, so a bigger head cannot make the queue tower
+    # louder, only better shaped at the same volume. Judge it on load/makespan
+    # and load/overload_frac; if those do not move, the bottleneck is elsewhere
+    # and the extra parameters are just harder to train at E[N_t] ~ 9.
+    QUEUE_HEAD_DEPTH = 2
+    QUEUE_HEAD_HIDDEN = 0
 
     # Hard cap on the post-arrival wait for outstanding requests to finish.
     # Without it the drain loop is unbounded: one request that never completes
@@ -663,13 +686,13 @@ class Config:
     # over from an earlier fleet is how this run silently reached rho = 2.47,
     # where every episode ends by hitting EPISODE_COMPLETION_TIMEOUT with a
     # backlog that never drains.
-    POISSON_ARRIVAL_RATE = 1.29
+    POISSON_ARRIVAL_RATE = 1.5
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
     EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
 
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)
-    INTERVAL_LENGTH = 5 # The length of interval
+    INTERVAL_LENGTH = 6 # The length of interval
     MAX_EPISODES = 200   # match LR_DECAY_EPISODES above
 
     # Queue score settings

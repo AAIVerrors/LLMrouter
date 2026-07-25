@@ -331,16 +331,30 @@ class RouterNetwork(nn.Module):
             self.use_actor_queue_skip = bool(getattr(Config, "ACTOR_QUEUE_SKIP", False))
             self.use_actor_dual_tower = bool(getattr(Config, "ACTOR_DUAL_TOWER", False))
             if self.use_actor_queue_skip or self.use_actor_dual_tower:
-                self.queue_head = nn.Sequential(
-                    # [load, capacity, residual, mu, drain=load/mu]
-                    # (+ price_in, price_out when DUAL_TOWER_PRICE_IN_QUEUE)
-                    nn.Linear(((6 if self.price_in_queue else 4) if self.use_queue_zscore
-                               else (7 if self.price_in_queue else 5))
-                              + (1 if self.use_queue_alloc else 0),
-                              max(d_model // 4, 8)),
-                    nn.GELU(),
-                    nn.Linear(max(d_model // 4, 8), 1),
-                )
+                # [load, capacity, residual, mu, drain=load/mu]
+                # (+ price_in, price_out when DUAL_TOWER_PRICE_IN_QUEUE)
+                q_in = (((6 if self.price_in_queue else 4) if self.use_queue_zscore
+                         else (7 if self.price_in_queue else 5))
+                        + (1 if self.use_queue_alloc else 0))
+                q_hidden = int(getattr(Config, "QUEUE_HEAD_HIDDEN", 0)) or max(d_model // 4, 8)
+                q_depth = max(int(getattr(Config, "QUEUE_HEAD_DEPTH", 1)), 1)
+                # Deliberately no LayerNorm on the descriptor: it would
+                # normalise ACROSS the features of one server, but the tower's
+                # whole job is comparing servers. Centring each server on its
+                # own feature mean partly cancels the cross-server contrast the
+                # z-scored entries were built to expose, and it would relativise
+                # mu, which QUEUE_DESC_ZSCORE keeps absolute on purpose. The
+                # correct axis is per-feature across servers, which the z-score
+                # already applies to qload and drain.
+                layers = []
+                d_prev = q_in
+                for _ in range(q_depth):
+                    layers += [nn.Linear(d_prev, q_hidden), nn.GELU()]
+                    d_prev = q_hidden
+                # Must stay the last module: _init_weights reaches for
+                # queue_head[-1] to give the output layer its gain-0.5 init.
+                layers.append(nn.Linear(d_prev, 1))
+                self.queue_head = nn.Sequential(*layers)
             # Learnable per-tower scale to balance logit = s_q*quality +
             # s_k*queue. Quality naturally grows a much larger spread and mutes
             # the queue tower; give queue a boosted init scale and let the
