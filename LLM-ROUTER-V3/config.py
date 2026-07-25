@@ -600,7 +600,7 @@ class Config:
 
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)
-    INTERVAL_LENGTH = 4 # The length of interval
+    INTERVAL_LENGTH = 5 # The length of interval
     MAX_EPISODES = 200   # match LR_DECAY_EPISODES above
 
     # Queue score settings
