@@ -336,6 +336,12 @@ def _extract_choice_letter(x: Any) -> str:
     if not s:
         return ""
 
+    # Reasoning answers close with markdown emphasis ("Answer: **B**"), which
+    # the single-letter and "A." branches below would otherwise miss.
+    s = s.strip("*`• \t")
+    if not s:
+        return ""
+
     # gold may be an option index (0-9; MMLU 0-3, MMLU-Pro 0-9)
     if s.isdigit():
         idx = int(s)
@@ -351,10 +357,20 @@ def _extract_choice_letter(x: Any) -> str:
     if m:
         return m.group(1).upper()
 
-    # "answer is A", "Final answer: A"
-    m = re.search(r"(answer|final)\s*(is|:|-)?\s*([A-Ja-j])\b", s, flags=re.I)
-    if m:
-        return m.group(3).upper()
+    # Math-tuned endpoints sometimes close a multiple-choice answer with
+    # \boxed{B}. extract_final_answer keeps that wrapper on purpose because
+    # math_verify parses it, so unwrap it here rather than there.
+    boxed = re.findall(r"\\boxed\s*\{\s*\**\s*([A-Ja-j])\s*\**\s*\}", s)
+    if boxed:
+        return boxed[-1].upper()
+
+    # "answer is A", "Final answer: A" -- take the LAST such mention. Under
+    # chain-of-thought the model weighs and discards options as it reasons
+    # ("the answer is not C because ..."), so the first match is routinely
+    # an option it went on to reject.
+    hits = re.findall(r"(?:answer|final)\s*(?:is|:|-)?\s*\**\s*([A-Ja-j])\b", s, flags=re.I)
+    if hits:
+        return hits[-1].upper()
 
     return ""
 
@@ -1684,6 +1700,7 @@ class EnhancedRouterEnvironment:
             dataset_seed=getattr(Config, "DATASET_SEED", 42),
             dataset_levels=getattr(Config, "DATASET_LEVELS", None),
             dataset_filter=getattr(Config, "DATASET_FILTER", None),
+            mcq_cot=bool(getattr(Config, "MCQ_COT", True)),
             mixed_datasets=(
                 getattr(Config, "MIXED_DATASETS", None)
                 if getattr(Config, "USE_MIXED_DATASET", False)

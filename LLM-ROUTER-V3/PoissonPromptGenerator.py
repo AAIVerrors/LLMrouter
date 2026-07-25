@@ -41,9 +41,11 @@ class PoissonPromptGenerator:
         mixed_datasets: Optional[List[Dict[str, Any]]] = None,
         dataset_levels: Optional[List[str]] = None,
         dataset_filter: Optional[str] = None,
+        mcq_cot: bool = True,
     ):
         self.shuffle_dataset = bool(shuffle_dataset)
         self.dataset_seed = int(dataset_seed)
+        self.mcq_cot = bool(mcq_cot)
         self.dataset_levels = dataset_levels
         self.dataset_filter = dataset_filter
         self.arrival_rate = float(arrival_rate)
@@ -302,12 +304,20 @@ class PoissonPromptGenerator:
         subject = str(sample.get("subject") or sample.get("category") or "").replace("_", " ").strip()
         choice_lines = [f"{self._choice_label(i)}. {str(c).strip()}" for i, c in enumerate(choices)]
         subject_line = f"Subject: {subject}\n" if subject else ""
-        # Standard multiple-choice output: the option letter alone;
-        # no <final> tag required. Letter range follows the option count
-        # (A-D for MMLU, up to A-J for MMLU-Pro).
+        # Letter range follows the option count (A-D for MMLU, up to A-J for
+        # MMLU-Pro). No <final> tag required either way; extraction reads the
+        # closing "Answer: X" line.
         last = self._choice_label(max(len(choices) - 1, 0))
-        suffix = f"\nAnswer with only one option letter (A-{last}). Do not explain.\n"
-        return subject_line + f"Question: {question}\nChoices:\n" + "\n".join(choice_lines) + f"\nAnswer:{suffix}"
+        body = subject_line + f"Question: {question}\nChoices:\n" + "\n".join(choice_lines)
+        if self.mcq_cot:
+            # MMLU-Pro questions are built to need several reasoning steps, so
+            # a bare-letter answer collapses the whole fleet onto the random
+            # floor and leaves nothing for the router to discriminate on.
+            return body + (
+                f"\nReason step by step, then close with a final line of exactly "
+                f'"Answer: X", where X is one option letter (A-{last}).\n'
+            )
+        return body + f"\nAnswer:\nAnswer with only one option letter (A-{last}). Do not explain.\n"
 
     def _is_gsm8k_sample(self, sample: Dict[str, Any]) -> bool:
         return isinstance(sample, dict) and isinstance(sample.get("question"), str) and isinstance(sample.get("answer"), str) and "####" in sample.get("answer", "")

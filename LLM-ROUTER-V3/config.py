@@ -35,7 +35,7 @@ class Config:
         (0.00000020, 0.00000020),   # 2 Ministral 14B:     $0.20 / $0.20 per 1M tokens
         (0.00000010, 0.00000040),   # 3 GPT-4.1 nano:      $0.10 / $0.40 per 1M tokens
         (0.00000015, 0.00000015),   # 4 Ministral 8B:      $0.15 / $0.15 per 1M tokens
-        (0.00000010, 0.00000030),   # 5 Mistral Small:     $0.10 / $0.30 per 1M tokens (verify)
+        (0.00000015, 0.00000060),   # 5 Mistral Small:     $0.10 / $0.30 per 1M tokens (verify)
         (0.00000040, 0.00000160),   # 6 GPT-4.1 mini:      $0.40 / $1.60 per 1M tokens (verify)
         (0.00000104, 0.00000104),   # 7 Llama 3.3 70B:     $1.04 / $1.04 per 1M tokens
     ]
@@ -403,7 +403,7 @@ class Config:
     # voice of quality; measured effect was the entropy bonus flattening the
     # now-low-leverage quality tower (quality_spread 0.19 -> 0.05). 1.0 starts
     # the two on equal footing and lets the reward decide.
-    ACTOR_DUAL_QUEUE_INIT_SCALE = 1.0
+    ACTOR_DUAL_QUEUE_INIT_SCALE = 5.0
 
     # Learned FUSION of the two towers instead of a plain (scaled) sum. A small
     # per-server MLP reads [quality_score, queue_score] and outputs a scalar that
@@ -431,7 +431,7 @@ class Config:
     # dual/quality_spread and dual/queue_spread keep logging the RAW (pre-norm)
     # spreads so they stay diagnostic; dual/rms_q and dual/rms_k log the
     # divisors. Adds two state_dict buffers -> needs a fresh model.
-    ACTOR_DUAL_RUNNING_NORM = True
+    ACTOR_DUAL_RUNNING_NORM = False
     ACTOR_DUAL_RUNNING_NORM_MOMENTUM = 0.05
     # Target cross-server spread each tower is normalized to (only used when
     # ACTOR_DUAL_RUNNING_NORM=True). Dividing by rms forces spread ~1, which
@@ -451,7 +451,7 @@ class Config:
     # Dedicated (higher) LR for the tower balance scales. Their gradient is
     # ~30x smaller than normal weights (chain rule multiplies by queue_score
     # ~0.02), so at the actor LR they barely move; this lets them adapt.
-    ACTOR_DUAL_SCALE_LR = 1e-3
+    ACTOR_DUAL_SCALE_LR = 3e-3
 
     # Queue tower input scale: feed raw queue LENGTH (util*capacity, e.g.
     # 10 vs 6 vs 9) instead of util (0.20 vs 0.12 vs 0.18). 50x bigger
@@ -542,12 +542,24 @@ class Config:
     PLOT_INTERVAL = 50    # Plot progress every 50 episodes
 
     # Router QA generation controls (keeps answers short & deterministic)
-    GEN_MAX_NEW_TOKENS = 512         # hard cap on answer length
+    # 2048, not 512: at 512 the math_hard responses were truncated 40-70% of
+    # the time, so the quality score measured the token cap rather than the
+    # endpoint. Cost bills actual completion tokens, so raising the cap does
+    # not inflate spend for endpoints that answer concisely.
+    GEN_MAX_NEW_TOKENS = 2048        # hard cap on answer length
     GEN_MIN_NEW_TOKENS = 0
     GEN_TEMPERATURE = 0.1
     GEN_TOP_P = 1
     GEN_DO_SAMPLE = False
 
+
+    # Let multiple-choice prompts reason before committing to a letter.
+    # MMLU-Pro is constructed to need multi-step reasoning; forcing a bare
+    # letter ("Do not explain") put every endpoint at 0.00-0.25 against a
+    # 10-way random floor of 0.10, i.e. the task carried no routing signal.
+    # With reasoning enabled the fleet spreads 0.30-0.70 and orders by
+    # capability. Costs ~275 completion tokens per MMLU request.
+    MCQ_COT = True
 
     # Encourage a parseable final answer
     QA_PROMPT_STYLE = "plain"     # "instruction"/"alpaca" or "plain"
