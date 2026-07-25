@@ -2253,6 +2253,8 @@ class PPOAgent:
         quota_jain = []
         lb_makespan = []
         lb_overload = []
+        lb_cov = []
+        lb_imbalance = []
 
         # Episode-cumulative per-server allocation count for the history-aware
         # quota. Accumulated in chronological order (slots are sorted below), so
@@ -2395,9 +2397,23 @@ class PPOAgent:
                 # clear its backlog within the interval. makespan is the classic
                 # objective min-max_m z_m; reporting it guards against the case
                 # where fairness improves while the worst server gets worse.
+                #
+                # makespan and overload_frac both scale with the arrival rate,
+                # so they cannot be compared across runs with different lambda.
+                # CoV and the imbalance ratio divide by the mean and so isolate
+                # how uneven the policy is from how loaded the system is:
+                #   CoV       = std(z)/mean(z)   0 when perfectly balanced
+                #   imbalance = max(z)/mean(z)   1 when perfectly balanced, <= M
+                # All four are computed on z rather than on raw counts, which
+                # matters here: an equal-COUNT split scores a perfect 1.000 on
+                # count-based Jain while leaving half the fleet at z > 1,
+                # because service rates span 2.6x.
                 z_load = (d_snap + counts_np) / np.maximum(s_budget, 1e-9)
+                _zmean = max(float(z_load.mean()), 1e-9)
                 lb_makespan.append(float(z_load.max()))
                 lb_overload.append(float(np.mean(z_load > 1.0)))
+                lb_cov.append(float(z_load.std() / _zmean))
+                lb_imbalance.append(float(z_load.max() / _zmean))
 
             else:
                 # Fair / softmin aggregation over used servers.
@@ -2507,6 +2523,8 @@ class PPOAgent:
                 "max_endpoint_share": None,
                 "lb_makespan": None,
                 "lb_overload_frac": None,
+                "lb_cov": None,
+                "lb_imbalance": None,
             }
 
         term_rewards = torch.stack(term_rewards)
@@ -3135,6 +3153,8 @@ class PPOAgent:
             "max_endpoint_share": _max_share,
             "lb_makespan": float(np.mean(lb_makespan)) if lb_makespan else None,
             "lb_overload_frac": float(np.mean(lb_overload)) if lb_overload else None,
+            "lb_cov": float(np.mean(lb_cov)) if lb_cov else None,
+            "lb_imbalance": float(np.mean(lb_imbalance)) if lb_imbalance else None,
         }
 
     # def update_new(self, trajectories):

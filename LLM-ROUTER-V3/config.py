@@ -2,21 +2,28 @@ import torch
 
 class Config:
     # ================================================================
-    # 8-way ALL NON-REASONING fleet, DESIGNED for prompt-dependent routing.
-    # Two structural properties (vs the old monotone price ladder) let a
-    # prompt-aware router beat prompt-blind P2C/JSQ:
-    #   * idx 2 Ministral-14B is a cheap MATH specialist on a reliable host
-    #     (Mistral API, no serverless timeout tail) -> on MATH it rivals/beats
-    #     the pricey slow 70B, creating a rank CROSSOVER that queue-based
-    #     baselines cannot see. (Replaced Together Qwen2.5-7B, which timed out
-    #     under concurrent load; validated 5/6 vs 70B's 4/6 on a 6-problem spot
-    #     check -- re-confirm on the full MATH quality matrix before final runs.)
-    #   * idx 6 gpt-4.1-mini is strong AND fast -> decouples quality from
+    # 6-way ALL NON-REASONING fleet, DESIGNED for prompt-dependent routing.
+    # Two structural properties (vs a monotone price ladder) let a prompt-aware
+    # router reach quality a prompt-blind P2C/JSQ cannot:
+    #   * The per-task winner CHANGES with the task. Measured on n=24 per
+    #     endpoint x task: math_hard -> Llama 70B (0.917), multi-hop QA ->
+    #     GPT-4.1 mini (0.478). That rank crossover is invisible to a
+    #     queue-only baseline.
+    #     CAVEAT after swapping Ministral 14B out on 2026-07-26 for
+    #     Qwen3.5-9B (Mistral-side timeouts): 14B was the sole MMLU-Pro
+    #     specialist (0.750 there, worst at math), and Qwen3.5-9B scores 0.583
+    #     on MMLU-Pro, so GPT-4.1 mini (0.750) now wins BOTH MMLU-Pro and
+    #     multi-hop QA and the fleet has two distinct winners rather than
+    #     three. The crossover is weaker; re-run bench_quality_matrix.py before
+    #     making any claim that rests on it.
+    #   * idx 4 gpt-4.1-mini is strong AND mid-speed -> decouples quality from
     #     latency, breaking P2C's "avoid long queue == avoid slow/expensive"
     #     implicit optimization.
-    # All 8 verified live (serverless / API) on 2026-07-22. Keep MODEL_NAMES,
-    # PRICE, SERVICE_RATE and all per-server arrays in the SAME order: the
-    # router action is the list index.
+    # Reasoning models are excluded on purpose: they return content="" while
+    # spending the whole token budget on a hidden reasoning field, so their
+    # quality score would be identically zero (verified on Qwen3.5-9B and
+    # Gemma 3n). Keep MODEL_NAMES, PRICE, SERVICE_RATE and all per-server
+    # arrays in the SAME order: the router action is the list index.
     # ================================================================
     # Trimmed 8 -> 6 on 2026-07-26 (dropped entries commented out in place, in
     # every per-server array, so the fleet can be restored by uncommenting).
@@ -32,7 +39,7 @@ class Config:
     MODEL_NAMES = [
         "ministral-3b-2512",                                     # 0 Mistral   cheap/fast floor
         # "together/google/gemma-3n-E4B-it",                      #   Together  DROPPED: slowest (mu 0.125), wins nothing
-        "ministral-14b-2512",                                    # 1 Mistral   MMLU-Pro specialist (worst at math)
+        "ministral-8b-2512",                                     # 1 Mistral   cheap output ($0.15 vs Small's $0.60)
         "gpt-4.1-nano-2025-04-14",                               # 2 OpenAI    fastest endpoint
         # "ministral-8b-2512",                                    #   Mistral   DROPPED: mu 0.100, dominated by Mistral Small
         "mistral-small-2506",                                    # 3 Mistral   mid general (non-hybrid)
@@ -43,7 +50,9 @@ class Config:
     PRICE = [
         (0.00000010, 0.00000010),   # 0 Ministral 3B:      $0.10 / $0.10 per 1M tokens
         # (0.00000006, 0.00000012), #   Gemma 3n E4B:      $0.06 / $0.12 per 1M tokens  (DROPPED)
-        (0.00000020, 0.00000020),   # 1 Ministral 14B:     $0.20 / $0.20 per 1M tokens
+        (0.00000015, 0.00000015),   # 1 Ministral 8B:      $0.15 / $0.15 per 1M tokens
+        # (0.00000017, 0.00000025), #   Qwen3.5-9B:        $0.17 / $0.25 per 1M tokens  (REPLACED)
+        # (0.00000020, 0.00000020), #   Ministral 14B:     $0.20 / $0.20 per 1M tokens  (REPLACED)
         (0.00000010, 0.00000040),   # 2 GPT-4.1 nano:      $0.10 / $0.40 per 1M tokens
         # (0.00000015, 0.00000015), #   Ministral 8B:      $0.15 / $0.15 per 1M tokens  (DROPPED)
         (0.00000015, 0.00000060),   # 3 Mistral Small:     $0.15 / $0.60 per 1M tokens
@@ -77,16 +86,45 @@ class Config:
     # the latency tail is heavy (Llama 70B p90 = 20 s), so individual entries
     # carry roughly +/-15% noise; the Llama figure moving down from 0.1730 is
     # within that band, not a real regression.
+    # Measured 2026-07-26, n=30 per endpoint, all six in one batch, and the
+    # first measurement taken with every precondition correct at once:
+    # MATH_BRIEF_REASONING on, MCQ_COT on, and reasoning={"enabled": False}
+    # passed to Together (bench_fleet_service_rate.py used to omit it, which
+    # made a hybrid-thinking model spend its whole budget on a hidden field
+    # and read 3x too slow). Earlier numbers in this file's history each
+    # violated at least one of those and should not be compared against.
+    #
+    # The brief math prompt is what moved the fleet from 1.756 to 2.293 req/s:
+    # every endpoint gained 27-67% as median completion tokens fell from
+    # 330-420 to 229-332.
+    #
+    # Slot 1 measured separately on 2026-07-26 under the same protocol (n=30,
+    # sequential, current prompt config) after replacing Qwen3.5-9B: 0.3052
+    # req/s, 3.28 s mean, 113 median completion tokens, 30/30 with no failures.
+    # Qwen measured 0.1022 there (three n=30 runs: 0.1587 before the brief math
+    # prompt, then 0.0884 and 0.1159), i.e. 3x slower while emitting 342 tokens,
+    # and it was what pushed fleet heterogeneity to 6.6x.
+    #
+    # Treat every entry as +/-25%: repeat measurements of the same endpoint under
+    # identical settings varied 20-50% batch to batch, because n=30 draws a
+    # random mix of three task types whose service times differ by an order of
+    # magnitude.
+    #
+    # NOTE the quality side of this swap is NOT settled. The two candidates were
+    # scored under different prompt configs and wildly different sample sizes
+    # (Ministral 8B n=7/10/13 with the brief math prompt; Qwen n=24 per task
+    # without it), so the apparent quality gap is inside the noise. Re-run
+    # bench_quality_matrix.py before any claim that depends on it.
     SERVICE_RATE = [
-        0.3375, # 0 Ministral 3B
+        0.6726, # 0 Ministral 3B
         # 0.1251, #   Gemma 3n E4B   (DROPPED)
-        0.1611, # 1 Ministral 14B
-        0.3814, # 2 GPT-4.1 nano
+        0.3052, # 1 Ministral 8B     (replaced Qwen3.5-9B at 0.1022)
+        0.5964, # 2 GPT-4.1 nano
         # 0.1002, #   Ministral 8B   (DROPPED)
-        0.2704, # 3 Mistral Small
-        0.2217, # 4 GPT-4.1 mini
-        0.1453, # 5 Llama 3.3 70B
-    ]   # total 1.517 req/s over the retained 6
+        0.4614, # 3 Mistral Small
+        0.3285, # 4 GPT-4.1 mini
+        0.1456, # 5 Llama 3.3 70B
+    ]   # total 2.293 req/s over the retained 6
     # Derived, so it cannot silently disagree with MODEL_NAMES: trainer.py
     # takes the server count from this list's length.
     SERVER_CAPACITIES = [50] * len(MODEL_NAMES)
@@ -297,15 +335,26 @@ class Config:
     # fatal here, because the queue-wait part of the latency is exactly what
     # routing controls.
     #
-    # 40, raised from 20 on 2026-07-26. The old value was calibrated against a
-    # measured p90 of ~20 s under the previous setup (512-token cap, 8
-    # endpoints, mean service time 8/3.639 = 2.2 s). Mean service time is now
-    # 4.5 s (measured per-endpoint means 2.96 / 6.21 / 2.62 / 3.70 / 4.51 /
-    # 6.88), so the whole end-to-end distribution scales up with it -- at
-    # rho = 0.85 the M/M/1 estimate S/(1-rho) puts the mean sojourn near 30 s,
-    # already above the old cap. Verify against the latency histogram of the
-    # first run and re-set if the realised p90 is far from 40.
-    MAX_LAT = 60
+    # 40, tracking the operating point rather than a fixed guess. It was 20
+    # when the fleet ran a 512-token cap and 2.2 s mean service, then 60 when
+    # rho sat at 0.989 and the M/M/1 estimate of end-to-end latency was ~30 s.
+    # At the current rho = 0.797 with 2.90 s mean service that estimate is
+    # 15.2 s, so 60 would leave the latency term using only the bottom quarter
+    # of its range and compress every cross-server difference by 4x. 40 matches
+    # the widest SLO threshold below, which is where the tail is expected to
+    # sit, so the bulk of the distribution stays unclipped while the slope
+    # stays 1.5x steeper than at 60.
+    #
+    # The tension is real in both directions. Judged on service time alone
+    # (spread 1.5-6.9 s at empty queues) the latency term is much weaker than
+    # the others -- reward spread 0.024 against 0.054 for quality and 0.179 for
+    # price -- and matching quality would want MAX_LAT ~= 26. But that ignores
+    # queue wait, which is the part routing actually controls: set it too low
+    # and the bulk of requests clip to 1.0 and the term stops producing any
+    # gradient at all. Re-set from the realised latency histogram of a run
+    # (slo/violation_rate_{10,20,40} bracket it), not from either argument
+    # alone, and re-check whenever rho changes.
+    MAX_LAT = 40
     # SLO latency thresholds (seconds). Logged as violation rate =
     # fraction of completed requests with end-to-end latency > T.
     # Report a few (tight/moderate/loose); keep all below MAX_LAT.
@@ -329,7 +378,14 @@ class Config:
     # Anti-collapse brake: 0 collapses onto few servers; 0.02 only delayed
     # the slide to ~ep20; 0.03 is the current setting.
     ENTROPY_COEF = 0.03
-    ACTOR_LEARNING_RATE = 3e-4
+    # 1e-4, lowered from 3e-4 alongside raising ACTOR_DUAL_NORM_TARGET_SPREAD to
+    # 0.3. The two multiply: running-norm divides each tower by its measured rms
+    # (~0.145) and rescales to tau, so the logits -- and every gradient flowing
+    # through them -- are amplified by tau/rms. Going 0.1 -> 0.3 takes that
+    # factor from ~1.2x to ~2.1x, which at 3e-4 would put the effective rate
+    # near 6e-4, well past the 1e-4 that collapsed a run above. At 1e-4 the
+    # effective rate lands around 2e-4 with USE_TARGET_KL_STOP as the backstop.
+    ACTOR_LEARNING_RATE = 1e-4
     CRITIC_LEARNING_RATE = 5e-4
     USE_LR_DECAY = False
     LR_DECAY_TYPE = "cosine"
@@ -384,7 +440,13 @@ class Config:
     # 0.04 target, so the early stop never fired. 0.012 clamps the late
     # acceleration while passing normal mid-run learning (0.002-0.003).
     TARGET_KL = 0.012
-    USE_TARGET_KL_STOP = False
+    # Enabled 2026-07-26. TARGET_KL was tuned but never enforced, and measured
+    # approx_kl opened at 0.14 and 0.03 on two runs -- 12x and 2.5x the target --
+    # with nothing to truncate the update. It costs nothing while KL is small
+    # (0.0005-0.003 runs never trigger it) and is the only mechanism that caps
+    # how far one update moves the policy, which is what separates "how sharp
+    # the logits are" (tau) from "how fast the policy moves" (this).
+    USE_TARGET_KL_STOP = True
 
     # Full-batch Path A over all intervals: every stability number above
     # (LR / KL / entropy) was measured on this path; minibatching the tiny
@@ -449,7 +511,15 @@ class Config:
     # the current additive path and learns a nonlinear/gated fusion on top (e.g.
     # let quality dominate on easy prompts, let queue veto when a server is hot).
     # Cheap, permutation-equivariant (shared across servers), safe to toggle.
-    ACTOR_DUAL_FUSE = False
+    # Enabled 2026-07-26 as a 65-parameter probe, not a capacity upgrade: the
+    # additive base logit = s_q*q + s_k*k cannot express "tolerate a longer
+    # queue when the quality gap is large", which is a real part of the routing
+    # decision. dual/grad_fuse then answers whether that interaction is worth
+    # learning at all -- and is the evidence to check before paying for a
+    # richer mechanism (e.g. FiLM-conditioning the queue head on quality,
+    # which would cost the towers' independent normalisation and the
+    # queue_spread diagnostic).
+    ACTOR_DUAL_FUSE = True
     ACTOR_DUAL_FUSE_HIDDEN = 16
 
     # Divide each tower's score by a DETACHED running estimate of its own
@@ -484,7 +554,17 @@ class Config:
     # initial entropy at ~1.73, matching that settling point, while keeping the
     # anti-drift property intact (tau is applied after the rms division, and
     # equally to both towers, so neither balance nor drift-capping changes).
-    ACTOR_DUAL_NORM_TARGET_SPREAD = 0.1
+    # 0.3, measured rather than guessed. With the rms buffers seeded to the
+    # values a run converges to (rms_q 0.145, rms_k 0.120), tau maps to the
+    # initial policy as: 0.10 -> logit std 0.094, entropy 100% of ln(M);
+    # 0.30 -> 0.283, 98%; 0.70 -> 0.660, 91%; 1.00 -> 0.944, 85%.
+    # Both ends of that range have been run: tau=0.7 gave approx_kl 0.14 and
+    # collapsed entropy 1.78 -> 1.25 within two episodes, while tau=0.1 gave
+    # approx_kl 0.0005 and left the policy uniform for twelve -- the regime the
+    # header notes call "never learns". Extrapolating KL quadratically in the
+    # logit scale puts tau=0.3 at approx_kl ~0.010, just under TARGET_KL, with
+    # USE_TARGET_KL_STOP catching any overshoot.
+    ACTOR_DUAL_NORM_TARGET_SPREAD = 0.3
     # Dedicated (higher) LR for the tower balance scales. Their gradient is
     # ~30x smaller than normal weights (chain rule multiplies by queue_score
     # ~0.02), so at the actor LR they barely move; this lets them adapt.
@@ -566,7 +646,7 @@ class Config:
     # forever, which on an unattended machine costs hours. On timeout the
     # episode proceeds with whatever completed; the shortfall is visible as
     # outcome/incomplete_rate rather than failing silently. The arrival window
-    # is INTERVAL_LENGTH*EPISODE_TIME_INTERVAL = 40 s and draining the backlog
+    # is INTERVAL_LENGTH*EPISODE_TIME_INTERVAL = 48 s and draining the backlog
     # takes tens of seconds at rho~0.9, so 180 s is several times the expected
     # drain and only fires when something is genuinely stuck.
     EPISODE_COMPLETION_TIMEOUT = 180
@@ -628,6 +708,20 @@ class Config:
     # capability. Costs ~275 completion tokens per MMLU request.
     MCQ_COT = True
 
+    # Bound the working shown on math prompts ("at most 3 short steps").
+    # Unlike MCQ_COT this is not a quality/throughput trade -- it improves
+    # BOTH. Measured across the six endpoints at GEN_MAX_NEW_TOKENS=1024,
+    # n=12 prompts: unbounded answers averaged 607 completion tokens and hit
+    # the cap 36% of the time, and a truncated answer has no \boxed{} left so
+    # math_verify scores it 0. Bounding took fleet mean quality 0.61 -> 0.74,
+    # tokens -44%, latency -26%, cap hits 36% -> 15%, and every single
+    # endpoint improved (e.g. Ministral 3B 0.50 -> 0.75 as its cap rate went
+    # 50% -> 0%). At this token cap truncation dominates reasoning depth.
+    # Re-evaluate if GEN_MAX_NEW_TOKENS is raised far above the ~600-token
+    # unbounded mean, where the truncation term disappears and the usual
+    # "more reasoning helps" trade should reassert itself.
+    MATH_BRIEF_REASONING = True
+
     # Encourage a parseable final answer
     QA_PROMPT_STYLE = "plain"     # "instruction"/"alpaca" or "plain"
     # False: prompts use each dataset's standard output format (\boxed{}
@@ -679,14 +773,31 @@ class Config:
     # latency and routing decisions matter, while backlogs stay bounded within
     # an episode instead of diverging.
     #
-    # 1.29 = 0.85 x 1.517 req/s (the trimmed 6-endpoint fleet under
-    # GEN_MAX_NEW_TOKENS=1024 + MCQ_COT). This is a dependent variable: it has
-    # to be re-derived from sum(SERVICE_RATE) every time the fleet, the token
-    # cap or the dataset mix changes, never chosen first. An arrival rate left
-    # over from an earlier fleet is how this run silently reached rho = 2.47,
+    # 2.0 against sum(SERVICE_RATE) = 2.510 gives rho = 0.797: heavily loaded
+    # but comfortably stable, and it yields 96 requests per 48 s episode with
+    # E[N_t] = 12 arrivals per interval.
+    #
+    # Both ends of that range have been run and neither works. At rho = 0.989
+    # (the earlier lambda=1.5 against a 1.517 fleet) arrivals match capacity
+    # exactly, so the backlog performs a random walk rather than settling:
+    # load/makespan swung 3 to 7.5 across episodes, which is the arrival
+    # process, not the policy, and the M/M/1 reasoning used elsewhere in this
+    # file stops applying. At the opposite end rho = 0.4 leaves queues near
+    # empty, so the dual tower's queue half has nothing to discriminate on and
+    # half the architecture is inert.
+    #
+    # E[N_t] matters here too: at ~8 arrivals over M=6 servers, roughly 40% of
+    # the per-interval fairness penalty is irreducible multinomial sampling
+    # noise (a perfectly proportional policy scores only 0.588 per-interval
+    # Jain). At E[N_t] = 12 that floor rises materially.
+    #
+    # This is a dependent variable: it has to be re-derived from
+    # sum(SERVICE_RATE) every time the fleet, the token cap or the dataset mix
+    # changes, never chosen first. An arrival rate left over from an earlier
+    # fleet is how this run silently reached rho = 2.47,
     # where every episode ends by hitting EPISODE_COMPLETION_TIMEOUT with a
     # backlog that never drains.
-    POISSON_ARRIVAL_RATE = 1.5
+    POISSON_ARRIVAL_RATE = 2.0
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
     EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
 
@@ -805,7 +916,18 @@ class Config:
     # backlog D. util = qsize excludes it (it is dequeued while generating),
     # so without this a server busy on a long generation looks empty and the
     # quota over-allocates to it. Derived from residual>0 (single worker).
-    QUOTA_COUNT_INFLIGHT = False
+    #
+    # Turned on 2026-07-26 because the blind spot is large at this operating
+    # point, not marginal. Measured mean service times against the 6 s interval:
+    # Llama 70B takes 6.87 s, i.e. LONGER than an interval, so it is essentially
+    # always mid-generation and its in-flight request is invisible to the quota
+    # for the whole episode; Ministral 8B (3.28 s) and GPT-4.1 mini (3.04 s) are
+    # hidden about half the time. At rho = 0.797 that is ~0.8 invisible requests
+    # per server against the ~2 the quota hands out per interval (E[N_t]=12 over
+    # M=6), so the backlog it reasons about is understated by roughly 40% -- and
+    # understated most for the slowest endpoints, which are exactly the ones it
+    # should be steering away from.
+    QUOTA_COUNT_INFLIGHT = True
 
     # History-aware fair quota: fold the episode-cumulative allocation count H_m
     # (requests routed to server m in earlier intervals of THIS episode) into the
@@ -821,7 +943,30 @@ class Config:
     # w corrects historical imbalance more aggressively (and, since H grows over
     # the episode while D stays bounded, eventually dominates D -- keep w modest).
     # H resets each episode (the fairness horizon is one episode).
-    QUOTA_HISTORY_WEIGHT = 0.0
+    # 1.0, raised from 0 on 2026-07-26. w=0 makes the quota a PER-INTERVAL
+    # balance target, and at this scale that target is mostly unreachable
+    # noise: with E[N_t] ~ 8 spread over M=6, a policy that samples exactly in
+    # proportion to capacity -- the most balanced policy that exists -- scores a
+    # per-interval Jain of only 0.588, because allocating eight indivisible
+    # requests across six servers cannot be even. The same policy scores 0.917
+    # cumulatively, which matches what runs actually measure. So roughly 40% of
+    # the per-interval penalty was charging the policy for multinomial sampling
+    # noise no policy can remove, injecting that variance straight into the
+    # gradient.
+    #
+    # Worse, per-interval balance forbids the one thing a prompt-aware router
+    # has over a queue-only baseline: if an interval happens to deliver mostly
+    # math prompts, the right move is to over-serve the math specialist now and
+    # compensate later. Only a cumulative target permits that trade across time.
+    # This is the deficit-counter idea from DRR -- unserved quantum carries to
+    # the next round, so fairness is a long-run property, not a per-round one.
+    #
+    # w=1.0 puts w*H on par with D around mid-episode (H ~ 5, D ~ 5.7 at
+    # rho=0.85) and lets it dominate later, which is what long-run fairness
+    # means. If end-to-end latency degrades -- the quota can now favour a server
+    # that is behind on cumulative count even while its queue is long -- step
+    # back to 0.5 rather than to 0.
+    QUOTA_HISTORY_WEIGHT = 1.0
     FAIR_TARGET = 1     # 最终的 FAIR 值
     FAIR = 1           # 起始（trainer 会覆盖）
 

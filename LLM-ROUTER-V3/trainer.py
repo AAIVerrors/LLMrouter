@@ -1022,6 +1022,11 @@ class EnhancedLLMRouterTrainer:
                         # These must not regress while fairness improves.
                         "load/makespan": training_metrics.get('lb_makespan') if training_metrics else None,
                         "load/overload_frac": training_metrics.get('lb_overload_frac') if training_metrics else None,
+                        # Scale-free companions to makespan: both divide by the
+                        # mean, so they separate "how uneven" from "how loaded"
+                        # and stay comparable across arrival rates.
+                        "load/cov": training_metrics.get('lb_cov') if training_metrics else None,
+                        "load/imbalance": training_metrics.get('lb_imbalance') if training_metrics else None,
                     })
 
 
