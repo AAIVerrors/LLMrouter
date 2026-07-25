@@ -2238,6 +2238,12 @@ class PPOAgent:
         quota_f_load = []
         quota_jain = []
 
+        # Episode-cumulative per-server allocation count for the history-aware
+        # quota. Accumulated in chronological order (slots are sorted below), so
+        # at interval t it holds counts from strictly earlier intervals only.
+        _hist_w = float(getattr(Config, "QUOTA_HISTORY_WEIGHT", 0.0))
+        H_cum = np.zeros(M, dtype=np.float64)
+
         for ts in sorted(slot_to_indices.keys()):
             idxs = torch.tensor(slot_to_indices[ts], device=Config.DEVICE, dtype=torch.long)
             Nt = int(idxs.numel())
@@ -2325,7 +2331,16 @@ class PPOAgent:
                 if n_routed == 0:
                     continue
 
-                k_dag = fair_quota(d_snap, s_budget, n_routed, counts_np)
+                # History-aware backlog: add the weighted episode-cumulative
+                # count so the quota carries long-horizon memory (w=0 -> current
+                # per-interval behavior). Only the TARGET quota uses this; the
+                # Jain / F_load diagnostics below stay on the real backlog.
+                d_for_quota = d_snap + _hist_w * H_cum if _hist_w > 0.0 else d_snap
+                k_dag = fair_quota(d_for_quota, s_budget, n_routed, counts_np)
+
+                # Advance the cumulative count AFTER using it (so H excludes the
+                # current interval, keeping the quota target causal).
+                H_cum = H_cum + counts_np.astype(np.float64)
 
                 r_floor = float(-Config.BETA - Config.REWARD_GAMMA)
                 if bool(getattr(Config, "QUOTA_FLOOR_ADAPTIVE", True)):

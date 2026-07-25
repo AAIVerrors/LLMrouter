@@ -675,6 +675,22 @@ class Config:
     # so without this a server busy on a long generation looks empty and the
     # quota over-allocates to it. Derived from residual>0 (single worker).
     QUOTA_COUNT_INFLIGHT = False
+
+    # History-aware fair quota: fold the episode-cumulative allocation count H_m
+    # (requests routed to server m in earlier intervals of THIS episode) into the
+    # water-filling backlog, so the quota minimizes
+    #     Psi = sum_m (w*H_m + D_m + n_m)^2 / S_m
+    # instead of (D_m + n_m)^2 / S_m. D_m (current backlog) drains fast on fast
+    # servers, so it gives almost no episode-scale memory: two servers that have
+    # both emptied their queues look identical even if one has historically been
+    # over-allocated. Adding H_m gives the quota a long-horizon memory, so a
+    # server that got more earlier is assigned less now, targeting LONG-TERM
+    # (cumulative) load fairness rather than only per-interval fairness. The
+    # weight w trades the two off: w=0 is the current per-interval quota; larger
+    # w corrects historical imbalance more aggressively (and, since H grows over
+    # the episode while D stays bounded, eventually dominates D -- keep w modest).
+    # H resets each episode (the fairness horizon is one episode).
+    QUOTA_HISTORY_WEIGHT = 0.0
     FAIR_TARGET = 1     # 最终的 FAIR 值
     FAIR = 1           # 起始（trainer 会覆盖）
 
