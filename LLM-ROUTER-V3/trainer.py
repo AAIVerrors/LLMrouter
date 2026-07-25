@@ -950,6 +950,12 @@ class EnhancedLLMRouterTrainer:
                         # effective weights are s_q and s_k alone.
                         "dual/rms_q": training_metrics.get('dual_rms_q') if training_metrics else None,
                         "dual/rms_k": training_metrics.get('dual_rms_k') if training_metrics else None,
+                        # Per-head gradient norm (pre-clip). grad_queue ~ 0 with a
+                        # healthy grad_quality => queue tower has no learning
+                        # signal (flat spread is correct, not starved).
+                        "dual/grad_quality": training_metrics.get('grad_quality') if training_metrics else None,
+                        "dual/grad_queue": training_metrics.get('grad_queue') if training_metrics else None,
+                        "dual/grad_fuse": training_metrics.get('grad_fuse') if training_metrics else None,
                         # Lagrangian fairness: mu rises while Jain sits below the
                         # floor and decays back toward 0 once it is satisfied.
                         "lagrangian/mu": training_metrics.get('lagrangian_mu') if training_metrics else None,

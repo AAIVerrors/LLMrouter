@@ -2611,6 +2611,20 @@ class PPOAgent:
         actual_updates = 0
         early_stopped = False
 
+        # Per-head gradient-norm diagnostics: does the queue tower actually
+        # receive a learning signal, or is its flat spread just zero gradient?
+        # Measured AFTER backward, BEFORE clip/step, averaged over PPO steps.
+        _grad_accum = {"quality": 0.0, "queue": 0.0, "fuse": 0.0}
+
+        def _grad_norm(module):
+            if module is None:
+                return 0.0
+            sq = 0.0
+            for p in module.parameters():
+                if p.grad is not None:
+                    sq += float(p.grad.detach().pow(2).sum().item())
+            return sq ** 0.5
+
         use_interval_mb = bool(getattr(Config, "USE_PER_INTERVAL_MINIBATCH", False))
         target_kl = float(getattr(Config, "TARGET_KL", 0.02))
         use_kl_stop = bool(getattr(Config, "USE_TARGET_KL_STOP", False))
@@ -2743,6 +2757,11 @@ class PPOAgent:
 
                 # 参数不相交 → actor 参数只拿到 actor_loss 的梯度，critic 参数只拿到 critic_loss 的梯度
                 (actor_loss + critic_loss).backward()
+
+                # Raw per-head gradient norm BEFORE clipping.
+                _grad_accum["quality"] += _grad_norm(getattr(self.network, "actor_head", None))
+                _grad_accum["queue"] += _grad_norm(getattr(self.network, "queue_head", None))
+                _grad_accum["fuse"] += _grad_norm(getattr(self.network, "tower_fuse", None))
 
                 torch.nn.utils.clip_grad_norm_(self.actor_params,  Config.MAX_GRAD_NORM)
                 torch.nn.utils.clip_grad_norm_(self.critic_params, Config.MAX_GRAD_NORM)
@@ -2914,6 +2933,10 @@ class PPOAgent:
 
                     (actor_loss + critic_loss).backward()
 
+                    _grad_accum["quality"] += _grad_norm(getattr(self.network, "actor_head", None))
+                    _grad_accum["queue"] += _grad_norm(getattr(self.network, "queue_head", None))
+                    _grad_accum["fuse"] += _grad_norm(getattr(self.network, "tower_fuse", None))
+
                     torch.nn.utils.clip_grad_norm_(self.actor_params,  Config.MAX_GRAD_NORM)
                     torch.nn.utils.clip_grad_norm_(self.critic_params, Config.MAX_GRAD_NORM)
 
@@ -3016,6 +3039,13 @@ class PPOAgent:
             "dual_scale_k": getattr(self.network, "_dual_scale_k", None),
             "dual_rms_q": getattr(self.network, "_dual_rms_q", None),
             "dual_rms_k": getattr(self.network, "_dual_rms_k", None),
+            # Per-head raw grad norm (pre-clip), averaged over PPO steps. If
+            # grad_queue ~ 0 while grad_quality is healthy, the queue tower has
+            # no learning signal (flat spread is correct); if grad_queue is
+            # sizeable but spread stays flat, it is being starved/blocked.
+            "grad_quality": _grad_accum["quality"] / den,
+            "grad_queue": _grad_accum["queue"] / den,
+            "grad_fuse": _grad_accum["fuse"] / den,
             "actual_updates": actual_updates,
             "early_stopped_kl": int(early_stopped),
             "quota_f_load": float(np.mean(quota_f_load)) if quota_f_load else None,

@@ -135,7 +135,7 @@ class Config:
             "name": "openai/gsm8k",
             "config": "main",
             "split": "train[:20000]",
-            "weight": 1/3,
+            "weight": 0,
             "metric": "number",
             "task_type": "math",
         },
@@ -147,11 +147,11 @@ class Config:
             "name": "qwedsacf/competition_math",
             "config": None,
             "split": "train",
-            "weight": 0,
+            "weight": 1/3,
             "metric": "math_verify",
             "task_type": "math_hard",
             "filter": "boxed",
-            "levels": None,
+            "levels": ["Level 1","Level 2","Level 3"],
             "max_samples": 20000,
         },
     ]
@@ -279,8 +279,8 @@ class Config:
     # Anti-collapse brake: 0 collapses onto few servers; 0.02 only delayed
     # the slide to ~ep20; 0.03 is the current setting.
     ENTROPY_COEF = 0.03
-    ACTOR_LEARNING_RATE = 3e-5
-    CRITIC_LEARNING_RATE = 1e-4
+    ACTOR_LEARNING_RATE = 3e-4
+    CRITIC_LEARNING_RATE = 5e-4
     USE_LR_DECAY = False
     LR_DECAY_TYPE = "cosine"
     LR_DECAY_MIN_RATIO = 0.1
@@ -290,7 +290,7 @@ class Config:
     LR_DECAY_EPISODES = 200
     LR_WARMUP_EPISODES = 0
     KL_COEF = 0.00
-    MAX_GRAD_NORM = 0.5
+    MAX_GRAD_NORM = 1
     PPO_EPOCHS = 4   # small interval batch: more epochs overfit noise
     BATCH_SIZE = 1
 
@@ -384,7 +384,7 @@ class Config:
     # patch: 1.0 = start the two towers on equal footing and let the reward
     # decide. (Values like 5 only made sense before normalization, where they
     # were compensating the quality tower's much larger raw spread.)
-    ACTOR_DUAL_QUEUE_INIT_SCALE = 1.0
+    ACTOR_DUAL_QUEUE_INIT_SCALE = 5.0
 
     # Learned FUSION of the two towers instead of a plain (scaled) sum. A small
     # per-server MLP reads [quality_score, queue_score] and outputs a scalar that
@@ -412,7 +412,7 @@ class Config:
     # dual/quality_spread and dual/queue_spread keep logging the RAW (pre-norm)
     # spreads so they stay diagnostic; dual/rms_q and dual/rms_k log the
     # divisors. Adds two state_dict buffers -> needs a fresh model.
-    ACTOR_DUAL_RUNNING_NORM = True
+    ACTOR_DUAL_RUNNING_NORM = False
     ACTOR_DUAL_RUNNING_NORM_MOMENTUM = 0.05
     # Dedicated (higher) LR for the tower balance scales. Their gradient is
     # ~30x smaller than normal weights (chain rule multiplies by queue_score
@@ -502,7 +502,7 @@ class Config:
     PLOT_INTERVAL = 50    # Plot progress every 50 episodes
 
     # Router QA generation controls (keeps answers short & deterministic)
-    GEN_MAX_NEW_TOKENS = 256         # hard cap on answer length
+    GEN_MAX_NEW_TOKENS = 512         # hard cap on answer length
     GEN_MIN_NEW_TOKENS = 0
     GEN_TEMPERATURE = 0.1
     GEN_TOP_P = 1
@@ -695,7 +695,7 @@ class Config:
     # ~1e-3 per episode and does nothing within a 200-episode run. 1.0 reaches
     # the floor in ~100 episodes in simulation without oscillating; raise toward
     # 2.0 for a faster lock-on, lower if mu overshoots and Jain rings.
-    LAGRANGIAN_MU_LR = 1.0
+    LAGRANGIAN_MU_LR = 0.2
     LAGRANGIAN_MU_INIT = 1.0    # 1.0 == current fixed-strength behavior
     LAGRANGIAN_MU_MAX = 10.0
     LAGRANGIAN_JAIN_EMA = 0.3   # EMA smoothing of episode Jain for the mu update
