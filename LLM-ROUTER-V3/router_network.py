@@ -985,8 +985,16 @@ class RouterNetwork(nn.Module):
                             cur_k = queue_score.std(dim=-1).mean().clamp_min(_eps)
                             self.rms_quality.mul_(1.0 - a).add_(a * cur_q)
                             self.rms_queue.mul_(1.0 - a).add_(a * cur_k)
-                    quality_score = quality_score / self.rms_quality.clamp_min(_eps)
-                    queue_score = queue_score / self.rms_queue.clamp_min(_eps)
+                    # Normalize each tower to a target cross-server spread tau
+                    # (not necessarily 1). tau<1 shrinks the logit magnitude and
+                    # so raises the initial policy entropy, without weakening the
+                    # anti-drift property (rms still cancels magnitude growth) and
+                    # without breaking tower balance (both scaled by the same tau).
+                    # The learnable scales adapt from there, so tau only sets the
+                    # exploration softness at the start of training.
+                    _tau = float(getattr(Config, "ACTOR_DUAL_NORM_TARGET_SPREAD", 1.0))
+                    quality_score = quality_score / self.rms_quality.clamp_min(_eps) * _tau
+                    queue_score = queue_score / self.rms_queue.clamp_min(_eps) * _tau
                     self._dual_rms_q = float(self.rms_quality.detach().cpu().item())
                     self._dual_rms_k = float(self.rms_queue.detach().cpu().item())
 

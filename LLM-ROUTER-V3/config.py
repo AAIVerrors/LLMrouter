@@ -414,6 +414,14 @@ class Config:
     # divisors. Adds two state_dict buffers -> needs a fresh model.
     ACTOR_DUAL_RUNNING_NORM = False
     ACTOR_DUAL_RUNNING_NORM_MOMENTUM = 0.05
+    # Target cross-server spread each tower is normalized to (only used when
+    # ACTOR_DUAL_RUNNING_NORM=True). Dividing by rms forces spread ~1, which
+    # amplifies the logits (rms~0.06 => ~10x) and pulls the initial entropy down
+    # to ~1.5 (ceiling ln(8)=2.08). Setting tau<1 keeps the anti-drift
+    # normalization but softens the initial policy: tau=0.5 -> entropy ~1.88,
+    # tau=0.3 -> ~2.0. Only the START is affected; the learnable tower scales
+    # adapt afterward, so this is purely an exploration knob.
+    ACTOR_DUAL_NORM_TARGET_SPREAD = 1.0
     # Dedicated (higher) LR for the tower balance scales. Their gradient is
     # ~30x smaller than normal weights (chain rule multiplies by queue_score
     # ~0.02), so at the actor LR they barely move; this lets them adapt.
