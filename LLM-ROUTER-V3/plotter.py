@@ -73,7 +73,15 @@ class TrainingPlotter:
             
             # 4. Invalid action rate and completed requests over time
             if len(episode_stats) > 0:
-                invalid_rates = [stat['invalid_actions'] / Config.EPISODE_LENGTH for stat in episode_stats]
+                # Denominator is the actions actually taken this episode, not the
+                # unused Config.EPISODE_LENGTH constant: the training loop is bounded by
+                # EPISODE_TIME_INTERVAL * INTERVAL_LENGTH, so the action count is
+                # POISSON_ARRIVAL_RATE-dependent and rarely equals 100. Using the constant
+                # rescaled this curve every time the arrival rate changed.
+                invalid_rates = [
+                    stat['invalid_actions'] / max(stat['invalid_actions'] + stat['valid_actions'], 1)
+                    for stat in episode_stats
+                ]
                 completed_requests = [stat['completed_requests'] for stat in episode_stats]
                 
                 ax4_1 = axes[1, 1]
@@ -183,7 +191,15 @@ class TrainingPlotter:
             
             # 4. Performance metrics over time
             if episode_stats:
-                invalid_rates = [stat['invalid_actions'] / Config.EPISODE_LENGTH for stat in episode_stats]
+                # Denominator is the actions actually taken this episode, not the
+                # unused Config.EPISODE_LENGTH constant: the training loop is bounded by
+                # EPISODE_TIME_INTERVAL * INTERVAL_LENGTH, so the action count is
+                # POISSON_ARRIVAL_RATE-dependent and rarely equals 100. Using the constant
+                # rescaled this curve every time the arrival rate changed.
+                invalid_rates = [
+                    stat['invalid_actions'] / max(stat['invalid_actions'] + stat['valid_actions'], 1)
+                    for stat in episode_stats
+                ]
                 completed_rates = [stat['completed_requests'] for stat in episode_stats]
                 
                 axes[1, 0].plot(invalid_rates, 'r-', label='Invalid Action Rate')

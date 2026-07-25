@@ -18,51 +18,78 @@ class Config:
     # PRICE, SERVICE_RATE and all per-server arrays in the SAME order: the
     # router action is the list index.
     # ================================================================
+    # Trimmed 8 -> 6 on 2026-07-26 (dropped entries commented out in place, in
+    # every per-server array, so the fleet can be restored by uncommenting).
+    # Gemma 3n E4B and Ministral 8B together carried only 14% of fleet
+    # throughput (0.225 of 1.563 req/s) and neither wins any task type, so
+    # each was a strictly weaker copy of a retained endpoint. All three
+    # per-task winners survive (math -> Llama 70B, MMLU-Pro -> Ministral 14B,
+    # multi-hop QA -> GPT-4.1 mini), which is what the prompt-aware claim
+    # rests on. Ministral 14B is kept despite having the lowest mu in the
+    # fleet: it is the only MMLU-Pro specialist (best there, worst at math),
+    # and without it GPT-4.1 mini wins two of three tasks and the crossover
+    # collapses to two winners.
     MODEL_NAMES = [
         "ministral-3b-2512",                                     # 0 Mistral   cheap/fast floor
-        "together/google/gemma-3n-E4B-it",                        # 1 Together  cheap floor
-        "ministral-14b-2512",                                    # 2 Mistral   MATH specialist (cheap, reliable host)
-        "gpt-4.1-nano-2025-04-14",                               # 3 OpenAI    cheap general
-        "ministral-8b-2512",                                     # 4 Mistral   mid
-        "mistral-small-2506",                                    # 5 Mistral   mid general (non-hybrid)
-        "gpt-4.1-mini",                                          # 6 OpenAI    strong AND fast
-        "together/meta-llama/Llama-3.3-70B-Instruct-Turbo",       # 7 Together  strong general (slow)
+        # "together/google/gemma-3n-E4B-it",                      #   Together  DROPPED: slowest (mu 0.125), wins nothing
+        "ministral-14b-2512",                                    # 1 Mistral   MMLU-Pro specialist (worst at math)
+        "gpt-4.1-nano-2025-04-14",                               # 2 OpenAI    fastest endpoint
+        # "ministral-8b-2512",                                    #   Mistral   DROPPED: mu 0.100, dominated by Mistral Small
+        "mistral-small-2506",                                    # 3 Mistral   mid general (non-hybrid)
+        "gpt-4.1-mini",                                          # 4 OpenAI    multi-hop QA winner
+        "together/meta-llama/Llama-3.3-70B-Instruct-Turbo",       # 5 Together  math winner, priciest input
     ]
 
     PRICE = [
         (0.00000010, 0.00000010),   # 0 Ministral 3B:      $0.10 / $0.10 per 1M tokens
-        (0.00000006, 0.00000012),   # 1 Gemma 3n E4B:      $0.06 / $0.12 per 1M tokens
-        (0.00000020, 0.00000020),   # 2 Ministral 14B:     $0.20 / $0.20 per 1M tokens
-        (0.00000010, 0.00000040),   # 3 GPT-4.1 nano:      $0.10 / $0.40 per 1M tokens
-        (0.00000015, 0.00000015),   # 4 Ministral 8B:      $0.15 / $0.15 per 1M tokens
-        (0.00000015, 0.00000060),   # 5 Mistral Small:     $0.10 / $0.30 per 1M tokens (verify)
-        (0.00000040, 0.00000160),   # 6 GPT-4.1 mini:      $0.40 / $1.60 per 1M tokens (verify)
-        (0.00000104, 0.00000104),   # 7 Llama 3.3 70B:     $1.04 / $1.04 per 1M tokens
+        # (0.00000006, 0.00000012), #   Gemma 3n E4B:      $0.06 / $0.12 per 1M tokens  (DROPPED)
+        (0.00000020, 0.00000020),   # 1 Ministral 14B:     $0.20 / $0.20 per 1M tokens
+        (0.00000010, 0.00000040),   # 2 GPT-4.1 nano:      $0.10 / $0.40 per 1M tokens
+        # (0.00000015, 0.00000015), #   Ministral 8B:      $0.15 / $0.15 per 1M tokens  (DROPPED)
+        (0.00000015, 0.00000060),   # 3 Mistral Small:     $0.15 / $0.60 per 1M tokens
+        (0.00000040, 0.00000160),   # 4 GPT-4.1 mini:      $0.40 / $1.60 per 1M tokens
+        (0.00000104, 0.00000104),   # 5 Llama 3.3 70B:     $1.04 / $1.04 per 1M tokens
     ]
 
-    # Effective requests/second per endpoint. Re-measured from a live run's
-    # online EMA (2026-07-25 snapshot); the previous values summed to 4.09 but
-    # the fleet actually sustains 3.64, so an arrival rate chosen against the
-    # old total was silently running the system at rho~1.10, i.e. UNSTABLE --
-    # backlogs grow without bound, latency drifts up, and every queue-derived
-    # signal becomes transient noise.
+    # Effective requests/second per endpoint, i.e. 1 / mean service time. Each
+    # endpoint is a single-threaded worker process draining one FIFO queue
+    # (see ServerProcess), so this serial measurement is the right notion of
+    # capacity; SERVER_CAPACITIES is the queue buffer size, NOT a concurrency
+    # limit. Do not substitute a figure taken from a live run's online EMA
+    # under concurrent load -- that measures a different quantity and reads
+    # roughly 1.7x higher, which would silently set an arrival rate above the
+    # stability limit.
     #
     # This list is ALSO the frozen fairness reference (see QUOTA_USE_FROZEN_MU):
     # the online EMA keeps adapting inside a run and feeds the state, but the
     # quota is computed against these fixed values so the fairness target does
     # not drift with the workload being routed. Re-measure and update here if
     # the fleet changes; do not expect a run to correct it for you.
+    #
+    # Measured 2026-07-26 by bench_fleet_service_rate.py on the 6-endpoint
+    # fleet at GEN_MAX_NEW_TOKENS=1024 with MCQ_COT on. For reference the same
+    # fleet measures 1.338 req/s at 2048 and the pre-CoT 8-endpoint fleet
+    # measured 3.639 at 512: generation length dominates fleet throughput far
+    # more than fleet size does. Truncation from the 1024 cap is uneven, which
+    # is why this is re-measured rather than rescaled -- Ministral 14B gains
+    # 42% (its long math answers were the most truncated) while GPT-4.1 nano
+    # is unchanged (it never reached the cap). Caveat: n=10 per endpoint and
+    # the latency tail is heavy (Llama 70B p90 = 20 s), so individual entries
+    # carry roughly +/-15% noise; the Llama figure moving down from 0.1730 is
+    # within that band, not a real regression.
     SERVICE_RATE = [
-        0.6176, # 0 Ministral 3B
-        0.2556, # 1 Gemma 3n E4B
-        0.3557, # 2 Ministral 14B
-        0.5862, # 3 GPT-4.1 nano
-        0.4801, # 4 Ministral 8B
-        0.4791, # 5 Mistral Small
-        0.4520, # 6 GPT-4.1 mini
-        0.4127, # 7 Llama 3.3 70B
-    ]   # total 3.639 req/s
-    SERVER_CAPACITIES = [50] * 8
+        0.3375, # 0 Ministral 3B
+        # 0.1251, #   Gemma 3n E4B   (DROPPED)
+        0.1611, # 1 Ministral 14B
+        0.3814, # 2 GPT-4.1 nano
+        # 0.1002, #   Ministral 8B   (DROPPED)
+        0.2704, # 3 Mistral Small
+        0.2217, # 4 GPT-4.1 mini
+        0.1453, # 5 Llama 3.3 70B
+    ]   # total 1.517 req/s over the retained 6
+    # Derived, so it cannot silently disagree with MODEL_NAMES: trainer.py
+    # takes the server count from this list's length.
+    SERVER_CAPACITIES = [50] * len(MODEL_NAMES)
 
     USE_UTIL = True  # in the state use load/capability or load + capability
 
@@ -542,11 +569,18 @@ class Config:
     PLOT_INTERVAL = 50    # Plot progress every 50 episodes
 
     # Router QA generation controls (keeps answers short & deterministic)
-    # 2048, not 512: at 512 the math_hard responses were truncated 40-70% of
-    # the time, so the quality score measured the token cap rather than the
-    # endpoint. Cost bills actual completion tokens, so raising the cap does
-    # not inflate spend for endpoints that answer concisely.
-    GEN_MAX_NEW_TOKENS = 2048        # hard cap on answer length
+    # 1024: a throughput/fidelity compromise. At 512 math_hard was truncated
+    # 40-70% of the time, so the quality score measured the token cap rather
+    # than the endpoint. At 2048 nothing truncates but fleet throughput falls
+    # to 1.34 req/s, which caps the arrival rate and starves each interval of
+    # requests. Measured math_hard medians on the retained six are 627, 616,
+    # 268, 466, 193 and 295 tokens, so 1024 clears every median and only
+    # truncates the upper tail -- heaviest on the verbose endpoints
+    # (Ministral 3B/14B), negligible on GPT-4.1 mini and Llama 70B.
+    # Cost bills actual completion tokens, so the cap never inflates spend for
+    # endpoints that answer concisely. Re-measure SERVICE_RATE after changing
+    # this: it moves fleet mu by more than any other single setting.
+    GEN_MAX_NEW_TOKENS = 1024        # hard cap on answer length
     GEN_MIN_NEW_TOKENS = 0
     GEN_TEMPERATURE = 0.1
     GEN_TOP_P = 1
@@ -607,12 +641,19 @@ class Config:
     FINAL_EVAL_EPISODES = 10  # Number of episodes for final evaluation
 
     # Poisson prompt generation settings
-    # Arrival rate. Against the measured fleet total of 3.639 req/s this gives
-    # rho ~= 0.91: heavily loaded, so queueing dominates end-to-end latency and
-    # routing decisions matter, but still stable -- backlogs stay bounded within
-    # an episode instead of diverging. (4.0 against the true total would be
-    # rho ~= 1.10, i.e. an unstable system.)
-    POISSON_ARRIVAL_RATE = 3.3
+    # Arrival rate, set against the measured SERVICE_RATE total so the system
+    # stays heavily loaded but stable: queueing then dominates end-to-end
+    # latency and routing decisions matter, while backlogs stay bounded within
+    # an episode instead of diverging.
+    #
+    # 1.29 = 0.85 x 1.517 req/s (the trimmed 6-endpoint fleet under
+    # GEN_MAX_NEW_TOKENS=1024 + MCQ_COT). This is a dependent variable: it has
+    # to be re-derived from sum(SERVICE_RATE) every time the fleet, the token
+    # cap or the dataset mix changes, never chosen first. An arrival rate left
+    # over from an earlier fleet is how this run silently reached rho = 2.47,
+    # where every episode ends by hitting EPISODE_COMPLETION_TIMEOUT with a
+    # backlog that never drains.
+    POISSON_ARRIVAL_RATE = 1.29
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
     EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
 
