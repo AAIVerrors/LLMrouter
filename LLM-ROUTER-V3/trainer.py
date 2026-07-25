@@ -527,8 +527,17 @@ class EnhancedLLMRouterTrainer:
         # time.sleep(2)
         
         # --- Pause and clean servers before training ---
+        # Bounded drain: never let one stuck request hang the whole run.
+        _drain_timeout = float(getattr(Config, "EPISODE_COMPLETION_TIMEOUT", 180))
+        _drain_start = time.time()
         while self.env.check_get_episode_completed() == False:
-            # print("Waiting for all prompts to be processed...")
+            if time.time() - _drain_start > _drain_timeout:
+                print(
+                    f"[WARN] episode {self.current_episode}: drain timed out after "
+                    f"{_drain_timeout:.0f}s; proceeding with completed requests only "
+                    f"(shortfall shows up as outcome/incomplete_rate)."
+                )
+                break
             time.sleep(1)
         
         episode_record = self.env.get_episode_data()
@@ -908,10 +917,27 @@ class EnhancedLLMRouterTrainer:
                     }
 
 
+                    # Request outcome breakdown. completion_rate should sit at
+                    # ~1.0. A non-trivial failed_rate means dispatches are
+                    # landing on full queues, so the capacity penalty dominates
+                    # the reward and every other metric this episode is
+                    # confounded; api_failed_rate is endpoint noise instead and
+                    # is not something the router can act on.
+                    _n_done = int(episode_info.get('valid_actions', 0))
+                    _n_all = _n_done + int(episode_info.get('invalid_actions', 0))
+                    _den = max(_n_all, 1)
+                    outcome_dict = {
+                        "outcome/completion_rate": _n_done / _den,
+                        "outcome/failed_rate": int(episode_info.get('n_failed', 0)) / _den,
+                        "outcome/api_failed_rate": int(episode_info.get('n_api_failed', 0)) / _den,
+                        "outcome/incomplete_rate": int(episode_info.get('n_incomplete', 0)) / _den,
+                    }
+
                     wandb.log({
                         "episode": episode,
                         **slo_dict,
                         **cost_dict,
+                        **outcome_dict,
                         "total_reward": float(np.sum(episode_info['rewards'])) if episode_info.get('rewards') else None,
                         "mean_reward": float(np.mean(episode_info['rewards'])) if episode_info.get('rewards') else None,
                         "std_reward": float(np.std(episode_info['rewards'])) if episode_info.get('rewards') else None,
@@ -1168,26 +1194,6 @@ class EnhancedLLMRouterTrainer:
                             "latencies": np.mean(episode_info['latencies']),
                             "price": np.mean([episode_info['prices']]),
                             "throughput_per_episode/requests_completed": episode_info['valid_actions'],
-                            # Request outcome breakdown. completion_rate should
-                            # sit at ~1.0; a rising failed_rate means dispatches
-                            # are hitting full queues (capacity penalty), which
-                            # confounds reward, fairness and latency alike.
-                            "outcome/completion_rate": (
-                                episode_info['valid_actions']
-                                / max(episode_info['valid_actions'] + episode_info['invalid_actions'], 1)
-                            ),
-                            "outcome/failed_rate": (
-                                episode_info.get('n_failed', 0)
-                                / max(episode_info['valid_actions'] + episode_info['invalid_actions'], 1)
-                            ),
-                            "outcome/api_failed_rate": (
-                                episode_info.get('n_api_failed', 0)
-                                / max(episode_info['valid_actions'] + episode_info['invalid_actions'], 1)
-                            ),
-                            "outcome/incomplete_rate": (
-                                episode_info.get('n_incomplete', 0)
-                                / max(episode_info['valid_actions'] + episode_info['invalid_actions'], 1)
-                            ),
                             "min_rewards": np.mean(min_rewards),
                             "returns": returns,
                             # "returns": training_metrics['rewards_returns'],

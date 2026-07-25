@@ -500,10 +500,16 @@ class Config:
     # model (state feature dim 5 -> 6). False = unchanged behavior.
     QUEUE_USE_ALLOC = True
 
-    # (dead config, nothing reads it; the episode-completion wait loop in
-    # trainer.py is unbounded — API-client timeouts/retries bound it in
-    # practice)
-    # EPISODE_COMPLETION_TIMEOUT = 180
+    # Hard cap on the post-arrival wait for outstanding requests to finish.
+    # Without it the drain loop is unbounded: one request that never completes
+    # (hung API call, dead collector, a lost completion signal) stalls the run
+    # forever, which on an unattended machine costs hours. On timeout the
+    # episode proceeds with whatever completed; the shortfall is visible as
+    # outcome/incomplete_rate rather than failing silently. The arrival window
+    # is INTERVAL_LENGTH*EPISODE_TIME_INTERVAL = 40 s and draining the backlog
+    # takes tens of seconds at rho~0.9, so 180 s is several times the expected
+    # drain and only fires when something is genuinely stuck.
+    EPISODE_COMPLETION_TIMEOUT = 180
 
     SERVICE_RATE_EMA_ALPHA = 0.1
     SERVICE_RATE_MIN_SAMPLES = 1
