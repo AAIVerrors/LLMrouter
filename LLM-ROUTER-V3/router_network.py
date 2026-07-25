@@ -2237,6 +2237,8 @@ class PPOAgent:
         min_rewards = []
         quota_f_load = []
         quota_jain = []
+        lb_makespan = []
+        lb_overload = []
 
         # Episode-cumulative per-server allocation count for the history-aware
         # quota. Accumulated in chronological order (slots are sorted below), so
@@ -2320,8 +2322,16 @@ class PPOAgent:
                     # normalized fairness automatically.
                     s_budget = np.maximum(caps, eps_mu)
                 else:
+                    # Frozen mu (exogenous) vs the snapshot's online EMA
+                    # (endogenous: harder prompts lower the measured req/s, so
+                    # the fairness reference would drift with the workload).
+                    mu_ref = (
+                        np.asarray(Config.SERVICE_RATE[:M], dtype=np.float64)
+                        if bool(getattr(Config, "QUOTA_USE_FROZEN_MU", True))
+                        else mu_snap
+                    )
                     s_budget = np.maximum(
-                        mu_snap * float(Config.INTERVAL_LENGTH), eps_mu
+                        mu_ref * float(Config.INTERVAL_LENGTH), eps_mu
                     )
 
                 counts_np = np.bincount(
@@ -2364,6 +2374,16 @@ class PPOAgent:
                 quota_jain.append(
                     jain_normalized_load(d_snap, s_budget, counts_np)
                 )
+
+                # Load-balancing performance (the efficiency view, as opposed to
+                # the fairness view above). z = post-dispatch work / one
+                # interval's service budget, so z > 1 means the server cannot
+                # clear its backlog within the interval. makespan is the classic
+                # objective min-max_m z_m; reporting it guards against the case
+                # where fairness improves while the worst server gets worse.
+                z_load = (d_snap + counts_np) / np.maximum(s_budget, 1e-9)
+                lb_makespan.append(float(z_load.max()))
+                lb_overload.append(float(np.mean(z_load > 1.0)))
 
             else:
                 # Fair / softmin aggregation over used servers.
@@ -2468,6 +2488,11 @@ class PPOAgent:
                 "early_stopped_kl": 0,
                 "quota_f_load": None,
                 "quota_jain_norm_load": None,
+                "jain_cumulative": None,
+                "effective_endpoints": None,
+                "max_endpoint_share": None,
+                "lb_makespan": None,
+                "lb_overload_frac": None,
             }
 
         term_rewards = torch.stack(term_rewards)
@@ -3016,6 +3041,24 @@ class PPOAgent:
 
         den = max(actual_updates, 1)
 
+        # ---- Episode-cumulative concentration metrics --------------------
+        # The per-interval Jain above answers "was each batch spread out"; a
+        # round-robin policy scores badly there yet is perfectly spread over the
+        # episode. These measure the LONG-HORIZON traffic distribution instead.
+        # effective_endpoints = M * Jain = 1 / HHI (inverse Herfindahl): it
+        # equals k exactly when traffic is spread uniformly over k of the M
+        # endpoints, so "2.0 / 8" reads directly as "only 2 endpoints in
+        # effective use". max_endpoint_share catches the complementary failure
+        # (a moderate top share while several endpoints sit at zero).
+        _jain_cum = _eff_endpoints = _max_share = None
+        _tot_cum = float(H_cum.sum())
+        if _tot_cum > 0.0:
+            _jain_cum = float(
+                (H_cum.sum() ** 2) / (M * float(np.square(H_cum).sum()) + 1e-12)
+            )
+            _eff_endpoints = float(M * _jain_cum)
+            _max_share = float(H_cum.max() / _tot_cum)
+
         # ---- Lagrangian dual ascent on the Jain floor -------------------
         # Runs AFTER the policy update, so this episode's reward used the mu
         # carried in from the previous episode and mu now responds to the Jain
@@ -3073,6 +3116,11 @@ class PPOAgent:
             "early_stopped_kl": int(early_stopped),
             "quota_f_load": float(np.mean(quota_f_load)) if quota_f_load else None,
             "quota_jain_norm_load": float(np.mean(quota_jain)) if quota_jain else None,
+            "jain_cumulative": _jain_cum,
+            "effective_endpoints": _eff_endpoints,
+            "max_endpoint_share": _max_share,
+            "lb_makespan": float(np.mean(lb_makespan)) if lb_makespan else None,
+            "lb_overload_frac": float(np.mean(lb_overload)) if lb_overload else None,
         }
 
     # def update_new(self, trajectories):

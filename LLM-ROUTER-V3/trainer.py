@@ -317,6 +317,21 @@ class EnhancedLLMRouterTrainer:
             else:
                 episode_info['invalid_actions'] += 1
 
+            # Break the non-completed cases out by cause. They mean different
+            # things and must not be read as one number: 'failed' is a routing
+            # consequence (dispatched to a server that could not accept it, i.e.
+            # the capacity penalty fired), whereas 'api_transient_failed' is
+            # endpoint noise the router is not responsible for. A non-trivial
+            # failed rate means the reward is dominated by capacity penalties
+            # and every other metric this episode is confounded.
+            _st = req.get('status')
+            if _st == 'failed':
+                episode_info['n_failed'] = episode_info.get('n_failed', 0) + 1
+            elif _st == 'api_transient_failed':
+                episode_info['n_api_failed'] = episode_info.get('n_api_failed', 0) + 1
+            elif _st != 'completed':
+                episode_info['n_incomplete'] = episode_info.get('n_incomplete', 0) + 1
+
             episode_reward += reward
 
         for server_id in range(num_servers):
@@ -879,9 +894,17 @@ class EnhancedLLMRouterTrainer:
 
                     # Actual dollar cost: total $ spent this episode and $/request.
                     _dollars = episode_info.get('dollar_costs') or []
+                    _qs = episode_info.get('quality_scores') or []
                     cost_dict = {
                         "cost/dollar_total_per_episode": float(np.sum(_dollars)) if _dollars else None,
                         "cost/dollar_per_request": float(np.mean(_dollars)) if _dollars else None,
+                        # Quality bought per dollar: the single number that says
+                        # whether a cheaper policy is actually a better one, or
+                        # is just buying less quality.
+                        "cost/quality_per_dollar": (
+                            float(np.mean(_qs) / np.mean(_dollars))
+                            if _qs and _dollars and float(np.mean(_dollars)) > 0 else None
+                        ),
                     }
 
 
@@ -960,6 +983,19 @@ class EnhancedLLMRouterTrainer:
                         # floor and decays back toward 0 once it is satisfied.
                         "lagrangian/mu": training_metrics.get('lagrangian_mu') if training_metrics else None,
                         "lagrangian/jain_ema": training_metrics.get('lagrangian_jain_ema') if training_metrics else None,
+                        # Episode-cumulative concentration. effective_endpoints
+                        # = M * Jain = 1/HHI reads as "how many of the M
+                        # endpoints are in effective use" (8.0 = all, 2.0 =
+                        # collapsed onto two).
+                        "fairness/jain_cumulative": training_metrics.get('jain_cumulative') if training_metrics else None,
+                        "fairness/effective_endpoints": training_metrics.get('effective_endpoints') if training_metrics else None,
+                        "fairness/max_endpoint_share": training_metrics.get('max_endpoint_share') if training_metrics else None,
+                        # Load-balancing performance. makespan = max_m z_m (>1
+                        # means the worst server cannot clear within one
+                        # interval); overload_frac = share of servers with z>1.
+                        # These must not regress while fairness improves.
+                        "load/makespan": training_metrics.get('lb_makespan') if training_metrics else None,
+                        "load/overload_frac": training_metrics.get('lb_overload_frac') if training_metrics else None,
                     })
 
 
@@ -1132,6 +1168,26 @@ class EnhancedLLMRouterTrainer:
                             "latencies": np.mean(episode_info['latencies']),
                             "price": np.mean([episode_info['prices']]),
                             "throughput_per_episode/requests_completed": episode_info['valid_actions'],
+                            # Request outcome breakdown. completion_rate should
+                            # sit at ~1.0; a rising failed_rate means dispatches
+                            # are hitting full queues (capacity penalty), which
+                            # confounds reward, fairness and latency alike.
+                            "outcome/completion_rate": (
+                                episode_info['valid_actions']
+                                / max(episode_info['valid_actions'] + episode_info['invalid_actions'], 1)
+                            ),
+                            "outcome/failed_rate": (
+                                episode_info.get('n_failed', 0)
+                                / max(episode_info['valid_actions'] + episode_info['invalid_actions'], 1)
+                            ),
+                            "outcome/api_failed_rate": (
+                                episode_info.get('n_api_failed', 0)
+                                / max(episode_info['valid_actions'] + episode_info['invalid_actions'], 1)
+                            ),
+                            "outcome/incomplete_rate": (
+                                episode_info.get('n_incomplete', 0)
+                                / max(episode_info['valid_actions'] + episode_info['invalid_actions'], 1)
+                            ),
                             "min_rewards": np.mean(min_rewards),
                             "returns": returns,
                             # "returns": training_metrics['rewards_returns'],

@@ -40,22 +40,28 @@ class Config:
         (0.00000104, 0.00000104),   # 7 Llama 3.3 70B:     $1.04 / $1.04 per 1M tokens
     ]
 
-    # Initial requests/second estimates. Warm-started from the online EMA of a
-    # live run on the current 8-model fleet (2026-07-22 snapshot), so a fresh
-    # run starts near the true rates instead of climbing from placeholders.
-    # EMA keeps adapting during training. Total ~4.09 req/s -> with arrival 4,
-    # load rho ~0.98 (near-critical); drop POISSON_ARRIVAL_RATE to ~3.7 for
-    # rho ~0.9 if you want more headroom.
+    # Effective requests/second per endpoint. Re-measured from a live run's
+    # online EMA (2026-07-25 snapshot); the previous values summed to 4.09 but
+    # the fleet actually sustains 3.64, so an arrival rate chosen against the
+    # old total was silently running the system at rho~1.10, i.e. UNSTABLE --
+    # backlogs grow without bound, latency drifts up, and every queue-derived
+    # signal becomes transient noise.
+    #
+    # This list is ALSO the frozen fairness reference (see QUOTA_USE_FROZEN_MU):
+    # the online EMA keeps adapting inside a run and feeds the state, but the
+    # quota is computed against these fixed values so the fairness target does
+    # not drift with the workload being routed. Re-measure and update here if
+    # the fleet changes; do not expect a run to correct it for you.
     SERVICE_RATE = [
-        0.67287, # 0 Ministral 3B   (EMA-adapted)
-        0.28332, # 1 Gemma 3n E4B   (EMA-adapted; slower than placeholder)
-        0.39031, # 2 Ministral 14B  (EMA-adapted)
-        0.74984, # 3 GPT-4.1 nano   (EMA-adapted)
-        0.47101, # 4 Ministral 8B   (EMA-adapted)
-        0.60868, # 5 Mistral Small  (EMA-adapted)
-        0.43722, # 6 GPT-4.1 mini   (EMA-adapted)
-        0.47401, # 7 Llama 3.3 70B  (EMA-adapted; Turbo endpoint faster than 0.26 placeholder)
-    ]
+        0.6176, # 0 Ministral 3B
+        0.2556, # 1 Gemma 3n E4B
+        0.3557, # 2 Ministral 14B
+        0.5862, # 3 GPT-4.1 nano
+        0.4801, # 4 Ministral 8B
+        0.4791, # 5 Mistral Small
+        0.4520, # 6 GPT-4.1 mini
+        0.4127, # 7 Llama 3.3 70B
+    ]   # total 3.639 req/s
     SERVER_CAPACITIES = [50] * 8
 
     USE_UTIL = True  # in the state use load/capability or load + capability
@@ -255,7 +261,14 @@ class Config:
     ENV_DEFER_LAT_PRICE_REWARD_WHEN_MINMAX = True
 
     LAMBDA = 5  # Capacity penalty weight (increased to strongly discourage invalid actions)
-    MAX_LAT = 30
+    # Latency normalizer: reward uses min(lat, MAX_LAT)/MAX_LAT. Routing is
+    # driven by CROSS-SERVER differences, and with measured latencies of ~2-20 s
+    # a 30 s normalizer compresses those differences into a small part of the
+    # range, so the latency term discriminates far less than the quality term
+    # (which spans the full [0,1]). 20 s amplifies the cross-server signal ~1.5x
+    # while only saturating the true tail (p90 sits at ~20 s), and bounded
+    # clipping is what the reward-boundedness assumption in the analysis needs.
+    MAX_LAT = 20
     # SLO latency thresholds (seconds). Logged as violation rate =
     # fraction of completed requests with end-to-end latency > T.
     # Report a few (tight/moderate/loose); keep all below MAX_LAT.
@@ -384,7 +397,13 @@ class Config:
     # patch: 1.0 = start the two towers on equal footing and let the reward
     # decide. (Values like 5 only made sense before normalization, where they
     # were compensating the quality tower's much larger raw spread.)
-    ACTOR_DUAL_QUEUE_INIT_SCALE = 5.0
+    # With ACTOR_DUAL_RUNNING_NORM on, both towers already enter the logit at
+    # spread ~1, so this is a genuine prior weight, not a magnitude patch. 5.0
+    # (which made sense pre-normalization) then hands the queue tower 5x the
+    # voice of quality; measured effect was the entropy bonus flattening the
+    # now-low-leverage quality tower (quality_spread 0.19 -> 0.05). 1.0 starts
+    # the two on equal footing and lets the reward decide.
+    ACTOR_DUAL_QUEUE_INIT_SCALE = 1.0
 
     # Learned FUSION of the two towers instead of a plain (scaled) sum. A small
     # per-server MLP reads [quality_score, queue_score] and outputs a scalar that
@@ -412,7 +431,7 @@ class Config:
     # dual/quality_spread and dual/queue_spread keep logging the RAW (pre-norm)
     # spreads so they stay diagnostic; dual/rms_q and dual/rms_k log the
     # divisors. Adds two state_dict buffers -> needs a fresh model.
-    ACTOR_DUAL_RUNNING_NORM = False
+    ACTOR_DUAL_RUNNING_NORM = True
     ACTOR_DUAL_RUNNING_NORM_MOMENTUM = 0.05
     # Target cross-server spread each tower is normalized to (only used when
     # ACTOR_DUAL_RUNNING_NORM=True). Dividing by rms forces spread ~1, which
@@ -421,7 +440,14 @@ class Config:
     # normalization but softens the initial policy: tau=0.5 -> entropy ~1.88,
     # tau=0.3 -> ~2.0. Only the START is affected; the learnable tower scales
     # adapt afterward, so this is purely an exploration knob.
-    ACTOR_DUAL_NORM_TARGET_SPREAD = 1.0
+    # tau=1.0 makes each normalized tower spread 1, giving initial logit std
+    # ~1.41 and initial entropy ~1.48 -- BELOW where runs without running-norm
+    # naturally settle (~1.75), i.e. a harsher start than the policy has ever
+    # had, on a setup with a documented collapse history. tau=0.7 puts the
+    # initial entropy at ~1.73, matching that settling point, while keeping the
+    # anti-drift property intact (tau is applied after the rms division, and
+    # equally to both towers, so neither balance nor drift-capping changes).
+    ACTOR_DUAL_NORM_TARGET_SPREAD = 0.7
     # Dedicated (higher) LR for the tower balance scales. Their gradient is
     # ~30x smaller than normal weights (chain rule multiplies by queue_score
     # ~0.02), so at the actor LR they barely move; this lets them adapt.
@@ -563,7 +589,12 @@ class Config:
     FINAL_EVAL_EPISODES = 10  # Number of episodes for final evaluation
 
     # Poisson prompt generation settings
-    POISSON_ARRIVAL_RATE = 4  # Average arrival rate of prompts per second
+    # Arrival rate. Against the measured fleet total of 3.639 req/s this gives
+    # rho ~= 0.91: heavily loaded, so queueing dominates end-to-end latency and
+    # routing decisions matter, but still stable -- backlogs stay bounded within
+    # an episode instead of diverging. (4.0 against the true total would be
+    # rho ~= 1.10, i.e. an unstable system.)
+    POISSON_ARRIVAL_RATE = 3.3
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
     EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
 
@@ -669,7 +700,15 @@ class Config:
     #                     difficulty-independent). Water-filling equalizes
     #                     post-dispatch occupancy (D+n)/capacity, and
     #                     quota_jain_norm_load becomes queue-capacity-normalized.
-    QUOTA_NORMALIZE_BY = "queue_capacity"
+    QUOTA_NORMALIZE_BY = "service_rate"
+    # Use the FROZEN Config.SERVICE_RATE above as the service budget rather than
+    # the online EMA carried in the state snapshot. The online estimate is
+    # endogenous -- harder prompts produce longer responses and therefore a
+    # lower measured req/s -- so a quota built on it would let the fairness
+    # reference drift with the very workload being routed. The frozen values are
+    # exogenous and fixed at configuration time, which is what makes the
+    # entitlement well defined. False = use the live EMA from the snapshot.
+    QUOTA_USE_FROZEN_MU = True
     # Count the in-flight (currently-serving) request in the water-filling
     # backlog D. util = qsize excludes it (it is dequeued while generating),
     # so without this a server busy on a long generation looks empty and the
