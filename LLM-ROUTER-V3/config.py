@@ -288,18 +288,28 @@ class Config:
     ENV_DEFER_LAT_PRICE_REWARD_WHEN_MINMAX = True
 
     LAMBDA = 5  # Capacity penalty weight (increased to strongly discourage invalid actions)
-    # Latency normalizer: reward uses min(lat, MAX_LAT)/MAX_LAT. Routing is
-    # driven by CROSS-SERVER differences, and with measured latencies of ~2-20 s
-    # a 30 s normalizer compresses those differences into a small part of the
-    # range, so the latency term discriminates far less than the quality term
-    # (which spans the full [0,1]). 20 s amplifies the cross-server signal ~1.5x
-    # while only saturating the true tail (p90 sits at ~20 s), and bounded
-    # clipping is what the reward-boundedness assumption in the analysis needs.
-    MAX_LAT = 20
+    # Latency normalizer: reward uses min(lat, MAX_LAT)/MAX_LAT, where lat is
+    # END-TO-END (completion_time - arrival_time), i.e. queue wait + service.
+    # Set it just past the observed tail: too high and cross-server differences
+    # occupy a sliver of the range so the latency term discriminates far less
+    # than the quality term (which spans all of [0,1]); too low and the bulk of
+    # requests clip to 1.0 and the term stops producing a gradient at all --
+    # fatal here, because the queue-wait part of the latency is exactly what
+    # routing controls.
+    #
+    # 40, raised from 20 on 2026-07-26. The old value was calibrated against a
+    # measured p90 of ~20 s under the previous setup (512-token cap, 8
+    # endpoints, mean service time 8/3.639 = 2.2 s). Mean service time is now
+    # 4.5 s (measured per-endpoint means 2.96 / 6.21 / 2.62 / 3.70 / 4.51 /
+    # 6.88), so the whole end-to-end distribution scales up with it -- at
+    # rho = 0.85 the M/M/1 estimate S/(1-rho) puts the mean sojourn near 30 s,
+    # already above the old cap. Verify against the latency histogram of the
+    # first run and re-set if the realised p90 is far from 40.
+    MAX_LAT = 40
     # SLO latency thresholds (seconds). Logged as violation rate =
     # fraction of completed requests with end-to-end latency > T.
     # Report a few (tight/moderate/loose); keep all below MAX_LAT.
-    SLO_LATENCIES = [5.0, 10.0, 20.0]
+    SLO_LATENCIES = [10.0, 20.0, 40.0]
     FAIR_REWARD_MIN_FLOOR = False # True the missing server will be set min rewards, False will use the floor reward -Beta-REWARD_GAMMA
 
     # =========================================================
