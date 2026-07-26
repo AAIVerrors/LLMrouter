@@ -43,6 +43,7 @@ class PoissonPromptGenerator:
         dataset_filter: Optional[str] = None,
         mcq_cot: bool = True,
         math_brief: bool = True,
+        mcq_brief: bool = True,
     ):
         self.shuffle_dataset = bool(shuffle_dataset)
         self.dataset_seed = int(dataset_seed)
@@ -72,6 +73,7 @@ class PoissonPromptGenerator:
         self._trace_t0 = None
         self.mcq_cot = bool(mcq_cot)
         self.math_brief = bool(math_brief)
+        self.mcq_brief = bool(mcq_brief)
         self.dataset_levels = dataset_levels
         self.dataset_filter = dataset_filter
         self.arrival_rate = float(arrival_rate)
@@ -339,8 +341,14 @@ class PoissonPromptGenerator:
             # MMLU-Pro questions are built to need several reasoning steps, so
             # a bare-letter answer collapses the whole fleet onto the random
             # floor and leaves nothing for the router to discriminate on.
+            # Bounded when mcq_brief: an unbounded chain can eat the token cap
+            # before the "Answer:" line is emitted, and a truncated answer
+            # scores 0 no matter how good the reasoning was.
+            lead = ("Think briefly: at most 3 short steps, no restating the "
+                    "question. Then close" if bool(getattr(self, "mcq_brief", False))
+                    else "Reason step by step, then close")
             return body + (
-                f"\nReason step by step, then close with a final line of exactly "
+                f"\n{lead} with a final line of exactly "
                 f'"Answer: X", where X is one option letter (A-{last}).\n'
             )
         return body + f"\nAnswer:\nAnswer with only one option letter (A-{last}). Do not explain.\n"

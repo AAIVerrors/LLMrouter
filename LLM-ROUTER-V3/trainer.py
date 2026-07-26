@@ -1055,6 +1055,18 @@ class EnhancedLLMRouterTrainer:
                         # share of the gradient noise, so this is the number
                         # that says whether the baseline is doing anything.
                         "vtask/explained_var": training_metrics.get('vtask_explained_var') if training_metrics else None,
+                        # Variance b_t actually removes from the interval
+                        # advantage -- the number that says whether the
+                        # baseline earns its place. explained_var above scores
+                        # per-request prediction and understates it, since b_t
+                        # only has to predict the interval mean.
+                        "vtask/explained_var_interval": training_metrics.get('vtask_explained_var_interval') if training_metrics else None,
+                        # Spread of the head's predictions. ~0 means it has
+                        # collapsed onto the unconditional mean, which is the
+                        # failure mode explained_var=0 cannot distinguish from
+                        # varied-but-uncorrelated predictions.
+                        "vtask/pred_std": training_metrics.get('vtask_pred_std') if training_metrics else None,
+                        "vtask/replay_size": training_metrics.get('vtask_replay_size') if training_metrics else None,
                         "vtask/baseline_mean": training_metrics.get('vtask_baseline_mean') if training_metrics else None,
                         "load/imbalance": training_metrics.get('lb_imbalance') if training_metrics else None,
                     })

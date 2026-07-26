@@ -1702,6 +1702,7 @@ class EnhancedRouterEnvironment:
             dataset_filter=getattr(Config, "DATASET_FILTER", None),
             mcq_cot=bool(getattr(Config, "MCQ_COT", True)),
             math_brief=bool(getattr(Config, "MATH_BRIEF_REASONING", True)),
+            mcq_brief=bool(getattr(Config, "MCQ_BRIEF_REASONING", True)),
             mixed_datasets=(
                 getattr(Config, "MIXED_DATASETS", None)
                 if getattr(Config, "USE_MIXED_DATASET", False)

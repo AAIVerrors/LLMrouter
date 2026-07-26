@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
+from collections import deque
 import numpy as np
 from sentence_transformers import SentenceTransformer
 try:
@@ -925,10 +926,15 @@ class RouterNetwork(nn.Module):
                         [_pooled.detach(), state.reshape(B, -1).detach()], dim=-1
                     )
                     self._last_vtask = self.vtask_value_net(_vin).squeeze(-1)    # [B]
+                    # Keep the (already detached) input so the head can be
+                    # refit on a replay buffer without re-encoding prompts.
+                    self._last_vtask_input = _vin
                 else:
                     self._last_vtask = self.vtask_value_head(route_h).squeeze(-1)  # [B]
+                    self._last_vtask_input = None
             else:
                 self._last_vtask = None
+                self._last_vtask_input = None
             prompt_len = prompt_tokens.shape[1]
             server_tokens = fusion_x[:, 1 + prompt_len: 1 + prompt_len + 2 * M, :]
 
@@ -1623,12 +1629,23 @@ class PPOAgent:
         critic_params = []
         actor_params = []
         scale_params = []
+        vtask_params = []
 
         for name, param in self.network.named_parameters():
             if not param.requires_grad:
                 continue
 
-            if "tower_log_scale" in name:
+            if "vtask_value_net" in name:
+                # V^task is a supervised regression head on disjoint params,
+                # not part of the PPO objective. It was previously folded into
+                # critic_loss inside the epoch loop, which capped it at
+                # PPO_EPOCHS steps per episode (4) and, worse, let the
+                # target-KL early stop skip it entirely -- the break fires
+                # before the vtask loss is even built. Giving it its own
+                # optimizer lets it train after the loop, for as many steps as
+                # it needs, on its own LR.
+                vtask_params.append(param)
+            elif "tower_log_scale" in name:
                 # Dual-tower balance scale: its gradient is tiny (∝ queue_score
                 # ~0.02), so at the actor LR it barely moves. Give it its own
                 # much higher LR so it can actually adapt the tower balance.
@@ -1676,6 +1693,29 @@ class PPOAgent:
                   f"(actor LR={actor_lr:.1e})")
         self.actor_optimizer  = torch.optim.Adam(actor_groups, eps=1e-5)
         self.critic_optimizer = torch.optim.Adam(critic_params, lr=critic_lr, eps=1e-5)
+
+        self.vtask_params = vtask_params
+        self.vtask_optimizer = (
+            torch.optim.Adam(
+                vtask_params,
+                lr=float(getattr(Config, "VTASK_LEARNING_RATE", critic_lr)),
+                eps=1e-5,
+            )
+            if vtask_params else None
+        )
+        # Replay of (input, realised reward) pairs. The baseline stays unbiased
+        # however it is fitted -- any (s, p)-measurable b leaves the policy
+        # gradient unbiased -- so stale off-policy targets are admissible here
+        # and only cost a little variance reduction. What they buy is steps: an
+        # episode contributes ~85 samples, far too few to fit a 140k-param head
+        # from scratch each time.
+        self._vtask_replay = deque(
+            maxlen=int(getattr(Config, "VTASK_REPLAY_SIZE", 20000))
+        )
+        if vtask_params:
+            print(f"[vtask] independent optimizer: {len(vtask_params)} tensors, "
+                  f"lr={float(getattr(Config, 'VTASK_LEARNING_RATE', critic_lr)):.1e}, "
+                  f"replay={self._vtask_replay.maxlen}")
 
         # ============================================================
         # LR scheduler (episode-level decay)
@@ -1937,6 +1977,82 @@ class PPOAgent:
                 self._update_bin_stats(i, q, lat_eff, cost)
             elif mode == "linear":
                 self._update_linear_stats(i, q, lat_eff, cost)
+
+    def _train_vtask(self, states, prompts, action_masks, actions, rewards):
+        """Fit the V^task head off the PPO schedule.
+
+        Two things were starving it. It rode along in critic_loss inside the
+        PPO epoch loop, so it got at most PPO_EPOCHS (=4) steps per episode --
+        ~100 steps total over 25 episodes, for a 140k-parameter head. And the
+        target-KL early stop breaks before that loss is even constructed, so a
+        single KL trip cost the head every remaining step of the episode.
+
+        Neither restriction has a reason behind it: this is plain supervised
+        regression on disjoint parameters, and its target (the realised
+        per-request reward) is an observation, not something the PPO ratio
+        cares about. Fitting it on a replay buffer is admissible for the same
+        reason the baseline is unbiased in the first place -- any
+        (s, p)-measurable b leaves the policy gradient unbiased no matter how b
+        was obtained, so stale targets cost a little variance reduction and
+        nothing else.
+
+        Returns (explained_var, pred_std) measured OUT OF SAMPLE: on this
+        episode's fresh data, using the head as it stood before these steps.
+        pred_std is the tell for the failure mode the metric alone cannot
+        distinguish -- a head that has collapsed onto the unconditional mean
+        scores EV=0 with pred_std ~ 0, which looks identical to a head that
+        predicts varied but uncorrelated values.
+        """
+        net = getattr(self.network, "vtask_value_net", None)
+        if (net is None or self.vtask_optimizer is None
+                or not getattr(self.network, "use_vtask", False)
+                or rewards.numel() == 0):
+            return None, None
+
+        with torch.no_grad():
+            self.network.get_action_and_value(states, prompts, action_masks, actions)
+            vin = getattr(self.network, "_last_vtask_input", None)
+            pred = self.network._last_vtask
+            if vin is None or pred is None:
+                return None, None
+            vin = vin.detach()
+            y = rewards.detach().to(pred.dtype)
+            pred_std = float(pred.std(unbiased=False).cpu().item())
+            rv = float(y.var(unbiased=False).cpu().item())
+            ev = (1.0 - float((y - pred).var(unbiased=False).cpu().item()) / rv
+                  if rv > 1e-12 else None)
+
+        for i in range(vin.shape[0]):
+            self._vtask_replay.append((vin[i].cpu(), float(y[i].cpu())))
+
+        steps = int(getattr(Config, "VTASK_TRAIN_STEPS", 64))
+        bs = int(getattr(Config, "VTASK_BATCH_SIZE", 256))
+        n = len(self._vtask_replay)
+        if steps <= 0 or n == 0:
+            return ev, pred_std
+
+        buf_x = torch.stack([r[0] for r in self._vtask_replay]).to(Config.DEVICE)
+        buf_y = torch.tensor([r[1] for r in self._vtask_replay],
+                             dtype=buf_x.dtype, device=Config.DEVICE)
+        was_training = net.training
+        net.train()
+        for _ in range(steps):
+            idx = torch.randint(0, n, (min(bs, n),), device=Config.DEVICE)
+            # beta well below the target's spread (std ~0.17): at the default
+            # beta=1.0 every residual sits in the quadratic region and the loss
+            # is just a scaled MSE, which is not what smooth_l1 is for here.
+            loss = F.smooth_l1_loss(
+                net(buf_x[idx]).squeeze(-1), buf_y[idx],
+                beta=float(getattr(Config, "VTASK_HUBER_BETA", 0.1)),
+            )
+            self.vtask_optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            nn.utils.clip_grad_norm_(self.vtask_params,
+                                     float(getattr(Config, "MAX_GRAD_NORM", 0.5)))
+            self.vtask_optimizer.step()
+        if not was_training:
+            net.eval()
+        return ev, pred_std
 
     @property
     def baseline_rng(self) -> np.random.Generator:
@@ -2707,6 +2823,8 @@ class PPOAgent:
         # component and put part of it back.
         _vt_base_mean = None
         _vt_ev = None
+        _vt_ev_interval = None
+        _vt_pred_std = None
         if (bool(getattr(Config, "VTASK_INTERVAL_BASELINE", False))
                 and getattr(self.network, "use_vtask", False)
                 and term_adv.numel() > 0):
@@ -2717,16 +2835,27 @@ class PPOAgent:
                 if _vt is not None:
                     _vt = _vt.detach().to(term_adv.dtype)
                     b_t = torch.stack([_vt[idxs].mean() for idxs in interval_indices])
+                    _adv_var_before = float(term_adv.var(unbiased=False).cpu().item())
                     term_adv = term_adv - b_t
                     _vt_base_mean = float(b_t.mean().cpu().item())
-                    # Explained variance of the head against the realised
-                    # per-request reward. This is the number that decides
-                    # whether the baseline is worth anything: the residual
-                    # gradient variance is (1 - 0.76*f) of the original, so
-                    # f~1 is worth ~4x the episodes and f~0.2 only ~1.2x.
-                    # It is also the only evidence for widening/deepening the
-                    # head -- a persistently low f means the difficulty is not
-                    # being predicted, not that the baseline idea is wrong.
+                    # Variance actually removed from the quantity the baseline
+                    # is subtracted from. This is the number that decides
+                    # whether the baseline earns its place: residual gradient
+                    # variance is (1 - f) of the original, so f~0.76 -- the
+                    # ceiling a prompt-only predictor can reach on this
+                    # workload -- is worth ~4x the episodes, and f~0.2 only
+                    # ~1.25x.
+                    #
+                    # Kept separate from _vt_ev below, which scores per-request
+                    # prediction and so understates b_t: b_t only has to
+                    # predict the interval MEAN, and individual-request noise
+                    # (this prompt happened to be hard, this call happened to
+                    # be slow) averages down by sqrt(N_t) in it -- noise no
+                    # baseline can or should predict.
+                    if _adv_var_before > 1e-12:
+                        _vt_ev_interval = 1.0 - float(
+                            term_adv.var(unbiased=False).cpu().item()
+                        ) / _adv_var_before
                     _rv = rewards.to(_vt.dtype).var(unbiased=False)
                     if float(_rv) > 1e-12:
                         _vt_ev = 1.0 - float(
@@ -2989,16 +3118,14 @@ class PPOAgent:
                     + float(getattr(Config, "ENTROPY_COEF", 0.0)) * entropy_loss
                 )
 
-                # V^task regression (critic side): train the learned baseline to
-                # predict the observed per-request task reward.
-                vtask_loss = torch.zeros((), device=Config.DEVICE)
-                if getattr(self.network, "use_vtask", False) and self.network._last_vtask is not None:
-                    vtask_loss = F.smooth_l1_loss(self.network._last_vtask, rewards.detach().to(self.network._last_vtask.dtype))
-
+                # V^task is no longer trained here. It is a supervised head on
+                # disjoint parameters, so riding along in critic_loss bought it
+                # nothing but a hard cap of PPO_EPOCHS steps per episode -- and
+                # the target-KL break above skipped it altogether. It is fitted
+                # after this loop in _train_vtask(), off the PPO schedule.
                 actor_loss  = (float(getattr(Config, "POLICY_COEF", 1.0)) * policy_loss
                             + float(getattr(Config, "ENTROPY_COEF", 0.0)) * entropy_loss)
-                critic_loss = (float(getattr(Config, "VALUE_COEF", 0.5)) * value_loss
-                            + float(getattr(Config, "BANDIT_VTASK_COEF", 0.5)) * vtask_loss)
+                critic_loss = float(getattr(Config, "VALUE_COEF", 0.5)) * value_loss
 
                 self.actor_optimizer.zero_grad(set_to_none=True)
                 self.critic_optimizer.zero_grad(set_to_none=True)
@@ -3260,6 +3387,20 @@ class PPOAgent:
             _max_share = float(H_cum.max() / _tot_cum)
 
         # ---- Lagrangian dual ascent on the Jain floor -------------------
+        # V^task regression, off the PPO schedule. Runs after both update paths
+        # so it is reached whether or not the target-KL stop fired, and it is
+        # deliberately outside the epoch loop: fitting a 140k-parameter head at
+        # PPO_EPOCHS steps per episode is what pinned explained_var at 0, the
+        # value a head predicting nothing but the unconditional mean scores.
+        # The EV it returns is measured before these steps, on this episode's
+        # fresh data, so it stays an out-of-sample number.
+        if not is_baseline:
+            _ev_pre, _vt_pred_std = self._train_vtask(
+                states, prompts, train_action_masks, actions, rewards
+            )
+            if _ev_pre is not None:
+                _vt_ev = _ev_pre
+
         # Runs AFTER the policy update, so this episode's reward used the mu
         # carried in from the previous episode and mu now responds to the Jain
         # that policy actually realized (standard two-timescale ordering).
@@ -3324,6 +3465,9 @@ class PPOAgent:
             "lb_cov": float(np.mean(lb_cov)) if lb_cov else None,
             "lb_imbalance": float(np.mean(lb_imbalance)) if lb_imbalance else None,
             "vtask_explained_var": _vt_ev,
+            "vtask_explained_var_interval": _vt_ev_interval,
+            "vtask_pred_std": _vt_pred_std,
+            "vtask_replay_size": len(getattr(self, "_vtask_replay", ())),
             "vtask_baseline_mean": _vt_base_mean,
         }
 

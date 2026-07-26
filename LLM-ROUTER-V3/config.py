@@ -45,6 +45,16 @@ class Config:
         "mistral-small-2506",                                    # 3 Mistral   mid general (non-hybrid)
         "gpt-4.1-mini",                                          # 4 OpenAI    multi-hop QA winner
         # "together/meta-llama/Llama-3.3-70B-Instruct-Turbo",     #   Together  DROPPED: mu 0.1456, sole source of the 4.6x spread
+        # Restored to 8 on 2026-07-27. At FAIR=0 the cost term drives traffic
+        # onto the cheapest endpoints, but those are also the capacity-scarce
+        # ones: the three cheapest sum to mu=1.574 against lambda=1.5, i.e.
+        # rho=0.95, where M/M/1 queueing is 20x the service time. Widening the
+        # fleet gives the cost-seeking policy somewhere stable to go. Note this
+        # lowers rho fleet-wide unless lambda rises with it -- see the arrival
+        # rate note at POISSON_ARRIVAL_RATE.
+        "codestral-2508",                                        # 5 Mistral
+        "gpt-4o-mini",                                           # 6 OpenAI
+        "together/Qwen/Qwen2.5-7B-Instruct-Turbo",               # 7 Together
     ]
 
     PRICE = [
@@ -58,6 +68,13 @@ class Config:
         (0.00000015, 0.00000060),   # 3 Mistral Small:     $0.15 / $0.60 per 1M tokens
         (0.00000040, 0.00000160),   # 4 GPT-4.1 mini:      $0.40 / $1.60 per 1M tokens
         # (0.00000104, 0.00000104), #   Llama 3.3 70B:     $1.04 / $1.04 per 1M tokens  (DROPPED)
+        # !! CONFIRM against the provider pricing pages before trusting a run.
+        # Price enters the reward directly (REWARD_GAMMA * price_raw, a third of
+        # it), so a wrong figure here does not fail loudly -- it just silently
+        # teaches the router the wrong cost ranking.
+        (0.00000030, 0.00000090),   # 5 Codestral 2508:    $0.30 / $0.90 per 1M tokens  (CONFIRM)
+        (0.00000015, 0.00000060),   # 6 GPT-4o mini:       $0.15 / $0.60 per 1M tokens  (CONFIRM)
+        (0.00000030, 0.00000030),   # 7 Qwen2.5-7B Turbo:  $0.30 / $0.30 per 1M tokens  (CONFIRM)
     ]
 
     # Effective requests/second per endpoint, i.e. 1 / mean service time. Each
@@ -116,12 +133,16 @@ class Config:
     # without it), so the apparent quality gap is inside the noise. Re-run
     # bench_quality_matrix.py before any claim that depends on it.
     SERVICE_RATE = [
-        0.6726, # 0 Ministral 3B
-        0.3052, # 1 Ministral 8B
-        0.5964, # 2 GPT-4.1 nano
-        0.4614, # 3 Mistral Small
-        0.3285, # 4 GPT-4.1 mini
-    ]   # total 2.364 req/s over the retained 5
+        0.7254, # 0 ministral-3b-2512
+        0.5401, # 1 ministral-8b-2512
+        0.7129, # 2 gpt-4.1-nano-2025-04-14
+        0.5246, # 3 mistral-small-2506
+        0.4456, # 4 gpt-4.1-mini
+        0.6399, # 5 codestral-2508
+        0.3929, # 6 gpt-4o-mini
+        0.6093, # 7 Qwen2.5-7B-Instruct-Turbo
+    ]   # total 4.591 req/s
+
     # Derived, so it cannot silently disagree with MODEL_NAMES: trainer.py
     # takes the server count from this list's length.
     SERVER_CAPACITIES = [50] * len(MODEL_NAMES)
@@ -162,10 +183,37 @@ class Config:
             "name": "hotpotqa/hotpot_qa",
             "config": "distractor",
             "split": "train",
-            "weight": 1/3,
+            "weight": 0,
             "metric": "f1",
             "task_type": "multihop_qa",
             "max_samples": 20000,
+        },
+        # Closed-book factual recall, metric uses token F1. Replaced HotpotQA
+        # on 2026-07-27. Hotpot carried 67% of all input tokens (~550 per
+        # prompt against gsm8k's 90), and with completions down to ~85 tokens
+        # under the 512 cap the input side is ~76% of spend -- so one task at a
+        # third of the traffic drove about half the bill. It was also the
+        # noisiest: the 2048-char context cap truncated the majority of samples
+        # (median 2218), and when the cut removes the supporting fact the item
+        # is unanswerable for every endpoint at once. That shows up as the
+        # lowest mean quality of the three tasks (0.372) alongside the HIGHEST
+        # prompt-only explained variance (0.838) -- the score was mostly saying
+        # which prompt it was, not which endpoint answered it.
+        #
+        # TriviaQA nocontext keeps what the slot was for: it probes parametric
+        # knowledge rather than arithmetic or multiple choice, and recall
+        # scales with model size, so the largest endpoint should still win here
+        # and nowhere else. That per-task winner crossover is what the
+        # prompt-aware claim rests on -- verify it survives before relying on
+        # it. Answers ship with an alias list, which _extract_answers already
+        # unpacks, so token F1 needs no new scorer.
+        {
+            "name": "mandarjoshi/trivia_qa",
+            "config": "rc.nocontext",
+            "split": "train[:20000]",
+            "weight": 1/3,
+            "metric": "f1",
+            "task_type": "qa",
         },
         # Reading comprehension / easier QA, metric uses token F1
         {
@@ -203,7 +251,7 @@ class Config:
             "name": "openai/gsm8k",
             "config": "main",
             "split": "train[:20000]",
-            "weight": 0,
+            "weight": 1/3,
             "metric": "number",
             "task_type": "math",
         },
@@ -215,7 +263,7 @@ class Config:
             "name": "qwedsacf/competition_math",
             "config": None,
             "split": "train",
-            "weight": 1/3,
+            "weight": 0,
             "metric": "math_verify",
             "task_type": "math_hard",
             "filter": "boxed",
@@ -470,7 +518,32 @@ class Config:
     VTASK_INDEPENDENT_NET = True
     VTASK_NET_HIDDEN = 256
     VTASK_NET_DEPTH = 2
-    BANDIT_VTASK_COEF = 0.5   # weight of the V^task regression loss (critic side)
+    BANDIT_VTASK_COEF = 0.5   # unused: V^task no longer rides in critic_loss
+
+    # V^task is fitted after the PPO epoch loop, on its own optimizer. Riding
+    # in critic_loss capped it at PPO_EPOCHS (=4) steps per episode -- ~100
+    # steps for a 140k-parameter head -- and the target-KL early stop skipped
+    # it entirely, since that break fires before the loss is built. It settled
+    # onto the unconditional mean, which scores explained_var exactly 0, while
+    # a prompt-only predictor can reach ~0.76 on this workload.
+    # 8, not the 64 first tried: on a simulated fit matched to this workload
+    # (target std 0.17, a prompt-only signal explaining 0.76) 64 steps at 1e-3
+    # peaked at explained_var +0.64 by episode 10 and then DECAYED to +0.58 by
+    # 60, overfitting the replay buffer, while 8 at 5e-4 held +0.56 flat.
+    # Caveat on that simulation: its signal is learnable by construction, so it
+    # reproduces neither the observed explained_var=0 nor its cause. It is
+    # evidence about overfitting only.
+    VTASK_TRAIN_STEPS = 8     # gradient steps per episode (was effectively <=4)
+    VTASK_BATCH_SIZE = 256
+    VTASK_LEARNING_RATE = 5e-4   # its own optimizer; matches the critic LR
+    # Replay of (input, realised reward). Legitimate because the baseline is
+    # unbiased however it is fitted -- stale off-policy targets cost a little
+    # variance reduction, nothing else -- and one episode's ~85 samples are far
+    # too few on their own.
+    VTASK_REPLAY_SIZE = 20000
+    # Huber knee. Target std is ~0.17, so the default beta=1.0 leaves every
+    # residual in the quadratic region and smooth_l1 degenerates to a scaled MSE.
+    VTASK_HUBER_BETA = 0.1
 
     # Interval weighting in the PPO policy loss.
     #   False (default): equal weight per INTERVAL (mean of per-interval means)
@@ -746,7 +819,7 @@ class Config:
     # Cost bills actual completion tokens, so the cap never inflates spend for
     # endpoints that answer concisely. Re-measure SERVICE_RATE after changing
     # this: it moves fleet mu by more than any other single setting.
-    GEN_MAX_NEW_TOKENS = 1024        # hard cap on answer length
+    GEN_MAX_NEW_TOKENS = 512         # hard cap on answer length
     GEN_MIN_NEW_TOKENS = 0
     GEN_TEMPERATURE = 0.1
     GEN_TOP_P = 1
@@ -760,6 +833,20 @@ class Config:
     # With reasoning enabled the fleet spreads 0.30-0.70 and orders by
     # capability. Costs ~275 completion tokens per MMLU request.
     MCQ_COT = True
+
+    # Bound the reasoning on multiple-choice prompts. OFF: measured, and it
+    # costs a lot. The argument for it was the one that works on math -- a
+    # bounded chain avoids eating the token cap -- but MMLU-Pro has no
+    # truncation to avoid: median completion is ~75 tokens against a 512 cap
+    # and only 0-12% of requests reach it. Brevity there does not buy back a
+    # truncated answer, it just removes reasoning the task needs. Measured on
+    # the five endpoints common to both matrices, mean MMLU-Pro quality fell
+    # 0.633 -> 0.517, and GPT-4.1 nano collapsed 0.708 -> 0.333 on its own.
+    # That single drop is expensive: nano matching GPT-4.1 mini on MMLU-Pro at
+    # a quarter of the price is what the quality-per-dollar result rests on,
+    # and without it mini wins every task and the per-prompt oracle headroom
+    # falls from +0.090 to +0.027.
+    MCQ_BRIEF_REASONING = False
 
     # Bound the working shown on math prompts ("at most 3 short steps").
     # Unlike MCQ_COT this is not a quality/throughput trade -- it improves
@@ -842,7 +929,18 @@ class Config:
     # E[N_t] matters here too: at ~8 arrivals over M=6 servers, roughly 40% of
     # the per-interval fairness penalty is irreducible multinomial sampling
     # noise (a perfectly proportional policy scores only 0.588 per-interval
-    # Jain). At E[N_t] = 12 that floor rises materially.
+    # Jain). At E[N_t] = 12 that floor rises materially. At the current
+    # E[N_t] = 2.91 * 7 = 20 over M=8 the same estimate gives ~0.75, so that
+    # noise floor is much less of the fairness signal than it used to be.
+    #
+    # 2.91 = 0.634 * 4.591, holding the previous operating point against the
+    # re-measured fleet. It is deliberately not higher: the cheapest four
+    # endpoints sum to mu = 2.588, so a policy chasing cost alone runs
+    # lambda/mu = 1.12 and goes unstable, which is the tension the fairness
+    # term exists to resolve and the FAIR=0 ablation exists to show. Raising
+    # lambda much further would put even the cheapest six under water and make
+    # the cost dimension moot; lowering it toward rho = 0.4 empties the queues
+    # and leaves the dual tower's queue half nothing to read.
     #
     # This is a dependent variable: it has to be re-derived from
     # sum(SERVICE_RATE) every time the fleet, the token cap or the dataset mix
@@ -850,7 +948,7 @@ class Config:
     # fleet is how this run silently reached rho = 2.47,
     # where every episode ends by hitting EPISODE_COMPLETION_TIMEOUT with a
     # backlog that never drains.
-    POISSON_ARRIVAL_RATE = 1.5
+    POISSON_ARRIVAL_RATE = 2.91
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
     EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
 
