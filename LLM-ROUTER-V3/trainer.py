@@ -423,14 +423,20 @@ class EnhancedLLMRouterTrainer:
         F = 5
         slot_counts = np.zeros(M, dtype=np.float32)
         state = build_state(self.env.reset(), self.env.get_residuals())
-        self.env.clean_prompt_queue()
-        
+        # Pin this episode's arrival trace. Which prompts arrive and when are a
+        # function of (DATASET_SEED, episode) alone, so every algorithm replays
+        # an identical workload and per-episode differences against a baseline
+        # are genuinely paired. Returns the trace origin, used below as the
+        # episode clock so interval boundaries and arrivals share one t0.
+        _trace_t0, _n_arrivals = self.env.begin_episode_arrivals(self.current_episode)
+        print(f"[arrivals] episode {self.current_episode}: {_n_arrivals} requests pinned")
+
         # state = [self.env.reset()[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + [1] * len(Config.SERVER_CAPACITIES) + price
 
         # state = [self.env.reset()[index]/c for index,c in enumerate(Config.SERVER_CAPACITIES)] + self.last_service_rate + price
 
 
-        start = time.time()
+        start = _trace_t0
         robin_counter = 0  # Initialize round-robin counter
         
         current_time_slot = 0

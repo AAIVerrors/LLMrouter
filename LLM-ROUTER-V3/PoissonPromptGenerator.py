@@ -61,6 +61,15 @@ class PoissonPromptGenerator:
         # the variance decomposition puts at 76% of per-request quality
         # variance -- in the difference.
         self._mix_rng = np.random.default_rng(self.dataset_seed)
+        # Same argument for the inter-arrival draw, which had the same defect.
+        # Seeding it is necessary but not sufficient: the thread free-runs on
+        # cumulative time.sleep(), so OS jitter accumulates and the k-th
+        # request lands at a different offset in every run. begin_episode()
+        # replaces that with a pre-computed trace replayed against absolute
+        # deadlines, so episode e is byte-identical across algorithms.
+        self._arr_rng = np.random.default_rng(self.dataset_seed + 7919)
+        self._trace = None      # [(offset_seconds, prompt_entry)], or None = free-run
+        self._trace_t0 = None
         self.mcq_cot = bool(mcq_cot)
         self.math_brief = bool(math_brief)
         self.dataset_levels = dataset_levels
@@ -654,16 +663,59 @@ class PoissonPromptGenerator:
             "task_type": task_type,
         }
 
+    # Stride between episodes through each pool. Larger than any plausible
+    # per-episode draw from one pool (E[N] is ~84 requests split three ways),
+    # so consecutive episodes never see overlapping prompts.
+    EPISODE_POOL_STRIDE = 200
+
+    def begin_episode(self, episode: int, duration: float) -> int:
+        """Pin episode `episode` to a fixed arrival trace and return its length.
+
+        Everything that makes the workload differ between two runs is decided
+        here, before the first routing decision: which prompts, in what order,
+        and at what offset from episode start. The trace is a pure function of
+        (dataset_seed, episode), so FLAIR's episode 7 and P2C's episode 7 are
+        the same 84-odd requests at the same 84-odd timestamps. Without this,
+        arrivals kept running through a policy-dependent drain phase, so the
+        two runs entered episode 8 at different positions in the stream and the
+        offset compounded -- per-episode differences were not paired at all.
+
+        Call before starting the generator; `duration` is the arrival window
+        (the interval phase), which excludes the drain.
+        """
+        self._mix_rng = np.random.default_rng(self.dataset_seed + 1000 * int(episode))
+        self._arr_rng = np.random.default_rng(self.dataset_seed + 7919 * int(episode))
+        for pool in self.dataset_pools:
+            n = max(len(pool["data"]), 1)
+            pool["index"] = (int(episode) * self.EPISODE_POOL_STRIDE) % n
+        self.dataset_index = (int(episode) * self.EPISODE_POOL_STRIDE) % max(
+            len(self.dataset) if self.dataset else 1, 1
+        )
+
+        trace, t = [], 0.0
+        if self.arrival_rate > 0:
+            while True:
+                t += float(self._arr_rng.exponential(1.0 / self.arrival_rate))
+                if t >= duration:
+                    break
+                trace.append((t, self.get_next_prompt()))
+        self._trace = trace
+        self._trace_t0 = None
+        return len(trace)
+
     def generate_prompt(self):
         """Generate prompts with Poisson timing and push into queue."""
+        if self._trace is not None:
+            self._replay_trace()
+            return
         while self.running:
             try:
                 if hasattr(self.prompt_queue, "qsize") and self.prompt_queue.qsize() >= self.max_queue_size:
                     time.sleep(0.01)
                     continue
                 if self.arrival_rate > 0:
-                    inter_arrival = np.random.exponential(1.0 / self.arrival_rate)
-                    time.sleep(float(inter_arrival))
+                    inter_arrival = float(self._arr_rng.exponential(1.0 / self.arrival_rate))
+                    time.sleep(inter_arrival)
                 else:
                     time.sleep(0.01)
                 prompt_entry = self.get_next_prompt()
@@ -673,14 +725,43 @@ class PoissonPromptGenerator:
                 print(f"Prompt generation error: {e}")
                 time.sleep(0.05)
 
-    def start(self):
+    def _replay_trace(self):
+        """Emit the pinned trace against absolute deadlines.
+
+        Deadlines are offsets from t0 rather than cumulative sleeps: a late
+        wake-up is absorbed by the next request instead of shifting every
+        request after it, so scheduling jitter stays bounded at ~1 sleep
+        quantum rather than accumulating over the episode.
+        """
+        t0 = self._trace_t0 if self._trace_t0 is not None else time.time()
+        for offset, entry in self._trace:
+            while self.running:
+                remaining = (t0 + offset) - time.time()
+                if remaining <= 0:
+                    break
+                time.sleep(min(remaining, 0.01))
+            if not self.running:
+                break
+            self.prompt_queue.put(entry)
+            self.total_generated += 1
+        # Consume the trace. resume_all_servers() restarts the generator after
+        # every PPO update, and an exhausted trace has all its deadlines in the
+        # past -- without this it would dump the whole episode's requests into
+        # the queue at once. begin_episode() installs the next trace.
+        self._trace = []
+
+    def start(self, t0: float = None):
         if self.running:
-            return
+            return self._trace_t0 if self._trace_t0 is not None else self.start_time
         self.running = True
         self.start_time = time.time()
+        # Trace offsets are measured from t0; handing the same value back lets
+        # the caller use one origin for both the episode clock and arrivals.
+        self._trace_t0 = float(t0) if t0 is not None else self.start_time
         self.thread = threading.Thread(target=self.generate_prompt, daemon=True)
         self.thread.start()
         print(f"PoissonPromptGenerator started with rate={self.arrival_rate}")
+        return self._trace_t0
 
     def stop(self):
         self.running = False

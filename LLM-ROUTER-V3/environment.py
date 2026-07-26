@@ -1900,6 +1900,19 @@ class EnhancedRouterEnvironment:
     def pause_prompt_generator(self):
         self.prompt_generator.stop()
 
+    def begin_episode_arrivals(self, episode: int):
+        """Pin this episode's arrival trace and (re)start the generator on it.
+
+        Returns (t0, n_arrivals). Use t0 as the episode clock origin so the
+        interval boundaries and the trace offsets share one reference.
+        """
+        self.prompt_generator.stop()
+        self.clean_prompt_queue()
+        duration = float(Config.EPISODE_TIME_INTERVAL) * float(Config.INTERVAL_LENGTH)
+        n = self.prompt_generator.begin_episode(int(episode), duration)
+        t0 = self.prompt_generator.start(t0=time.time())
+        return t0, n
+
     def clean_response_queue(self):
         while not self.response_queue.empty():
             try:

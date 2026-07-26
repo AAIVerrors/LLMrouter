@@ -1938,6 +1938,24 @@ class PPOAgent:
             elif mode == "linear":
                 self._update_linear_stats(i, q, lat_eff, cost)
 
+    @property
+    def baseline_rng(self) -> np.random.Generator:
+        """Private, seeded stream for baseline tie-breaks and P2C's d-sample.
+
+        These used to draw from the process-global numpy stream, which the
+        arrival generator drew from as well -- so a baseline that broke a tie
+        shifted every later inter-arrival, and the workload a run saw depended
+        on which policy was running. P2C was worse still: it built a fresh
+        default_rng() per decision, seeded from OS entropy, so its own choices
+        never reproduced. Isolating them here makes baseline randomness
+        reproducible and unable to perturb the workload.
+        """
+        rng = getattr(self, "_bl_rng", None)
+        if rng is None:
+            rng = np.random.default_rng(int(getattr(Config, "DATASET_SEED", 42)) + 104729)
+            self._bl_rng = rng
+        return rng
+
     def greedy_utility_action(self, state_tensor: torch.Tensor, action_mask_tensor: torch.Tensor | None) -> int:
         M = self._util_M
 
@@ -1948,15 +1966,15 @@ class PPOAgent:
                 mask = action_mask_tensor.detach().cpu().numpy() > 0.5
                 need = need[mask[need]]
             if need.size > 0:
-                return int(np.random.choice(need))
+                return int(self.baseline_rng.choice(need))
 
         eps = float(getattr(Config, "GREEDY_EPSILON", 0.0))
-        if eps > 0.0 and np.random.rand() < eps:
+        if eps > 0.0 and self.baseline_rng.random() < eps:
             if action_mask_tensor is None:
-                return int(np.random.randint(0, M))
+                return int(int(self.baseline_rng.integers(0, M)))
             valid = np.where(action_mask_tensor.detach().cpu().numpy() > 0.5)[0]
             if valid.size > 0:
-                return int(np.random.choice(valid))
+                return int(self.baseline_rng.choice(valid))
 
         include_quality_state = bool(getattr(Config, "INCLUDE_QUALITY_IN_STATE", True)) and not bool(
             getattr(Config, "USE_EM_EXACT_MATCH", False)
@@ -2011,14 +2029,14 @@ class PPOAgent:
             idx = np.argsort(score)[-topk:]
             idx = idx[score[idx] > -1e17]
             if idx.size > 0:
-                return int(np.random.choice(idx))
+                return int(self.baseline_rng.choice(idx))
 
         if not np.isfinite(score).any():
-            return int(np.random.randint(0, M))
+            return int(int(self.baseline_rng.integers(0, M)))
 
         best = np.max(score)
         candidates = np.where(np.isclose(score, best, rtol=0.0, atol=1e-8))[0]
-        return int(np.random.choice(candidates))
+        return int(self.baseline_rng.choice(candidates))
 
     def get_action(self, state, prompt, action_mask=None, alpha=Config.MERGE_ALPHA, service_rate=[1]*len(Config.SERVER_CAPACITIES), round_robin_counter=0):
         alpha = Config.MERGE_ALPHA
@@ -2113,12 +2131,12 @@ class PPOAgent:
                 q = np.where(valid, q, np.inf)
 
             if not np.isfinite(q).any():
-                action = int(np.random.randint(0, M))
+                action = int(int(self.baseline_rng.integers(0, M)))
                 return action, 0.0, 0.0, round_robin_counter
 
             min_q = np.min(q)
             candidates = np.where(np.isclose(q, min_q))[0]
-            action = int(np.random.choice(candidates))
+            action = int(self.baseline_rng.choice(candidates))
             return action, 0.0, 0.0, round_robin_counter
 
         if getattr(Config, "P2C", False):
@@ -2127,6 +2145,7 @@ class PPOAgent:
                 state=np.asarray(state, dtype=np.float32),
                 action_mask=action_mask_np,
                 capacities=Config.SERVER_CAPACITIES,
+                rng=self.baseline_rng,
             )
             return action, 0.0, 0.0, round_robin_counter
 
@@ -2144,9 +2163,9 @@ class PPOAgent:
                 valid = (np.asarray(action_mask[:M], dtype=np.float64) > 0)
                 q = np.where(valid, q, np.inf)
             if not np.isfinite(q).any():
-                return int(np.random.randint(0, M)), 0.0, 0.0, round_robin_counter
+                return int(int(self.baseline_rng.integers(0, M))), 0.0, 0.0, round_robin_counter
             candidates = np.where(np.isclose(q, np.min(q)))[0]
-            return int(np.random.choice(candidates)), 0.0, 0.0, round_robin_counter
+            return int(self.baseline_rng.choice(candidates)), 0.0, 0.0, round_robin_counter
 
         # Power-of-d-choices: sample d admissible servers, route to shortest
         # (generalizes P2C, which is d=2). Optionally capacity-weighted.
@@ -2156,6 +2175,7 @@ class PPOAgent:
                 state=np.asarray(state, dtype=np.float32),
                 action_mask=action_mask_np,
                 capacities=Config.SERVER_CAPACITIES,
+                rng=self.baseline_rng,
                 d=int(getattr(Config, "POWER_OF_D_CHOICES", 3)),
                 weighted=bool(getattr(Config, "POWER_OF_D_WEIGHTED", False)),
             )
