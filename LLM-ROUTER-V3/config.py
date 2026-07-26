@@ -44,7 +44,7 @@ class Config:
         # "ministral-8b-2512",                                    #   Mistral   DROPPED: mu 0.100, dominated by Mistral Small
         "mistral-small-2506",                                    # 3 Mistral   mid general (non-hybrid)
         "gpt-4.1-mini",                                          # 4 OpenAI    multi-hop QA winner
-        "together/meta-llama/Llama-3.3-70B-Instruct-Turbo",       # 5 Together  math winner, priciest input
+        # "together/meta-llama/Llama-3.3-70B-Instruct-Turbo",     #   Together  DROPPED: mu 0.1456, sole source of the 4.6x spread
     ]
 
     PRICE = [
@@ -57,7 +57,7 @@ class Config:
         # (0.00000015, 0.00000015), #   Ministral 8B:      $0.15 / $0.15 per 1M tokens  (DROPPED)
         (0.00000015, 0.00000060),   # 3 Mistral Small:     $0.15 / $0.60 per 1M tokens
         (0.00000040, 0.00000160),   # 4 GPT-4.1 mini:      $0.40 / $1.60 per 1M tokens
-        (0.00000104, 0.00000104),   # 5 Llama 3.3 70B:     $1.04 / $1.04 per 1M tokens
+        # (0.00000104, 0.00000104), #   Llama 3.3 70B:     $1.04 / $1.04 per 1M tokens  (DROPPED)
     ]
 
     # Effective requests/second per endpoint, i.e. 1 / mean service time. Each
@@ -123,7 +123,7 @@ class Config:
         # 0.1002, #   Ministral 8B   (DROPPED)
         0.4614, # 3 Mistral Small
         0.3285, # 4 GPT-4.1 mini
-        0.1456, # 5 Llama 3.3 70B
+        # 0.1456, #   Llama 3.3 70B  (DROPPED)
     ]   # total 2.293 req/s over the retained 6
     # Derived, so it cannot silently disagree with MODEL_NAMES: trainer.py
     # takes the server count from this list's length.
@@ -440,13 +440,26 @@ class Config:
     # 0.04 target, so the early stop never fired. 0.012 clamps the late
     # acceleration while passing normal mid-run learning (0.002-0.003).
     TARGET_KL = 0.012
-    # Enabled 2026-07-26. TARGET_KL was tuned but never enforced, and measured
-    # approx_kl opened at 0.14 and 0.03 on two runs -- 12x and 2.5x the target --
-    # with nothing to truncate the update. It costs nothing while KL is small
-    # (0.0005-0.003 runs never trigger it) and is the only mechanism that caps
-    # how far one update moves the policy, which is what separates "how sharp
-    # the logits are" (tau) from "how fast the policy moves" (this).
-    USE_TARGET_KL_STOP = True
+    # Enabled and then turned back off on 2026-07-26. The stop breaks out of
+    # the epoch loop BEFORE the optimizer step, so firing on the first epoch
+    # discards the whole episode's update -- observed at episode 0, where
+    # approx_kl read 0.025 while policy/value/entropy losses all logged exactly
+    # 0.0, i.e. an episode of real API calls bought no learning.
+    #
+    # It fired that early only because approx_kl is inflated: with
+    # ACTOR_DUAL_RUNNING_NORM on and the network never switched out of train
+    # mode, the rms buffers keep updating on every forward pass INCLUDING the
+    # replayed ones inside the update, so pi_new != pi_old even on epoch 1
+    # where the ratio should be identically 1. The inflation is worst early,
+    # when rms is still travelling from its init of 1.0 down to ~0.1.
+    #
+    # Turning the stop off removes the symptom, not the cause: the ratio is
+    # still computed against a policy that shifts under itself across the 4
+    # epochs, so PPO's clipping acts on a moving target and approx_kl remains
+    # a conflated measure of (policy change + rms drift). Freezing the rms
+    # buffers during the update is the actual fix and is independent of this
+    # flag.
+    USE_TARGET_KL_STOP = False
 
     # Full-batch Path A over all intervals: every stability number above
     # (LR / KL / entropy) was measured on this path; minibatching the tiny
@@ -797,13 +810,33 @@ class Config:
     # fleet is how this run silently reached rho = 2.47,
     # where every episode ends by hitting EPISODE_COMPLETION_TIMEOUT with a
     # backlog that never drains.
-    POISSON_ARRIVAL_RATE = 2.0
+    POISSON_ARRIVAL_RATE = 1.5
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
     EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
 
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)
-    INTERVAL_LENGTH = 6 # The length of interval
+    # Length of one telemetry interval, in seconds. This is the TMDP's gap
+    # parameter, not a free knob: the policy sees the state frozen at the
+    # interval boundary and routes every arrival inside the interval against
+    # it, so dt sets how stale that state is allowed to get.
+    #
+    # 7 balances three things that pull in opposite directions:
+    #   * E[N_t] = lambda*dt = 10.5 arrivals per interval. At dt=6 it was 9,
+    #     and with M=5 a policy that samples exactly in proportion to capacity
+    #     -- the most balanced one that exists -- scores only 0.681 on the
+    #     per-interval Jain, so a third of the quota penalty is irreducible
+    #     multinomial noise. dt=7 lifts that ceiling to 0.715, dt=8 to 0.740.
+    #   * gradient samples per state, and 84 rather than 72 requests/episode.
+    #   * staleness. The fleet completes ~2.4 requests/s, so a dt=7 interval
+    #     hides ~17 completions; by dt=12 it hides ~28, more than are typically
+    #     queued, and the boundary snapshot stops predicting end-of-interval
+    #     load at all -- the queue tower would have nothing to read.
+    #
+    # Episode wall clock is dt * EPISODE_TIME_INTERVAL + drain ~= 60 s, so a
+    # 200-episode run takes ~3.3 h. Sweep this ({4, 7, 12}) for the paper: if
+    # performance is flat in dt, the telemetry-gap framing is unmotivated.
+    INTERVAL_LENGTH = 7 # The length of interval
     MAX_EPISODES = 200   # match LR_DECAY_EPISODES above
 
     # Queue score settings

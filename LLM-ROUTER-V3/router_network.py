@@ -2168,6 +2168,34 @@ class PPOAgent:
         return int(rng.choice(tie))
 
     def update_new(self, trajectories):
+        """Run the PPO update with the running-norm buffers frozen.
+
+        RouterNetwork is never switched out of train mode anywhere, so
+        `if self.training` inside the dual-tower forward stays true and the
+        rms_quality / rms_queue EMAs advance on EVERY forward pass -- including
+        the ones that merely replay this episode's states across PPO_EPOCHS
+        epochs. Two things break as a result:
+
+          * pi_new != pi_old on epoch 1, where the ratio should be identically
+            1. approx_kl then measures policy change PLUS rms drift, and the
+            drift term dominates early while rms is still travelling from its
+            init of 1.0 down to ~0.1. With USE_TARGET_KL_STOP on this was
+            enough to abort entire episodes before a single optimizer step.
+          * the EMA sees the same rollout PPO_EPOCHS+ times, so a configured
+            momentum of 0.05 behaves like ~0.2.
+
+        Semantically the divisor should track the ROLLOUT distribution and
+        advance once per rollout, which is what eval() here restores. Dropout
+        is 0 throughout this network, so eval() has no other effect.
+        """
+        was_training = self.network.training
+        self.network.eval()
+        try:
+            return self._update_new_impl(trajectories)
+        finally:
+            self.network.train(was_training)
+
+    def _update_new_impl(self, trajectories):
         """
         PPO update on ACTIVE intervals only (N_t > 0), with:
         - fair reward normalization: 1/M if N_t >= M, else 1/N_t
