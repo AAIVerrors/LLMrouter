@@ -242,12 +242,32 @@ class RouterNetwork(nn.Module):
                 or bool(getattr(Config, "VTASK_INTERVAL_BASELINE", False))
             )
             self._last_vtask = None
+            # Independent difficulty network: its own parameters end to end, fed
+            # the pooled prompt embedding and the flat state rather than the
+            # shared fusion token. "value" in the name routes it to the critic
+            # optimizer, and detached inputs (see forward) keep its loss out of
+            # the actor entirely -- so toggling the baseline changes one thing.
+            self.vtask_independent = self.use_vtask and bool(
+                getattr(Config, "VTASK_INDEPENDENT_NET", False)
+            )
             if self.use_vtask:
-                self.vtask_value_head = nn.Sequential(
-                    nn.LayerNorm(d_model),
-                    nn.Linear(d_model, d_model // 2), nn.GELU(),
-                    nn.Linear(d_model // 2, 1),
-                )
+                if self.vtask_independent:
+                    _vt_in = d_model + int(action_dim) * int(self.server_feat_dim)
+                    _vt_h = int(getattr(Config, "VTASK_NET_HIDDEN", d_model))
+                    _vt_d = max(int(getattr(Config, "VTASK_NET_DEPTH", 2)), 1)
+                    _layers = [nn.LayerNorm(_vt_in)]
+                    _prev = _vt_in
+                    for _ in range(_vt_d):
+                        _layers += [nn.Linear(_prev, _vt_h), nn.GELU()]
+                        _prev = _vt_h
+                    _layers.append(nn.Linear(_prev, 1))
+                    self.vtask_value_net = nn.Sequential(*_layers)
+                else:
+                    self.vtask_value_head = nn.Sequential(
+                        nn.LayerNorm(d_model),
+                        nn.Linear(d_model, d_model // 2), nn.GELU(),
+                        nn.Linear(d_model // 2, 1),
+                    )
 
             # Move price out of the semantic (quality) pathway into the numeric
             # queue tower: the stat channel the fusion sees narrows to [mu]
@@ -885,8 +905,28 @@ class RouterNetwork(nn.Module):
 
             # Learned V^task baseline (per-request contextual value). Stored as an
             # attribute (codebase pattern) so no forward return-signature change.
+            #
+            # Deliberately NOT read off route_h. The fusion trunk is trained only
+            # to rank servers for a prompt, and absolute difficulty is common to
+            # every server, so it is exactly the kind of component the trunk has
+            # an incentive to discard -- yet it is the only thing this head needs.
+            # Reading a masked mean of the (frozen-encoder) prompt tokens instead
+            # keeps that signal, and detaching both inputs keeps the regression
+            # loss from reshaping the actor's representation: without it this
+            # head would train the fusion trunk as a weight-0.5 auxiliary task,
+            # which both contradicts the "disjoint parameters" split below and
+            # would confound the baseline ablation (switching the baseline off
+            # would also remove an auxiliary representation objective).
             if getattr(self, "use_vtask", False):
-                self._last_vtask = self.vtask_value_head(route_h).squeeze(-1)   # [B]
+                if getattr(self, "vtask_independent", False):
+                    _pm = prompt_mask.unsqueeze(-1).to(prompt_tokens.dtype)
+                    _pooled = (prompt_tokens * _pm).sum(1) / _pm.sum(1).clamp_min(1.0)
+                    _vin = torch.cat(
+                        [_pooled.detach(), state.reshape(B, -1).detach()], dim=-1
+                    )
+                    self._last_vtask = self.vtask_value_net(_vin).squeeze(-1)    # [B]
+                else:
+                    self._last_vtask = self.vtask_value_head(route_h).squeeze(-1)  # [B]
             else:
                 self._last_vtask = None
             prompt_len = prompt_tokens.shape[1]
@@ -2556,6 +2596,8 @@ class PPOAgent:
                 "lb_overload_frac": None,
                 "lb_cov": None,
                 "lb_imbalance": None,
+                "vtask_explained_var": None,
+                "vtask_baseline_mean": None,
             }
 
         term_rewards = torch.stack(term_rewards)
@@ -2620,6 +2662,7 @@ class PPOAgent:
         # first would rescale by a std that still contains the difficulty
         # component and put part of it back.
         _vt_base_mean = None
+        _vt_ev = None
         if (bool(getattr(Config, "VTASK_INTERVAL_BASELINE", False))
                 and getattr(self.network, "use_vtask", False)
                 and term_adv.numel() > 0):
@@ -2632,6 +2675,20 @@ class PPOAgent:
                     b_t = torch.stack([_vt[idxs].mean() for idxs in interval_indices])
                     term_adv = term_adv - b_t
                     _vt_base_mean = float(b_t.mean().cpu().item())
+                    # Explained variance of the head against the realised
+                    # per-request reward. This is the number that decides
+                    # whether the baseline is worth anything: the residual
+                    # gradient variance is (1 - 0.76*f) of the original, so
+                    # f~1 is worth ~4x the episodes and f~0.2 only ~1.2x.
+                    # It is also the only evidence for widening/deepening the
+                    # head -- a persistently low f means the difficulty is not
+                    # being predicted, not that the baseline idea is wrong.
+                    _rv = rewards.to(_vt.dtype).var(unbiased=False)
+                    if float(_rv) > 1e-12:
+                        _vt_ev = 1.0 - float(
+                            ((rewards.to(_vt.dtype) - _vt).var(unbiased=False) / _rv)
+                            .cpu().item()
+                        )
 
         # Keep your single-interval fix:
         # if only one interval, do not subtract itself.
@@ -3222,6 +3279,8 @@ class PPOAgent:
             "lb_overload_frac": float(np.mean(lb_overload)) if lb_overload else None,
             "lb_cov": float(np.mean(lb_cov)) if lb_cov else None,
             "lb_imbalance": float(np.mean(lb_imbalance)) if lb_imbalance else None,
+            "vtask_explained_var": _vt_ev,
+            "vtask_baseline_mean": _vt_base_mean,
         }
 
     # def update_new(self, trajectories):

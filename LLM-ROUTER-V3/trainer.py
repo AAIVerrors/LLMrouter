@@ -1026,6 +1026,12 @@ class EnhancedLLMRouterTrainer:
                         # mean, so they separate "how uneven" from "how loaded"
                         # and stay comparable across arrival rates.
                         "load/cov": training_metrics.get('lb_cov') if training_metrics else None,
+                        # Fraction of per-request reward variance the V^task
+                        # head explains. The interval baseline removes that
+                        # share of the gradient noise, so this is the number
+                        # that says whether the baseline is doing anything.
+                        "vtask/explained_var": training_metrics.get('vtask_explained_var') if training_metrics else None,
+                        "vtask/baseline_mean": training_metrics.get('vtask_baseline_mean') if training_metrics else None,
                         "load/imbalance": training_metrics.get('lb_imbalance') if training_metrics else None,
                     })
 

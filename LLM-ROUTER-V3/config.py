@@ -450,6 +450,29 @@ class Config:
     # weight BANDIT_VTASK_COEF, and is read under no_grad at pre-update
     # parameters so it acts as a baseline rather than a second critic path.
     VTASK_INTERVAL_BASELINE = True
+
+    # Give V^task its own network instead of a head on the shared fusion token.
+    # Two reasons, both structural rather than cosmetic:
+    #   * The fusion trunk is trained to RANK servers for a prompt. Absolute
+    #     difficulty is common to every server and therefore useless -- even
+    #     harmful -- for that ranking, so the trunk has every incentive to
+    #     discard it. That is precisely the signal this head needs, so reading
+    #     it off route_h means fishing for something the representation was
+    #     optimised to throw away.
+    #   * Sharing the trunk also means the regression loss trains the ACTOR's
+    #     representation at weight BANDIT_VTASK_COEF, contradicting the
+    #     disjoint actor/critic parameter split and confounding the ablation:
+    #     turning the baseline off would also remove an auxiliary
+    #     representation objective, so the difference could not be attributed
+    #     to variance reduction.
+    # It is cheap because the prompt encoder is frozen and its tokens are
+    # already computed for the fusion path -- this only adds an MLP over the
+    # pooled embedding and the flat state (the state matters because the
+    # regression target is the full per-request reward, whose latency term
+    # depends on queue occupancy, not just on the prompt).
+    VTASK_INDEPENDENT_NET = True
+    VTASK_NET_HIDDEN = 256
+    VTASK_NET_DEPTH = 2
     BANDIT_VTASK_COEF = 0.5   # weight of the V^task regression loss (critic side)
 
     # Interval weighting in the PPO policy loss.
