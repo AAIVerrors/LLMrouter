@@ -117,14 +117,11 @@ class Config:
     # bench_quality_matrix.py before any claim that depends on it.
     SERVICE_RATE = [
         0.6726, # 0 Ministral 3B
-        # 0.1251, #   Gemma 3n E4B   (DROPPED)
-        0.3052, # 1 Ministral 8B     (replaced Qwen3.5-9B at 0.1022)
+        0.3052, # 1 Ministral 8B
         0.5964, # 2 GPT-4.1 nano
-        # 0.1002, #   Ministral 8B   (DROPPED)
         0.4614, # 3 Mistral Small
         0.3285, # 4 GPT-4.1 mini
-        # 0.1456, #   Llama 3.3 70B  (DROPPED)
-    ]   # total 2.293 req/s over the retained 6
+    ]   # total 2.364 req/s over the retained 5
     # Derived, so it cannot silently disagree with MODEL_NAMES: trainer.py
     # takes the server count from this list's length.
     SERVER_CAPACITIES = [50] * len(MODEL_NAMES)
@@ -488,26 +485,21 @@ class Config:
     # 0.04 target, so the early stop never fired. 0.012 clamps the late
     # acceleration while passing normal mid-run learning (0.002-0.003).
     TARGET_KL = 0.012
-    # Enabled and then turned back off on 2026-07-26. The stop breaks out of
-    # the epoch loop BEFORE the optimizer step, so firing on the first epoch
-    # discards the whole episode's update -- observed at episode 0, where
-    # approx_kl read 0.025 while policy/value/entropy losses all logged exactly
-    # 0.0, i.e. an episode of real API calls bought no learning.
+    # Off, then on again once its failure mode was removed. The stop breaks out
+    # of the epoch loop BEFORE the optimizer step, so firing on epoch 1 discards
+    # the whole episode's update -- observed at episode 0, where approx_kl read
+    # 0.025 while policy/value/entropy losses all logged exactly 0.0.
     #
-    # It fired that early only because approx_kl is inflated: with
-    # ACTOR_DUAL_RUNNING_NORM on and the network never switched out of train
-    # mode, the rms buffers keep updating on every forward pass INCLUDING the
-    # replayed ones inside the update, so pi_new != pi_old even on epoch 1
-    # where the ratio should be identically 1. The inflation is worst early,
-    # when rms is still travelling from its init of 1.0 down to ~0.1.
-    #
-    # Turning the stop off removes the symptom, not the cause: the ratio is
-    # still computed against a policy that shifts under itself across the 4
-    # epochs, so PPO's clipping acts on a moving target and approx_kl remains
-    # a conflated measure of (policy change + rms drift). Freezing the rms
-    # buffers during the update is the actual fix and is independent of this
-    # flag.
-    USE_TARGET_KL_STOP = False
+    # It could fire that early only because approx_kl was inflated: the
+    # running-norm buffers were still advancing on the replayed forward passes
+    # inside the update, so pi_new != pi_old even on epoch 1, where the ratio
+    # should be identically 1. update_new now runs with the network in eval
+    # mode, which freezes those buffers, so epoch 1's ratio is exactly 1 and
+    # approx_kl starts at 0. The stop can no longer truncate an episode before
+    # its first gradient step, and goes back to being what it was meant to be:
+    # free while KL is small, and the only thing that caps how far one update
+    # moves the policy when it is not.
+    USE_TARGET_KL_STOP = True
 
     # Full-batch Path A over all intervals: every stability number above
     # (LR / KL / entropy) was measured on this path; minibatching the tiny
@@ -993,6 +985,21 @@ class Config:
     # exogenous and fixed at configuration time, which is what makes the
     # entitlement well defined. False = use the live EMA from the snapshot.
     QUOTA_USE_FROZEN_MU = True
+
+    # The same choice applied to the mu the POLICY sees in its state, rather
+    # than to the quota. Without it the state carried the online EMA, so the
+    # value sitting in what the dual tower calls its STATIC capability channel
+    # drifted throughout training -- and drifted in a way the policy itself
+    # caused, since mu_hat = completions / service time and service time depends
+    # on which task types were routed there. Three consequences: the static
+    # channel was not static; dual/quality_spread mixed capability learning with
+    # mu drift, so it stopped being a clean diagnostic; and re-measuring
+    # SERVICE_RATE between runs shifted the input distribution the tower had
+    # learned against, which this file has now done five times. The EMA is still
+    # estimated and logged under service_rate/*, it just no longer feeds the
+    # policy. False restores the old behaviour.
+    STATE_USE_FROZEN_MU = True
+
     # Count the in-flight (currently-serving) request in the water-filling
     # backlog D. util = qsize excludes it (it is dequeued while generating),
     # so without this a server busy on a long generation looks empty and the

@@ -386,7 +386,25 @@ class EnhancedLLMRouterTrainer:
                 load = float(loads[i])
                 util = load / max(cap, 1.0)
                 resid = float(residuals[i]) / max_lat   # in-flight elapsed, normalized
-                mu   = float(self.last_service_rate[i])
+                # Frozen Config.SERVICE_RATE, not the online EMA, and for the
+                # same reason QUOTA_USE_FROZEN_MU already gives the quota: the
+                # measured req/s is ENDOGENOUS. mu_hat = completions / service
+                # time, and service time depends on how long the answers are,
+                # which depends on which task types got routed here -- so the
+                # policy changing its routing moves its own observation. That
+                # closed loop sat inside the "STATIC capability channel" the
+                # quality tower reads, making the static channel not static and
+                # muddying dual/quality_spread with drift that has nothing to do
+                # with capability. It also broke cross-run reproducibility,
+                # since re-measuring SERVICE_RATE shifts the input distribution
+                # the tower learned against.
+                # The online EMA is still tracked and logged (service_rate/*);
+                # it is simply no longer an input to the policy.
+                mu = (
+                    float(Config.SERVICE_RATE[i])
+                    if bool(getattr(Config, "STATE_USE_FROZEN_MU", True))
+                    else float(self.last_service_rate[i])
+                )
                 row = [
                     util, resid,                     # dyn (2)
                     mu, price_in[i], price_out[i],   # stat (3)

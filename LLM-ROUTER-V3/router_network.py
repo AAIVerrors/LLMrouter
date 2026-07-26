@@ -2105,9 +2105,8 @@ class PPOAgent:
         if getattr(Config, "JSQ", False):
             M = len(Config.MODEL_NAMES)
             sf = np.asarray(state, dtype=np.float32).reshape(M, -1)  # util at col 0
-            u = sf[:, 0]
             C = np.asarray(Config.SERVER_CAPACITIES, dtype=np.float32)
-            q = u * C
+            q = self._queue_in_system(sf.astype(np.float64), C)
 
             if action_mask is not None:
                 valid = (np.asarray(action_mask[:M], dtype=np.float32) > 0)
@@ -2140,7 +2139,7 @@ class PPOAgent:
             sf = np.asarray(state, dtype=np.float64).reshape(M, -1)
             dyn_dim = int(getattr(Config, "SERVER_DYN_DIM", 2))
             C = np.asarray(Config.SERVER_CAPACITIES, dtype=np.float64)
-            q = (sf[:, 0] * C) / np.maximum(sf[:, dyn_dim], 1e-6)  # queue / mu
+            q = self._queue_in_system(sf, C) / np.maximum(sf[:, dyn_dim], 1e-6)  # in-system / mu
             if action_mask is not None:
                 valid = (np.asarray(action_mask[:M], dtype=np.float64) > 0)
                 q = np.where(valid, q, np.inf)
@@ -2165,6 +2164,31 @@ class PPOAgent:
         return int(action.cpu().item()), float(log_prob.cpu().item()), float(value.cpu().item()), round_robin_counter
 
     @staticmethod
+    def _queue_in_system(sf: np.ndarray, capacities) -> np.ndarray:
+        """Requests IN SYSTEM per server: waiting + the one being generated.
+
+        util is derived from request_queue.qsize(), which drops a request the
+        moment a worker dequeues it to call the API, so util alone counts only
+        the ones still waiting. A server that is part-way through a long
+        generation reads as empty. That matters here: at rho ~ 0.63 each worker
+        is busy roughly 63% of the time while the waiting queue holds only 2-3
+        requests, so ignoring the in-flight one understates the load by 20-30%.
+        The state's second dynamic slot is the in-flight elapsed service time,
+        positive exactly while a generation is running, which recovers it.
+
+        Every queue-ranking baseline uses this so the comparison against the
+        learned policy is like-for-like: the dual tower reads that same
+        residual feature directly, so leaving it out of the baselines would
+        hand the policy an information advantage rather than an algorithmic one.
+        Config.QUOTA_COUNT_INFLIGHT applies the same correction to the fairness
+        quota.
+        """
+        cap = np.asarray(capacities, dtype=np.float64)
+        waiting = sf[:, 0] * cap
+        inflight = (sf[:, 1] > 0).astype(np.float64) if sf.shape[1] > 1 else 0.0
+        return waiting + inflight
+
+    @staticmethod
     def p2c_select_action(
         state: np.ndarray,
         action_mask: np.ndarray | None,
@@ -2186,7 +2210,7 @@ class PPOAgent:
         # util at col 0, mu at col SERVER_DYN_DIM.
         sf = np.asarray(state, dtype=np.float64).reshape(M, -1)
         cap = np.asarray(capacities, dtype=np.float64)
-        q = sf[:, 0] * cap
+        q = PPOAgent._queue_in_system(sf, cap)
         if weighted:
             dyn_dim = int(getattr(Config, "SERVER_DYN_DIM", 2))
             mu = sf[:, dyn_dim]
