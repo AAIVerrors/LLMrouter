@@ -236,8 +236,11 @@ class RouterNetwork(nn.Module):
             # Learned V^task baseline head (contextual value of the per-request
             # task reward). "value" in the name -> routed to the critic optimizer.
             # Reads the fused route token (prompt x server-state summary) -> scalar.
-            self.use_vtask = bool(getattr(Config, "USE_BANDIT_ADVANTAGE", False)) and \
-                             bool(getattr(Config, "BANDIT_USE_VTASK", False))
+            self.use_vtask = (
+                (bool(getattr(Config, "USE_BANDIT_ADVANTAGE", False))
+                 and bool(getattr(Config, "BANDIT_USE_VTASK", False)))
+                or bool(getattr(Config, "VTASK_INTERVAL_BASELINE", False))
+            )
             self._last_vtask = None
             if self.use_vtask:
                 self.vtask_value_head = nn.Sequential(
@@ -2593,6 +2596,42 @@ class PPOAgent:
                 _explained_var = 1.0 - (_resid_var / (_ret_var + 1e-8))
             else:
                 _explained_var = 0.0
+
+        # ---- Interval-level V^task baseline --------------------------------
+        # Subtract b_t = mean_i V^task(s_t, p_{t,i}), the predicted difficulty of
+        # the batch that happened to arrive, from the shared interval advantage.
+        #
+        # This is a pure variance reduction, not a change of estimator: b_t is a
+        # function of (s_t, p_{t,1:N_t}) and contains no action, so by A2
+        # E[grad log pi(a_i|s_t,p_i)] = 0 lets it factor out and the gradient
+        # stays unbiased -- the same argument the proof already makes for an
+        # interval-start baseline b(s_t), extended to condition on the prompts,
+        # which A1 makes free because the workload is exogenous.
+        #
+        # Why it is needed here specifically: s_t is a telemetry snapshot taken
+        # BEFORE the interval's prompts arrive, so the state-value critic
+        # structurally cannot see them and averages over the prompt
+        # distribution instead. The realised difficulty of this batch therefore
+        # lands entirely in the gradient variance -- and it is the dominant
+        # term, 76% of per-request quality variance against 23% for the
+        # endpoint x prompt interaction the policy actually controls.
+        #
+        # Subtracted BEFORE the normalisation below on purpose: normalising
+        # first would rescale by a std that still contains the difficulty
+        # component and put part of it back.
+        _vt_base_mean = None
+        if (bool(getattr(Config, "VTASK_INTERVAL_BASELINE", False))
+                and getattr(self.network, "use_vtask", False)
+                and term_adv.numel() > 0):
+            with torch.no_grad():
+                _mask = action_masks if (Config.MASK and action_masks is not None) else None
+                self.network.get_action_and_value(states, prompts, _mask, actions)
+                _vt = self.network._last_vtask
+                if _vt is not None:
+                    _vt = _vt.detach().to(term_adv.dtype)
+                    b_t = torch.stack([_vt[idxs].mean() for idxs in interval_indices])
+                    term_adv = term_adv - b_t
+                    _vt_base_mean = float(b_t.mean().cpu().item())
 
         # Keep your single-interval fix:
         # if only one interval, do not subtract itself.

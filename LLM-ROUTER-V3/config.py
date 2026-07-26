@@ -425,6 +425,31 @@ class Config:
     # small critic-side head -> needs a fresh model when turned on. Requires
     # USE_BANDIT_ADVANTAGE=True and the dual-tower CLIP path. False = LOO.
     BANDIT_USE_VTASK = False
+
+    # Subtract the interval's predicted difficulty from the shared interval
+    # advantage:  A_t <- A_t - (1/N_t) sum_i V^task(s_t, p_{t,i}).
+    #
+    # Unlike USE_BANDIT_ADVANTAGE above this does NOT add a per-request term and
+    # so does not change the estimator the theory is stated for -- it is the
+    # baseline the proof already allows, conditioned on the prompts. b_t carries
+    # no action, so E[grad log pi(a_i | s_t, p_i)] = 0 factors it out (A2) and
+    # the prompts are exogenous (A1), leaving the gradient unbiased. What it
+    # changes is the variance: it removes the component of the reward that was
+    # decided by which prompts arrived rather than by where they were sent.
+    #
+    # That component dominates. The measured decomposition of per-request
+    # quality is 76% prompt difficulty, 1% endpoint capability, 23% endpoint x
+    # prompt interaction -- and only the last is routable. The reason the
+    # ordinary critic cannot absorb the 76% is structural to the TMDP: s_t is a
+    # telemetry snapshot taken before the interval's prompts are revealed, so
+    # V(s_t) can only average over the prompt distribution. (Confirmed in the
+    # code: state_critic reads the flat server state and never sees a prompt.)
+    #
+    # Requires a fresh model: adds vtask_value_head to the state dict. The head
+    # is trained by regression onto the realised per-request task reward with
+    # weight BANDIT_VTASK_COEF, and is read under no_grad at pre-update
+    # parameters so it acts as a baseline rather than a second critic path.
+    VTASK_INTERVAL_BASELINE = True
     BANDIT_VTASK_COEF = 0.5   # weight of the V^task regression loss (critic side)
 
     # Interval weighting in the PPO policy loss.
