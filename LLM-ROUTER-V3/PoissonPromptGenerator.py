@@ -46,6 +46,21 @@ class PoissonPromptGenerator:
     ):
         self.shuffle_dataset = bool(shuffle_dataset)
         self.dataset_seed = int(dataset_seed)
+        # Dedicated stream for the mixture draw. It used to call np.random,
+        # i.e. the process-global generator, which every prompt-blind baseline
+        # also draws from once or more per routing decision (P2C samples d
+        # servers, epsilon-greedy flips a coin, ...). The learned policy samples
+        # actions through torch instead, so it consumes a different number of
+        # numpy draws -- and the workload a run sees therefore depended on the
+        # policy being evaluated. Runs were not comparable prompt-for-prompt:
+        # the per-episode task mix swings about +/-5%, and with per-task mean
+        # quality spanning 0.39 to 0.79 that alone moves episode quality by
+        # ~0.02. Seeding a private generator makes every run replay the exact
+        # same prompt stream, which turns method-vs-baseline into a PAIRED
+        # comparison and cancels the prompt-difficulty term -- the same term
+        # the variance decomposition puts at 76% of per-request quality
+        # variance -- in the difference.
+        self._mix_rng = np.random.default_rng(self.dataset_seed)
         self.mcq_cot = bool(mcq_cot)
         self.math_brief = bool(math_brief)
         self.dataset_levels = dataset_levels
@@ -551,7 +566,12 @@ class PoissonPromptGenerator:
         return sample, {"name": self.dataset_name, "metric": "f1", "task_type": self._infer_task_type(self.dataset_name)}
 
     def _sample_from_mixed_dataset(self) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        pool_idx = int(np.random.choice(len(self.dataset_pools), p=np.asarray(self.dataset_weights, dtype=np.float64)))
+        pool_idx = int(
+            self._mix_rng.choice(
+                len(self.dataset_pools),
+                p=np.asarray(self.dataset_weights, dtype=np.float64),
+            )
+        )
         pool = self.dataset_pools[pool_idx]
         data = pool["data"]
         idx = int(pool["index"])
