@@ -903,15 +903,24 @@ class EnhancedLLMRouterTrainer:
         
         for episode in range(Config.MAX_EPISODES):
             
-            warmup = int(getattr(Config, "FAIR_WARMUP_EPISODES", 0))
-            fair_target = float(getattr(Config, "FAIR_TARGET", getattr(Config, "FAIR", 1.0)))
-
-            if warmup <= 0:
-                Config.FAIR = fair_target
-            else:
-                Config.FAIR = min(fair_target, fair_target * episode / max(warmup, 1))
-
-            print(f"[Episode {episode}] FAIR = {Config.FAIR:.3f}")
+            if str(getattr(Config, "FAIRNESS_MODE", "legacy")).lower() != "wf_dual":
+                # Legacy quota/softmin modes: FAIR is the live strength knob,
+                # optionally warmed up over episodes.
+                warmup = int(getattr(Config, "FAIR_WARMUP_EPISODES", 0))
+                fair_target = float(getattr(Config, "FAIR_TARGET", getattr(Config, "FAIR", 1.0)))
+                if warmup <= 0:
+                    Config.FAIR = fair_target
+                else:
+                    Config.FAIR = min(fair_target, fair_target * episode / max(warmup, 1))
+                print(f"[Episode {episode}] FAIR = {Config.FAIR:.3f}")
+            elif episode == 0:
+                print(
+                    f"[wf_dual] fairness strength = FAIR_DELTA "
+                    f"({getattr(Config, 'FAIR_DELTA', 0.5)}) + adaptive nu "
+                    f"(dual={'on' if getattr(Config, 'FAIR_DUAL_ENABLE', True) else 'off'}, "
+                    f"nu_init={getattr(Config, 'FAIR_MU_INIT', 0.0)}); "
+                    f"Config.FAIR/FAIR_TARGET are IGNORED in this mode."
+                )
 
             self.current_episode = episode  # Update current episode
             self.env.set_episode(episode)  # Update environment episode tracking

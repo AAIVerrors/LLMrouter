@@ -1168,8 +1168,12 @@ class Config:
     # d_for_quota). Keep 0 unless deliberately studying long-horizon
     # entitlement, which is a different objective than per-interval regret.
     QUOTA_HISTORY_WEIGHT = 0.0
-    FAIR_TARGET = 1     # 最终的 FAIR 值
-    FAIR = 1           # 起始（trainer 会覆盖）
+    # !! LEGACY KNOBS -- only read by FAIRNESS_MODE "quota"/"legacy". In
+    # "wf_dual" the fairness strength is FAIR_DELTA (constraint level; smaller
+    # = stricter) plus the adaptive dual nu; these two are IGNORED there.
+    # Fixed-strength mode in wf_dual: FAIR_DUAL_ENABLE=False, FAIR_MU_INIT=w.
+    FAIR_TARGET = 1     # 最终的 FAIR 值 (legacy modes only)
+    FAIR = 1           # 起始（trainer 会覆盖; legacy modes only）
 
     # =========================================================
     # Lagrangian (adaptive) fairness — RCPO, Tessler et al. 2018
