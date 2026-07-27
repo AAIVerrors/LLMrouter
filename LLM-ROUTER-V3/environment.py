@@ -1521,7 +1521,7 @@ def response_collector_worker(
                         for p_in, p_out in Config.PRICE
                     ]
 
-                    den = float(np.percentile(all_server_ref_costs, 80))
+                    den = float(np.percentile(all_server_ref_costs, 70))
 
                     eps = 1e-12
                     price_before = (num - min_num) / max(den - min_num, eps)

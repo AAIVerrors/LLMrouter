@@ -2107,8 +2107,23 @@ class PPOAgent:
         if (getattr(net, "use_dual_running_norm", False)
                 and hasattr(net, "rms_quality_frozen")):
             with torch.no_grad():
-                net.rms_quality_frozen.copy_(net.rms_quality)
-                net.rms_queue_frozen.copy_(net.rms_queue)
+                # Rate-limited commit. The frozen divisor initializes at 1.0
+                # while the raw spread is ~0.1, so an unclamped first commit
+                # amplifies the logits ~10x in one shot -- the policy sharpens
+                # to >50% max-share OVERNIGHT, outside the optimizer, where no
+                # KL control can see it (reproduced: ep1 max_share 0.59,
+                # single-step KL 0.51). Capping each commit at RATIO per
+                # episode turns the jump into a ~1.5x/episode ramp whose
+                # per-episode KL effect stays the same order as a normal
+                # policy update.
+                r = float(getattr(Config, "ACTOR_DUAL_RMS_COMMIT_RATIO", 1.5))
+                for frozen, live in (
+                    (net.rms_quality_frozen, net.rms_quality),
+                    (net.rms_queue_frozen, net.rms_queue),
+                ):
+                    lo = frozen / r
+                    hi = frozen * r
+                    frozen.copy_(torch.clamp(live, min=lo, max=hi))
 
     def _mu_value_offset(self):
         """Additive critic correction for the current dual variable.

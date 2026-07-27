@@ -1254,6 +1254,12 @@ class Config:
     # pi_theta_old replayed), the live EMA accumulates on the side and is
     # committed after the PPO update for the NEXT episode.
     ACTOR_DUAL_RMS_FREEZE = True
+    # Max per-episode change ratio of the frozen rms divisor. Unclamped, the
+    # first commit jumps 1.0 -> ~0.1 and amplifies the logits 10x overnight
+    # (policy sharpens to >50% max-share outside the optimizer; single-step
+    # KL 0.51 reproduced). 1.5 reaches any realistic spread within ~6
+    # episodes while keeping each transition the size of a normal update.
+    ACTOR_DUAL_RMS_COMMIT_RATIO = 1.5
 
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL
