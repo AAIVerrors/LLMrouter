@@ -399,11 +399,11 @@ class Config:
     # gradient at all. Re-set from the realised latency histogram of a run
     # (slo/violation_rate_{10,20,40} bracket it), not from either argument
     # alone, and re-check whenever rho changes.
-    MAX_LAT = 30
+    MAX_LAT = 20
     # SLO latency thresholds (seconds). Logged as violation rate =
     # fraction of completed requests with end-to-end latency > T.
     # Report a few (tight/moderate/loose); keep all below MAX_LAT.
-    SLO_LATENCIES = [10.0, 20.0, 40.0]
+    SLO_LATENCIES = [5.0, 10.0, 20.0]
     FAIR_REWARD_MIN_FLOOR = False # True the missing server will be set min rewards, False will use the floor reward -Beta-REWARD_GAMMA
 
     # =========================================================
