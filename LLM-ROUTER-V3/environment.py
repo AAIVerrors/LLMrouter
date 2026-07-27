@@ -550,6 +550,7 @@ class Request:
     price: Optional[float] = None
     price_raw: Optional[float] = None
     dollar_cost: Optional[float] = None   # actual $ = in_tok*price_in + out_tok*price_out
+    task_type: Optional[str] = None       # workload task label, for P(endpoint|task)
 
 
 def _is_mistral_api_name(model_name: str) -> bool:
@@ -1827,7 +1828,7 @@ class EnhancedRouterEnvironment:
             pass
         return prompt
 
-    def step(self, action: int, prompt: str, ground_truth: Optional[Any] = None) -> Tuple[np.ndarray, bool]:
+    def step(self, action: int, prompt: str, ground_truth: Optional[Any] = None, task_type: Optional[str] = None) -> Tuple[np.ndarray, bool]:
         with self.total_completed.get_lock():
             self.total_completed.value = 0
 
@@ -1841,6 +1842,7 @@ class EnhancedRouterEnvironment:
             arrival_time=time.time(),
             server_id=action,
             episode=self.current_episode,
+            task_type=task_type,
         )
 
         server = self.servers[action]

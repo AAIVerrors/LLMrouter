@@ -16,6 +16,8 @@ from quota_flair import (
     quota_flair_reward,
     load_fairness,
     jain_normalized_load,
+    wf_regret_stats,
+    wf_expected_regret,
 )
 import torch.multiprocessing as mp
 from environment import QualityScorer
@@ -416,6 +418,16 @@ class RouterNetwork(nn.Module):
             if self.use_dual_running_norm:
                 self.register_buffer("rms_quality", torch.ones(()))
                 self.register_buffer("rms_queue", torch.ones(()))
+                # Episode-frozen copies used for NORMALIZATION. The live EMAs
+                # above keep accumulating during the rollout, but every forward
+                # divides by the frozen values, so all of one episode's stored
+                # log-probs and every PPO replay share one normalization:
+                #   max_i |log pi_replay(a_i) - log pi_stored(a_i)| = 0
+                # at epoch 0 by construction. commit_rms() promotes the live
+                # EMA into the frozen copy AFTER the PPO update, so it takes
+                # effect from the next episode (two-timescale, like nu).
+                self.register_buffer("rms_quality_frozen", torch.ones(()))
+                self.register_buffer("rms_queue_frozen", torch.ones(()))
             self._dual_rms_q = None
             self._dual_rms_k = None
 
@@ -1056,10 +1068,16 @@ class RouterNetwork(nn.Module):
                     # The learnable scales adapt from there, so tau only sets the
                     # exploration softness at the start of training.
                     _tau = float(getattr(Config, "ACTOR_DUAL_NORM_TARGET_SPREAD", 1.0))
-                    quality_score = quality_score / self.rms_quality.clamp_min(_eps) * _tau
-                    queue_score = queue_score / self.rms_queue.clamp_min(_eps) * _tau
-                    self._dual_rms_q = float(self.rms_quality.detach().cpu().item())
-                    self._dual_rms_k = float(self.rms_queue.detach().cpu().item())
+                    if bool(getattr(Config, "ACTOR_DUAL_RMS_FREEZE", True)):
+                        _rq = self.rms_quality_frozen
+                        _rk = self.rms_queue_frozen
+                    else:
+                        _rq = self.rms_quality
+                        _rk = self.rms_queue
+                    quality_score = quality_score / _rq.clamp_min(_eps) * _tau
+                    queue_score = queue_score / _rk.clamp_min(_eps) * _tau
+                    self._dual_rms_q = float(_rq.detach().cpu().item())
+                    self._dual_rms_k = float(_rk.detach().cpu().item())
 
                 if getattr(self, "use_dual_learn_scale", False):
                     scales = torch.exp(self.tower_log_scale)
@@ -1618,10 +1636,28 @@ class PPOAgent:
         #     self.network.parameters(),
         #     lr=Config.LEARNING_RATE
         # )
-        # Lagrangian dual variable for the Jain fairness floor (RCPO). Persists
-        # across episodes; updated once per update_new from the realized Jain.
-        self.lag_mu = float(getattr(Config, "LAGRANGIAN_MU_INIT", 1.0))
+        # Lagrangian dual variable (RCPO). Persists across episodes.
+        # wf_dual mode: multiplier on the water-filling regret constraint
+        #   E[v] <= 1 + FAIR_DELTA, updated from the Rao-Blackwellized vhat.
+        # legacy modes: multiplier on the Jain floor (USE_LAGRANGIAN_FAIR).
+        if str(getattr(Config, "FAIRNESS_MODE", "legacy")).lower() == "wf_dual":
+            self.lag_mu = float(getattr(Config, "FAIR_MU_INIT", 0.0))
+        else:
+            self.lag_mu = float(getattr(Config, "LAGRANGIAN_MU_INIT", 1.0))
         self._jain_ema = None
+        self._vbar_ema = None    # EMA of vhat for the wf_dual constraint
+
+        # Additive critic conditioning on the dual variable: tr = base - mu*v,
+        # so as mu moves the SAME state maps to a shifted return -- to first
+        # order an additive, state-independent shift, which is exactly what a
+        # small additive head on mu can absorb. Owned by the agent (not the
+        # network) so both backbone classes get it without surgery; registered
+        # into critic_params below so the critic optimizer trains it.
+        self.critic_mu_head = None
+        if bool(getattr(Config, "CRITIC_INPUT_MU", False)):
+            self.critic_mu_head = nn.Sequential(
+                nn.Linear(1, 16), nn.GELU(), nn.Linear(16, 1)
+            ).to(Config.DEVICE)
 
         actor_lr = float(getattr(Config, "ACTOR_LEARNING_RATE", Config.LEARNING_RATE))
         critic_lr = float(getattr(Config, "CRITIC_LEARNING_RATE", Config.LEARNING_RATE))
@@ -1681,6 +1717,12 @@ class PPOAgent:
         #     eps=1e-5,
         # )
         
+        # The mu-conditioning head trains with the critic (it is part of the
+        # value function), so its params join critic_params before the
+        # optimizer is built.
+        if self.critic_mu_head is not None:
+            critic_params = critic_params + list(self.critic_mu_head.parameters())
+
         # actor_params includes scale_params for grad clipping.
         self.actor_params  = actor_params + scale_params
         self.critic_params = critic_params
@@ -2054,6 +2096,35 @@ class PPOAgent:
             net.eval()
         return ev, pred_std
 
+    def commit_rms(self):
+        """Promote the live rms EMAs into the frozen normalization copies.
+
+        Called once per episode, AFTER the PPO update: the whole next episode
+        (rollout + its replay) then shares the committed value, preserving
+        exact epoch-0 parity between stored and replayed log-probs.
+        """
+        net = self.network
+        if (getattr(net, "use_dual_running_norm", False)
+                and hasattr(net, "rms_quality_frozen")):
+            with torch.no_grad():
+                net.rms_quality_frozen.copy_(net.rms_quality)
+                net.rms_queue_frozen.copy_(net.rms_queue)
+
+    def _mu_value_offset(self):
+        """Additive critic correction for the current dual variable.
+
+        Returns a scalar tensor (with grad, so the critic optimizer trains the
+        head), or None when CRITIC_INPUT_MU is off. Added to every state value
+        the critic produces; mu_lag is constant within an episode, so this is
+        a per-episode intercept the state-only critic cannot represent once
+        the dual starts moving.
+        """
+        if self.critic_mu_head is None:
+            return None
+        mu_norm = float(self.lag_mu) / max(float(getattr(Config, "FAIR_MU_MAX", 5.0)), 1e-9)
+        x = torch.tensor([[mu_norm]], dtype=torch.float32, device=Config.DEVICE)
+        return self.critic_mu_head(x).reshape(())
+
     @property
     def baseline_rng(self) -> np.random.Generator:
         """Private, seeded stream for baseline tie-breaks and P2C's d-sample.
@@ -2210,6 +2281,12 @@ class PPOAgent:
                 action, log_prob, entropy, value, dist_policy = self.network.get_action_and_value(
                     state_tensor, prompt, None
                 )
+        # mu-conditioned critic: stored rollout values must use the same value
+        # function the update optimizes, or term_values_old and v_interval
+        # disagree by the offset.
+        if self.critic_mu_head is not None:
+            with torch.no_grad():
+                value = value + self._mu_value_offset()
 
         print(dist_policy)
         print(action)
@@ -2394,9 +2471,14 @@ class PPOAgent:
         was_training = self.network.training
         self.network.eval()
         try:
-            return self._update_new_impl(trajectories)
+            out = self._update_new_impl(trajectories)
         finally:
             self.network.train(was_training)
+        # Promote the live rms EMAs into the frozen normalization copies only
+        # AFTER a completed update: next episode's rollout and its replay then
+        # share the committed value (exact epoch-0 log-prob parity).
+        self.commit_rms()
+        return out
 
     def _update_new_impl(self, trajectories):
         """
@@ -2493,6 +2575,27 @@ class PPOAgent:
         _hist_w = float(getattr(Config, "QUOTA_HISTORY_WEIGHT", 0.0))
         H_cum = np.zeros(M, dtype=np.float64)
 
+        # ---- WF-dual fairness bookkeeping --------------------------------
+        _wf_mode = str(getattr(Config, "FAIRNESS_MODE", "legacy")).lower() == "wf_dual"
+        _wf_is_baseline = any(
+            bool(getattr(Config, flag, False))
+            for flag in ("JSQ", "P2C", "CAP_WEIGHTED_JSQ", "POWER_OF_D",
+                         "ROUND_ROBIN", "RANDOM_SELECT", "GREEDY_UTILITY")
+        )
+        wf_v_obs, wf_v_hat, wf_v_mis, wf_v_samp, wf_g = [], [], [], [], []
+        wf_h = []          # per-valid-interval I_t * (vhat_t - (1+delta))
+        wf_excluded = 0
+        _behavior_probs = None
+        if _wf_mode and not _wf_is_baseline and rewards.numel() > 0:
+            # One no-grad forward under the BEHAVIOR (pre-update) policy for
+            # the Rao-Blackwellized dual statistic. Runs before any optimizer
+            # step, so these are exactly the rollout probabilities.
+            with torch.no_grad():
+                _wf_mask = action_masks if (Config.MASK and action_masks is not None) else None
+                _behavior_probs = self.network.get_action_and_value(
+                    states, prompts, _wf_mask, actions
+                )[4].detach().cpu().numpy()          # [B, M]
+
         for ts in sorted(slot_to_indices.keys()):
             idxs = torch.tensor(slot_to_indices[ts], device=Config.DEVICE, dtype=torch.long)
             Nt = int(idxs.numel())
@@ -2516,6 +2619,105 @@ class PPOAgent:
                 # Pure request-level mean reward for this interval.
                 # No server grouping, no fair padding, no softmin.
                 tr = avg_r_t
+
+            elif _wf_mode:
+                # ====================================================
+                # [WF-dual] constrained water-filling-regret fairness.
+                #   base  = softmin over the interval's REQUEST rewards
+                #           (service fairness: max-min over users; SNR 3.20
+                #           vs 2.38 for softmin over server means, which
+                #           bins ~20 requests into 8 noisy buckets)
+                #   v_obs = [Psi(counts) - Psi(k)] / Dbar
+                #   tr    = base - mu_lag * v_obs
+                # Linear penalty: constant gradient at every unfairness
+                # level (a sigmoid/ReLU cap saturates exactly where the
+                # policy is most unfair, making collapse absorbing), and
+                # the dual mu_lag is unbounded below mu_max, so no quality
+                # landscape can outbid it. No (1+delta) constant here: it
+                # is action-independent and would only shift the critic
+                # target as mu moves; the dual update carries the offset.
+                # ====================================================
+                snap = states_np[int(idxs[0].item())]
+                caps = np.asarray(Config.SERVER_CAPACITIES[:M], dtype=np.float64)
+                dyn_dim = int(getattr(Config, "SERVER_DYN_DIM", 2))
+                F_stride = snap.shape[-1] // M if M > 0 else 0
+                if F_stride >= dyn_dim + 1 and snap.shape[-1] == M * F_stride:
+                    util_snap = np.clip(snap[0::F_stride][:M].astype(np.float64), 0.0, None)
+                    d_snap = util_snap * caps
+                    if bool(getattr(Config, "QUOTA_COUNT_INFLIGHT", True)) and dyn_dim > 1:
+                        resid_snap = snap[1::F_stride][:M].astype(np.float64)
+                        d_snap = d_snap + (resid_snap > 0.0).astype(np.float64)
+                    mu_snap = snap[dyn_dim::F_stride][:M].astype(np.float64)
+                else:
+                    d_snap = np.zeros(M, dtype=np.float64)
+                    mu_snap = np.asarray(Config.SERVICE_RATE[:M], dtype=np.float64)
+                eps_mu = float(getattr(Config, "QUOTA_EPS_MU", 1e-3))
+                mu_ref = (
+                    np.asarray(Config.SERVICE_RATE[:M], dtype=np.float64)
+                    if bool(getattr(Config, "QUOTA_USE_FROZEN_MU", True))
+                    else mu_snap
+                )
+                s_budget = np.maximum(mu_ref * float(Config.INTERVAL_LENGTH), eps_mu)
+
+                counts_np = np.bincount(
+                    a_t.detach().cpu().numpy().astype(np.int64), minlength=M
+                )[:M]
+
+                d_for_quota = d_snap + _hist_w * H_cum if _hist_w > 0.0 else d_snap
+                k_dag = fair_quota(d_for_quota, s_budget, Nt, counts_np)
+                H_cum = H_cum + counts_np.astype(np.float64)
+
+                # Service fairness: tilted softmin over request rewards.
+                _tilt = float(getattr(Config, "WF_TILT_BETA", -4.0))
+                base_t = (
+                    (torch.logsumexp(_tilt * r_t, dim=0) - math.log(Nt)) / _tilt
+                    if abs(_tilt) > 1e-8 else avg_r_t
+                )
+
+                delta_obs, dbar, v_obs, g_t = wf_regret_stats(
+                    d_for_quota, s_budget, counts_np, k_dag
+                )
+                wf_g.append(g_t)
+
+                _valid = (Nt >= 2) and (dbar > float(getattr(Config, "WF_EPS_DBAR", 1e-6)))
+                _target = 1.0 + float(getattr(Config, "FAIR_DELTA", 0.5))
+                if _valid:
+                    wf_v_obs.append(v_obs)
+                    if _behavior_probs is not None:
+                        _P = _behavior_probs[idxs.detach().cpu().numpy()][:, :M]
+                        vh, vm, vs = wf_expected_regret(
+                            d_for_quota, s_budget, _P, k_dag, dbar
+                        )
+                        if np.isfinite(vh):
+                            wf_v_hat.append(vh)
+                            wf_v_mis.append(vm)
+                            wf_v_samp.append(vs)
+                            wf_h.append(vh - _target)
+                    # The (1+delta) offset stays IN the actor reward, mirrored
+                    # by the same masked offset in the dual statistic: the
+                    # valid-mask I_t is policy-dependent (Dbar depends on the
+                    # backlog the policy created), so nu*(1+delta)*I_t is NOT
+                    # an action-independent constant that could be dropped.
+                    # Actor and dual then optimize the same Lagrangian
+                    #   base_t - nu * I_t * (v_t - (1+delta)).
+                    tr = base_t - float(self.lag_mu) * (float(v_obs) - _target)
+                else:
+                    # Degenerate normalizer (N_t < 2 or Dbar ~ 0): I_t = 0, no
+                    # fairness term; g_t is still recorded above. If exclusions
+                    # are frequent, switch the constraint to E[g] <= d_g -- the
+                    # (1+delta) parametrization does not transfer to g.
+                    wf_excluded += 1
+                    tr = base_t
+
+                # Shared diagnostics (same definitions as the quota branch).
+                quota_f_load.append(load_fairness(counts_np, k_dag))
+                quota_jain.append(jain_normalized_load(d_snap, s_budget, counts_np))
+                z_load = (d_snap + counts_np) / np.maximum(s_budget, 1e-9)
+                _zmean = max(float(z_load.mean()), 1e-9)
+                lb_makespan.append(float(z_load.max()))
+                lb_overload.append(float(np.mean(z_load > 1.0)))
+                lb_cov.append(float(z_load.std() / _zmean))
+                lb_imbalance.append(float(z_load.max() / _zmean))
 
             elif str(getattr(Config, "FAIRNESS_MODE", "legacy")).lower() == "quota":
                 # ====================================================
@@ -2770,7 +2972,10 @@ class PPOAgent:
         dones = torch.zeros_like(term_rewards)
         dones[-1] = 1
 
-        term_adv = self.compute_gae(term_rewards, term_values_old, dones=dones)
+        term_adv = self.compute_gae(
+            term_rewards, term_values_old, dones=dones,
+            gamma=float(getattr(Config, "INTERVAL_GAMMA", Config.GAMMA)),
+        )
         term_ret = term_adv + term_values_old
 
         # --- diagnostics captured BEFORE advantage normalization ---
@@ -2825,6 +3030,7 @@ class PPOAgent:
         _vt_ev = None
         _vt_ev_interval = None
         _vt_pred_std = None
+        _bt_vec = None   # per-interval b_t, kept for the residual critic target
         if (bool(getattr(Config, "VTASK_INTERVAL_BASELINE", False))
                 and getattr(self.network, "use_vtask", False)
                 and term_adv.numel() > 0):
@@ -2835,6 +3041,7 @@ class PPOAgent:
                 if _vt is not None:
                     _vt = _vt.detach().to(term_adv.dtype)
                     b_t = torch.stack([_vt[idxs].mean() for idxs in interval_indices])
+                    _bt_vec = b_t.detach()
                     _adv_var_before = float(term_adv.var(unbiased=False).cpu().item())
                     term_adv = term_adv - b_t
                     _vt_base_mean = float(b_t.mean().cpu().item())
@@ -2862,6 +3069,17 @@ class PPOAgent:
                             ((rewards.to(_vt.dtype) - _vt).var(unbiased=False) / _rv)
                             .cpu().item()
                         )
+
+        # Residual critic target Y_t = R_t - b_t. Without it the critic is
+        # trained toward the full R_t while the advantage subtracts BOTH V and
+        # b_t, double-counting whatever s-conditional mean the two share. The
+        # advantage value itself is unchanged (A = (R - V) - b = (R - b) - V);
+        # only the regression target moves.
+        term_ret_value = (
+            (term_ret - _bt_vec)
+            if (bool(getattr(Config, "CRITIC_RESIDUAL_TARGET", False)) and _bt_vec is not None)
+            else term_ret
+        )
 
         # Keep your single-interval fix:
         # if only one interval, do not subtract itself.
@@ -2983,6 +3201,7 @@ class PPOAgent:
         total_policy_loss = 0.0
         total_value_loss = 0.0
         total_entropy_loss = 0.0
+        last_kl_interval_sum = None
         approx_kl = torch.tensor(0.0, device=Config.DEVICE)
 
         actual_updates = 0
@@ -3077,11 +3296,13 @@ class PPOAgent:
                 # one frozen telemetry state -> one interval value
                 # ----------------------------------------------------
                 v_all = new_values.squeeze(-1)
+                if self.critic_mu_head is not None:
+                    v_all = v_all + self._mu_value_offset()
                 v_interval = v_all[first_indices_t]
 
                 value_loss = F.smooth_l1_loss(
                     v_interval,
-                    term_ret.detach()
+                    term_ret_value.detach()
                 )
 
                 # value_loss = F.mse_loss(v_interval, term_ret.detach())
@@ -3102,7 +3323,17 @@ class PPOAgent:
                         approx_kl_step[idxs].mean()
                         for idxs in interval_indices
                     ]).mean()
+                    # Under conditional factorization the JOINT interval KL is
+                    # EXACTLY the sum of per-request KLs, so the mean-request
+                    # number above does not control it -- and the joint KL
+                    # scales with N_t, so comparing runs across different
+                    # delta_t requires this one, not the mean.
+                    _kl_interval_sum = torch.stack([
+                        approx_kl_step[idxs].sum()
+                        for idxs in interval_indices
+                    ]).mean()
 
+                last_kl_interval_sum = float(_kl_interval_sum.detach().cpu().item())
                 if use_kl_stop and float(approx_kl.detach().cpu().item()) > target_kl:
                     print(
                         f"[PPO] early stop at epoch {epoch}: "
@@ -3245,7 +3476,7 @@ class PPOAgent:
                         )
 
                     mb_term_adv = term_adv[mb_pos]
-                    mb_term_ret = term_ret[mb_pos]
+                    mb_term_ret = term_ret_value[mb_pos]
 
                     policy_loss = interval_policy_loss(
                         new_log_probs,
@@ -3255,6 +3486,8 @@ class PPOAgent:
                     )
 
                     v_all = new_values.squeeze(-1)
+                    if self.critic_mu_head is not None:
+                        v_all = v_all + self._mu_value_offset()
 
                     v_interval = torch.stack([
                         v_all[local_idxs[0]]
@@ -3402,9 +3635,49 @@ class PPOAgent:
                 _vt_ev = _ev_pre
 
         # Runs AFTER the policy update, so this episode's reward used the mu
-        # carried in from the previous episode and mu now responds to the Jain
-        # that policy actually realized (standard two-timescale ordering).
-        if bool(getattr(Config, "USE_LAGRANGIAN_FAIR", False)) and quota_jain:
+        # carried in from the previous episode and mu now responds to what the
+        # policy actually realized (standard two-timescale ordering).
+        #
+        # wf_dual: dual ascent on E[v] <= 1 + delta using the Rao-Blackwellized
+        # vhat (exact conditional expectation of the regret under the behavior
+        # policy) rather than the sampled v_obs -- the multiplier then tracks
+        # the policy, not one multinomial draw. Complementary slackness does
+        # the rest: constraint satisfied -> mu decays to 0 and the fairness
+        # term (and its noise) vanishes from the reward; violated -> mu keeps
+        # rising, so no bounded quality incentive can hold the constraint off.
+        _nu_saturated = 0
+        if (_wf_mode and not _wf_is_baseline
+                and bool(getattr(Config, "FAIR_DUAL_ENABLE", True))):
+            # Fixed-T normalization: h_e = (1/T) * sum_t I_t * (vhat_t - target).
+            # Dividing by the CONFIGURED T rather than the number of valid
+            # intervals keeps actor and dual on the same masked Lagrangian --
+            # an episode with fewer valid intervals exerts proportionally less
+            # constraint pressure, exactly as it contributes fewer penalty
+            # terms to the actor return. Fallback to v_obs-based residuals for
+            # completeness (vhat needs stored probs).
+            _T_fix = max(int(getattr(Config, "EPISODE_TIME_INTERVAL", 1)), 1)
+            _target = 1.0 + float(getattr(Config, "FAIR_DELTA", 0.5))
+            _res = wf_h if len(wf_h) > 0 else [v - _target for v in wf_v_obs]
+            if len(_res) > 0:
+                h_ep = float(np.sum(_res)) / _T_fix
+                a = float(getattr(Config, "FAIR_DUAL_EMA", 0.1))
+                self._vbar_ema = (
+                    h_ep if self._vbar_ema is None
+                    else (1.0 - a) * self._vbar_ema + a * h_ep
+                )
+                eta = float(getattr(Config, "FAIR_DUAL_LR", 0.05))
+                nu_max = float(getattr(Config, "FAIR_MU_MAX", 5.0))
+                self.lag_mu = float(
+                    min(max(self.lag_mu + eta * self._vbar_ema, 0.0), nu_max)
+                )
+                # Saturation: nu pinned at nu_max while the constraint is
+                # still violated => the penalty is BOUNDED and enforcement is
+                # not guaranteed. Must be reported, not assumed away.
+                _nu_saturated = int(
+                    self.lag_mu >= nu_max - 1e-9 and self._vbar_ema > 0.0
+                )
+
+        if (not _wf_mode) and bool(getattr(Config, "USE_LAGRANGIAN_FAIR", False)) and quota_jain:
             jain_ep = float(np.mean(quota_jain))
             a = float(getattr(Config, "LAGRANGIAN_JAIN_EMA", 0.3))
             self._jain_ema = (
@@ -3420,11 +3693,23 @@ class PPOAgent:
                 min(max(self.lag_mu + mu_lr * (floor - self._jain_ema), 0.0), mu_max)
             )
 
+        _mean = lambda xs: (float(np.mean(xs)) if len(xs) > 0 else None)
         return {
             "lagrangian_mu": float(getattr(self, "lag_mu", 1.0)),
             "lagrangian_jain_ema": (
                 float(self._jain_ema) if self._jain_ema is not None else None
             ),
+            # ---- WF-dual fairness ----
+            "fair_v_obs": _mean(wf_v_obs),
+            "fair_v_hat": _mean(wf_v_hat),
+            "fair_v_mismatch": _mean(wf_v_mis),
+            "fair_v_sampling": _mean(wf_v_samp),
+            "fair_g": _mean(wf_g),
+            "fair_h": (float(self._vbar_ema) if self._vbar_ema is not None else None),
+            "fair_nu": float(getattr(self, "lag_mu", 0.0)),
+            "fair_nu_saturated": int(_nu_saturated),
+            "mean_interval_sum_kl": last_kl_interval_sum,
+            "fair_excluded_intervals": int(wf_excluded),
             "policy_loss": total_policy_loss / den,
             "value_loss": total_value_loss / den,
             "entropy_loss": total_entropy_loss / den,
@@ -4082,7 +4367,13 @@ class PPOAgent:
     #         "approx_kl": float(approx_kl.detach().cpu().item()),
     #     }
 
-    def compute_gae(self, rewards, values, dones=None):
+    def compute_gae(self, rewards, values, dones=None, gamma=None):
+        # gamma override: INTERVAL-level returns use INTERVAL_GAMMA (=1.0),
+        # aligning the actor objective with the undiscounted per-episode
+        # constraint statistic the dual ascent uses -- with GAMMA=0.99 they
+        # would be two different optimization problems. Finite horizon T, so
+        # gamma=1 is safe. Request-level uses keep Config.GAMMA.
+        g = float(Config.GAMMA if gamma is None else gamma)
         advantages = torch.zeros_like(rewards)
         gae = 0.0
 
@@ -4092,8 +4383,8 @@ class PPOAgent:
 
         for t in reversed(range(len(rewards))):
             next_value = 0.0 if t == len(rewards) - 1 else values[t + 1]
-            delta = rewards[t] + Config.GAMMA * next_value * (1 - dones[t]) - values[t]
-            gae = delta + Config.GAMMA * Config.GAE_LAMBDA * (1 - dones[t]) * gae
+            delta = rewards[t] + g * next_value * (1 - dones[t]) - values[t]
+            gae = delta + g * Config.GAE_LAMBDA * (1 - dones[t]) * gae
             advantages[t] = gae
 
         return advantages

@@ -77,6 +77,49 @@ class EnhancedLLMRouterTrainer:
         if Config.ENABLE_CONSOLE_LOGGING:
             self.print_config_summary()
     
+    def compute_route_distribution(self, episode_record):
+        """Per-task routing distribution P(endpoint | task) and pairwise JS.
+
+        The marginal fairness panels (Jain, max_endpoint_share, ...) cannot
+        distinguish uniform routing from per-task specialization whose mixture
+        happens to be uniform -- and the latter is precisely success. The JS
+        divergence between the tasks' conditional routing distributions is the
+        quantitative definition of "prompt-aware": structurally 0 for every
+        prompt-blind baseline, > 0 iff different tasks route differently.
+        (Mechanism evidence only; the fairness calibration is checked by the
+        analytic vhat, not by JS.)
+        """
+        M = len(Config.SERVER_CAPACITIES)
+        counts = {}
+        for req in episode_record:
+            if req.get("episode") != self.current_episode:
+                continue
+            sid = req.get("server_id")
+            task = str(req.get("task_type", "") or "")
+            if sid is None or not task:
+                continue
+            sid = int(sid)
+            if 0 <= sid < M:
+                counts.setdefault(task, np.zeros(M, dtype=np.float64))[sid] += 1
+
+        dists = {t: c / c.sum() for t, c in counts.items() if c.sum() > 0}
+        if len(dists) < 2:
+            return dists, None
+
+        def _js(p, q):
+            m = 0.5 * (p + q)
+            def _kl(a, b):
+                mask = a > 0
+                return float(np.sum(a[mask] * np.log2(a[mask] / np.maximum(b[mask], 1e-12))))
+            return 0.5 * _kl(p, m) + 0.5 * _kl(q, m)
+
+        tasks = sorted(dists.keys())
+        pairs = [
+            _js(dists[tasks[i]], dists[tasks[j]])
+            for i in range(len(tasks)) for j in range(i + 1, len(tasks))
+        ]
+        return dists, float(np.mean(pairs))
+
     def update_service_rate_from_episode(self, episode_record):
         """
         Update per-server service rate after each trajectory/episode.
@@ -359,6 +402,11 @@ class EnhancedLLMRouterTrainer:
         episode_info['episode_length'] = len(record)
         episode_info['service_rate'] = service_rate
 
+        if bool(getattr(Config, "ROUTE_DIST_LOG", True)):
+            _dists, _js = self.compute_route_distribution(record)
+            episode_info['route_dists'] = {t: d.tolist() for t, d in _dists.items()}
+            episode_info['specialization_js'] = _js
+
         return episode_info
 
     def run_episode(self) -> dict:
@@ -479,9 +527,11 @@ class EnhancedLLMRouterTrainer:
                     or prompt_entry.get('answer')
                     or prompt_entry.get('target')
                 )
+                task_type = str(prompt_entry.get('task_type', '') or '')
             else:
                 prompt = str(prompt_entry)
                 ground_truth = None
+                task_type = ''
 
 
             if Config.NAIVE_PPO:
@@ -523,7 +573,7 @@ class EnhancedLLMRouterTrainer:
             robin_counter = next_counter
             # slot_counts[action] += 1.0
 
-            next_state, done = self.env.step(action, prompt, ground_truth)
+            next_state, done = self.env.step(action, prompt, ground_truth, task_type=task_type)
             alloc_counts[action] += 1.0   # count this routing for the interval
             queue_length = next_state.tolist()
 
@@ -1003,6 +1053,22 @@ class EnhancedLLMRouterTrainer:
                         "cumulated_avg_rewards_return": training_metrics['cumulated_avg_rewards'] if training_metrics else None,
                         "entropy of route distribution": training_metrics['entropy of route distribution'] if training_metrics else None,
                         "approx_kl": training_metrics['approx_kl'] if training_metrics else None,
+                        # Same estimator, honest name: the logged quantity is
+                        # the per-request mean KL; the joint interval KL is
+                        # approximately the SUM of per-request KLs.
+                        "train/mean_request_kl": training_metrics['approx_kl'] if training_metrics else None,
+                        # ---- WF-dual fairness (constrained, RCPO) ----
+                        "fair/v_observed": training_metrics.get('fair_v_obs') if training_metrics else None,
+                        "fair/v_expected_policy": training_metrics.get('fair_v_hat') if training_metrics else None,
+                        "fair/v_mismatch": training_metrics.get('fair_v_mismatch') if training_metrics else None,
+                        "fair/v_sampling": training_metrics.get('fair_v_sampling') if training_metrics else None,
+                        "fair/g": training_metrics.get('fair_g') if training_metrics else None,
+                        "dual/h": training_metrics.get('fair_h') if training_metrics else None,
+                        "dual/nu": training_metrics.get('fair_nu') if training_metrics else None,
+                        "dual/saturated": training_metrics.get('fair_nu_saturated') if training_metrics else None,
+                        "train/mean_interval_sum_kl": training_metrics.get('mean_interval_sum_kl') if training_metrics else None,
+                        "fair/excluded_intervals": training_metrics.get('fair_excluded_intervals') if training_metrics else None,
+                        "route/specialization_js": episode_info.get('specialization_js'),
                         # PPO signal diagnostics: is the policy stuck because the
                         # advantage signal collapsed? explained_variance says why.
                         "raw_adv_std": training_metrics.get('raw_adv_std') if training_metrics else None,
@@ -1076,6 +1142,15 @@ class EnhancedLLMRouterTrainer:
                 if self.wandb_available and training_metrics and 'server_usage_percentage' in training_metrics:
                     for server_id, usage in training_metrics['server_usage_percentage'].items():
                         wandb.log({f"server_{server_id}_usage": usage})
+
+                # Per-task conditional routing distribution P(endpoint | task):
+                # the mechanism evidence the marginal panels cannot show.
+                if self.wandb_available and episode_info.get('route_dists'):
+                    _rd_log = {}
+                    for _task, _dist in episode_info['route_dists'].items():
+                        for _m, _p in enumerate(_dist):
+                            _rd_log[f"route/dist_{_task}_{_m}"] = float(_p)
+                    wandb.log(_rd_log)
 
                 # Add avg reward per server
                 if self.wandb_available and episode_info and 'mean_reward_per_server' in episode_info:

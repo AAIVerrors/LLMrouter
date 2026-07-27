@@ -33,6 +33,8 @@ import math
 
 import numpy as np
 
+from config import Config
+
 
 def fair_quota(D, S, n_total, realized_counts, rel_tol=1e-9):
     """Discrete water-filling fair quota, closest representative.
@@ -91,17 +93,138 @@ def fair_quota(D, S, n_total, realized_counts, rel_tol=1e-9):
     cand = [m for m in range(M) if abs(marginal(m, base[m]) - threshold) <= tol]
     R = n_total - int(base.sum())
     if R > 0:
-        # Closest-representative tie-break: adding one unit to server m
-        # changes the l1 distance to the realized counts by Gamma_m.
-        gam = sorted(
-            (abs(int(N[m]) - (int(base[m]) + 1)) - abs(int(N[m]) - int(base[m])), m)
-            for m in cand
-        )
-        for _, m in gam[:R]:
-            base[m] += 1
+        if str(getattr(Config, "QUOTA_TIEBREAK", "lex")).lower() == "lex":
+            # Canonical representative among the optimal quota set:
+            #   1) minimize Psi (all candidates already do),
+            #   2) among them MAXIMIZE the reference variance Dbar,
+            #   3) lexicographic endpoint id only for exact remaining ties.
+            # Step 2 makes the choice invariant to endpoint relabeling (Dbar
+            # is permutation-invariant) and avoids picking a degenerate
+            # representative: with S=(1,3), N=2 the two optima carry
+            # Dbar = 0.667 and 0.0, and pure lex could land on 0. The choice
+            # must also not depend on the realized counts, or the reference
+            # scale itself becomes action-dependent.
+            # Adding one unit to server m changes its Dbar contribution by
+            #   [1 - (2*base_m + 1)/N] / S_m.
+            gains = sorted(
+                ((-(1.0 - (2.0 * base[m] + 1.0) / max(n_total, 1)) / S[m], m)
+                 for m in cand)
+            )
+            for _, m in gains[:R]:
+                base[m] += 1
+        else:
+            # Legacy closest-representative tie-break: adding one unit to
+            # server m changes the l1 distance to the realized counts by
+            # Gamma_m. Kept for reproducing old runs only; it makes Dbar
+            # depend on the actions being scored.
+            gam = sorted(
+                (abs(int(N[m]) - (int(base[m]) + 1)) - abs(int(N[m]) - int(base[m])), m)
+                for m in cand
+            )
+            for _, m in gam[:R]:
+                base[m] += 1
 
     assert int(base.sum()) == n_total
     return base
+
+
+# =====================================================================
+# Water-filling regret fairness (constrained / RCPO formulation)
+# =====================================================================
+
+def wf_psi(D, S, n):
+    """Water-filling cost Psi(n) = sum_m (D_m + n_m)^2 / S_m."""
+    D = np.asarray(D, dtype=np.float64)
+    S = np.asarray(S, dtype=np.float64)
+    n = np.asarray(n, dtype=np.float64)
+    return float(np.sum((D + n) ** 2 / S))
+
+
+def wf_regret_stats(D, S, counts, k):
+    """Observed water-filling regret and its i.i.d. reference normalization.
+
+    Returns (delta_obs, dbar, v_obs, g):
+      delta_obs = Psi(counts) - Psi(k)                       >= 0
+      dbar      = sum_m k_m (1 - k_m/N) / S_m
+                  = E[delta_obs] under counts ~ Multinomial(N, k/N),
+                  the i.i.d. QUOTA-PROPORTIONAL SAMPLING REFERENCE -- not a
+                  floor: the true minimum is 0 (counts == k), and a
+                  deterministic conditional policy whose marginals hit the
+                  quota beats the reference (v -> 0).
+      v_obs     = delta_obs / dbar   (np.nan when dbar degenerates)
+      g         = delta_obs / (Psi_max - Psi(k)), in [0, 1]: the fraction of
+                  the worst-case water-filling loss actually incurred, where
+                  Psi_max routes every request to the single worst endpoint.
+                  Reported alongside v because it needs no reference scale.
+    """
+    D = np.asarray(D, dtype=np.float64)
+    S = np.asarray(S, dtype=np.float64)
+    counts = np.asarray(counts, dtype=np.float64)
+    k = np.asarray(k, dtype=np.float64)
+    N = float(counts.sum())
+
+    psi_k = wf_psi(D, S, k)
+    delta_obs = max(wf_psi(D, S, counts) - psi_k, 0.0)
+    dbar = float(np.sum(k * (1.0 - k / max(N, 1.0)) / S))
+
+    base = float(np.sum(D ** 2 / S))
+    psi_max = base + float(np.max(((D + N) ** 2 - D ** 2) / S))
+    denom_g = max(psi_max - psi_k, 1e-12)
+    g = float(min(max(delta_obs / denom_g, 0.0), 1.0))
+
+    v_obs = float(delta_obs / dbar) if dbar > 0.0 else float("nan")
+    return delta_obs, dbar, v_obs, g
+
+
+def wf_expected_regret(D, S, probs, k, dbar):
+    """Rao-Blackwellized expected regret of the CONDITIONAL policy.
+
+    probs: (N, M) per-request routing probabilities pi_i. With requests
+    conditionally independent given (s_t, p_{1:N}) [A2]:
+
+        E_pi[Delta^Psi | s, p] = sum_m [ (D+nhat_m)^2 + sig2_m - (D+k_m)^2 ] / S_m
+        nhat_m = sum_i pi_{i,m},   sig2_m = sum_i pi_{i,m}(1 - pi_{i,m})
+
+    (verified against Monte Carlo to <0.4%). Used for the DUAL update: it is
+    the exact conditional expectation, so the multiplier tracks the policy's
+    expected constraint cost instead of one noisy multinomial draw. The actor
+    reward keeps the sampled v_obs, which preserves cross-interval credit
+    (routing now -> backlog next interval -> future regret).
+
+    Returns (v_hat, v_mean_allocation, v_sampling), each normalized by dbar:
+      v_mean_allocation = [Psi(nhat) - Psi(k)] / dbar   expected-allocation term;
+                          MAY be negative (nhat is a continuous vector and can
+                          undercut the integer optimum)
+      v_sampling        = [sum_m sig2_m / S_m] / dbar   policy randomness
+
+    v_hat itself is NONNEGATIVE by construction: it equals
+    E[Psi(X) - Psi(k)] and every realizable integer count vector X is a
+    feasible solution of the water-filling problem, so Psi(X) >= Psi(k)
+    pointwise. The sampling term exactly repays whatever the continuous
+    relaxation undercuts. A materially negative v_hat is therefore an
+    implementation error, not numerics -- it is raised, not clipped.
+    """
+    D = np.asarray(D, dtype=np.float64)
+    S = np.asarray(S, dtype=np.float64)
+    P = np.asarray(probs, dtype=np.float64)
+    k = np.asarray(k, dtype=np.float64)
+    if dbar <= 0.0 or P.size == 0:
+        return float("nan"), float("nan"), float("nan")
+    nhat = P.sum(axis=0)
+    sig2 = (P * (1.0 - P)).sum(axis=0)
+    mean_alloc = wf_psi(D, S, nhat) - wf_psi(D, S, k)
+    sampling = float(np.sum(sig2 / S))
+    v_hat = float((mean_alloc + sampling) / dbar)
+    if v_hat < -1e-7:
+        raise AssertionError(
+            f"wf_expected_regret: v_hat={v_hat} < 0 is impossible "
+            "(pointwise Psi(X) >= Psi(k)); check D/S/k/probs consistency"
+        )
+    return (
+        max(v_hat, 0.0),
+        float(mean_alloc / dbar),
+        float(sampling / dbar),
+    )
 
 
 def quota_penalties(counts, k, f):

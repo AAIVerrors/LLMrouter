@@ -399,7 +399,7 @@ class Config:
     # gradient at all. Re-set from the realised latency histogram of a run
     # (slo/violation_rate_{10,20,40} bracket it), not from either argument
     # alone, and re-check whenever rho changes.
-    MAX_LAT = 40
+    MAX_LAT = 30
     # SLO latency thresholds (seconds). Logged as violation rate =
     # fraction of completed requests with end-to-end latency > T.
     # Report a few (tight/moderate/loose); keep all below MAX_LAT.
@@ -948,9 +948,9 @@ class Config:
     # fleet is how this run silently reached rho = 2.47,
     # where every episode ends by hitting EPISODE_COMPLETION_TIMEOUT with a
     # backlog that never drains.
-    POISSON_ARRIVAL_RATE = 2.91
+    POISSON_ARRIVAL_RATE = 3
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
-    EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
+    EPISODE_TIME_INTERVAL = 10 # How many intervals in current episode
 
     # Training settings
     EPISODE_LENGTH = 100  # Number of prompts per episode (increased for better learning)
@@ -974,7 +974,14 @@ class Config:
     # Episode wall clock is dt * EPISODE_TIME_INTERVAL + drain ~= 60 s, so a
     # 200-episode run takes ~3.3 h. Sweep this ({4, 7, 12}) for the paper: if
     # performance is flat in dt, the telemetry-gap framing is unmotivated.
-    INTERVAL_LENGTH = 7 # The length of interval
+    # 5s x 10 intervals (was 7x8): same rho, 25% more interval-level PPO
+    # samples per episode (the binding sample count -- the policy loss sees T
+    # advantages, not T*N_t), ~10% fewer requests, shorter wall clock.
+    # delta_t = 5s is still 2-3.5 mean service times (1.4-2.5s), so telemetry
+    # staleness -- the TMDP premise -- remains material. The v-calibration is
+    # delta_t-invariant by construction, so the delta_t ablation (e.g. {3,5,8}
+    # or including 7) needs no fairness re-tuning.
+    INTERVAL_LENGTH = 5 # The length of interval
     MAX_EPISODES = 200   # match LR_DECAY_EPISODES above
 
     # Queue score settings
@@ -1066,7 +1073,7 @@ class Config:
     T_QUEUE = -2
     T_REWARD = -2
     FAIR_WARMUP_EPISODES = 0
-    FAIRNESS_MODE = "quota"
+    FAIRNESS_MODE = "wf_dual"   # "wf_dual" | "quota" (legacy per-server ReLU) | "legacy"
     # Quota fairness normalizer:
     #   "service_rate"  : S_m = mu_m * dt  (mu-weighted; but mu=req/s is
     #                     endogenous — harder prompts lower measured mu).
@@ -1152,7 +1159,15 @@ class Config:
     # means. If end-to-end latency degrades -- the quota can now favour a server
     # that is behind on cumulative count even while its queue is long -- step
     # back to 0.5 rather than to 0.
-    QUOTA_HISTORY_WEIGHT = 1.0
+    # 0: the water-filling quota targets the interval-start backlog only.
+    # The backlog ALREADY carries the history physically -- a server
+    # over-allocated in interval t drains slower and enters t+1 with larger
+    # D_m, so water filling automatically compensates past imbalance. Adding
+    # H_cum on top double-counts that memory, and under wf_dual it would also
+    # distort the regret reference (v is computed against the same
+    # d_for_quota). Keep 0 unless deliberately studying long-horizon
+    # entitlement, which is a different objective than per-interval regret.
+    QUOTA_HISTORY_WEIGHT = 0.0
     FAIR_TARGET = 1     # 最终的 FAIR 值
     FAIR = 1           # 起始（trainer 会覆盖）
 
@@ -1185,6 +1200,60 @@ class Config:
     LAGRANGIAN_MU_INIT = 1.0    # 1.0 == current fixed-strength behavior
     LAGRANGIAN_MU_MAX = 10.0
     LAGRANGIAN_JAIN_EMA = 0.3   # EMA smoothing of episode Jain for the mu update
+
+    # =================================================================
+    # WF-DUAL FAIRNESS (water-filling regret, constrained / RCPO)
+    # Active when FAIRNESS_MODE = "wf_dual". Replaces the per-server ReLU
+    # quota penalty + tilted server aggregation with:
+    #   base_t = softmin_beta over the interval's REQUEST rewards
+    #   v_obs  = [Psi(counts) - Psi(k)] / Dbar     observed normalized regret
+    #   tr_t   = base_t - mu_lag * v_obs           linear penalty, no sigmoid
+    #   dual:  vbar <- EMA(mean over valid intervals of v_hat_pi)
+    #          mu_lag <- clip(mu_lag + eta*(vbar - (1+delta)), 0, mu_max)
+    # v = 1 under i.i.d. quota-proportional routing -- a SUFFICIENT
+    # calibration reference, not a characterization (non-iid mixtures can
+    # also hit E[v]=1), and not a floor (deterministic quota-aligned
+    # routing reaches v ~ 0). delta reads as "allowed average regret, in
+    # multiples of the i.i.d. reference" -- a dimensionless reference
+    # multiple. The dual statistic is the fixed-T masked residual
+    # h = (1/T) sum_t I_t*(vhat_t - (1+delta)) with the Rao-Blackwellized
+    # vhat (closed form, exact under A2), matching the actor's masked
+    # Lagrangian term exactly. nu (lag_mu) is CAPPED at FAIR_MU_MAX, so the
+    # penalty is bounded: enforcement is monitored via fair_nu_saturated,
+    # not guaranteed. nu* > 0 whenever the constraint is active at the
+    # optimum; it decays to 0 only under strict slack.
+    # =================================================================
+    # FAIR-off ablation: set FAIR_DUAL_ENABLE=False with FAIR_MU_INIT=0
+    # (mu stays pinned at 0; do NOT pass delta=inf).
+    # Fixed-weight ablation: FAIR_DUAL_ENABLE=False, FAIR_MU_INIT=<weight>.
+    FAIR_DELTA = 0.5          # constraint level: E[v] <= 1 + delta
+    FAIR_DUAL_ENABLE = True   # False => mu_lag frozen at FAIR_MU_INIT
+    FAIR_MU_INIT = 0.0
+    FAIR_DUAL_LR = 0.05       # eta (two-timescale: slower than the policy)
+    FAIR_DUAL_EMA = 0.1       # alpha for the vbar EMA
+    FAIR_MU_MAX = 5.0
+    WF_TILT_BETA = -4.0       # softmin tilt over request rewards
+    WF_EPS_DBAR = 1e-6        # T_fair guard: exclude intervals with Dbar below
+    QUOTA_TIEBREAK = "lex"    # deterministic quota tie-break ("closest" = legacy)
+    # gamma for INTERVAL returns/GAE. 1.0 aligns the actor objective with the
+    # undiscounted per-episode constraint statistic the dual uses (finite
+    # horizon T, so 1.0 is safe). Request-level diagnostics keep Config.GAMMA.
+    INTERVAL_GAMMA = 1.0
+    # Critic learns the residual return Y = R - b (b = V^task prompt baseline)
+    # instead of R, so the s-conditional mean is not subtracted twice; the
+    # advantage A = Y - V is unchanged in value, only the critic target moves.
+    CRITIC_RESIDUAL_TARGET = True
+    # Additive critic conditioning on mu_lag/mu_max: mu shifts the augmented
+    # return of the same state (tr = base - mu*v), so a state-only critic sees
+    # a nonstationary target as the dual moves. V^task does NOT get mu (its
+    # target r_i contains no fairness penalty).
+    CRITIC_INPUT_MU = True
+    ROUTE_DIST_LOG = True     # per-task routing distribution + pairwise JS
+    # Freeze the dual-tower rms normalization per EPISODE: rollout and replay
+    # share one frozen copy (exact epoch-0 log-prob parity: pi_old stored ==
+    # pi_theta_old replayed), the live EMA accumulates on the side and is
+    # committed after the PPO update for the NEXT episode.
+    ACTOR_DUAL_RMS_FREEZE = True
 
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL
