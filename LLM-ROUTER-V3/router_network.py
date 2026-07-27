@@ -1072,8 +1072,9 @@ class RouterNetwork(nn.Module):
                         # warmup ramp. Floor 0.01 guards a freak single-prompt
                         # estimate; the rate-limited commits correct the rest.
                         with torch.no_grad():
-                            sq = quality_score.std(dim=-1).mean().clamp_min(0.01)
-                            sk = queue_score.std(dim=-1).mean().clamp_min(0.01)
+                            _floor = float(getattr(Config, "ACTOR_DUAL_RMS_FLOOR", 0.05))
+                            sq = quality_score.std(dim=-1).mean().clamp_min(_floor)
+                            sk = queue_score.std(dim=-1).mean().clamp_min(_floor)
                             self.rms_quality.copy_(sq)
                             self.rms_queue.copy_(sk)
                             self.rms_quality_frozen.copy_(sq)
@@ -2144,13 +2145,21 @@ class PPOAgent:
                 # per-episode KL effect stays the same order as a normal
                 # policy update.
                 r = float(getattr(Config, "ACTOR_DUAL_RMS_COMMIT_RATIO", 1.5))
+                # Same floor as the seed, enforced at every commit: the frozen
+                # divisor multiplies BOTH the logits and every gradient through
+                # the tower by tau/rms, so an unfloored divisor tracking a
+                # near-zero spread is an unbounded effective-LR amplifier. The
+                # floor caps amplification at tau/floor (= 6x at 0.3/0.05);
+                # rms_k seeded at the old 0.01 floor meant 30x, and one update
+                # moved the policy KL 0.14 and collapsed it onto one server.
+                _fl = float(getattr(Config, "ACTOR_DUAL_RMS_FLOOR", 0.05))
                 for frozen, live in (
                     (net.rms_quality_frozen, net.rms_quality),
                     (net.rms_queue_frozen, net.rms_queue),
                 ):
                     lo = frozen / r
                     hi = frozen * r
-                    frozen.copy_(torch.clamp(live, min=lo, max=hi))
+                    frozen.copy_(torch.clamp(live, min=lo, max=hi).clamp_min(_fl))
 
     def _mu_value_offset(self):
         """Additive critic correction for the current dual variable.

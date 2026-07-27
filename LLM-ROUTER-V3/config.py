@@ -1272,6 +1272,16 @@ class Config:
     # ~5 episodes, a fragile window observed to double one server's share by
     # ep2. Self-seeding starts ep0 exactly on the tau calibration.
     ACTOR_DUAL_RMS_SELF_SEED = True
+    # Lower bound on the rms divisors (seed AND every commit). The divisor
+    # amplifies the tower's logits and gradients by tau/rms, so it must be
+    # floored to bound the effective learning rate: 0.05 caps amplification at
+    # tau/0.05 = 6x. The untrained queue head's spread is ~0.007 -- pinning it
+    # to full tau voice meant 30x gradient amplification, and one update moved
+    # the policy by KL 0.14 straight into a 96%-one-server collapse. A tower
+    # whose raw spread sits under the floor simply speaks QUIETLY (spread
+    # tau*raw/floor) until its head grows -- which is the right behavior for
+    # an untrained tower anyway.
+    ACTOR_DUAL_RMS_FLOOR = 0.05
 
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL
