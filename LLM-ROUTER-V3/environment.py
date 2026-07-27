@@ -1710,7 +1710,14 @@ class EnhancedRouterEnvironment:
                 else None
             ),
         )
-        self.prompt_generator.start()
+        # Deliberately NOT started here. It used to free-run from construction,
+        # and the 60-120 s of model loading between env construction and the
+        # first episode piled 180-360 stray requests into the queue at lambda=3.
+        # clean_prompt_queue() cannot reliably drain them (manager.Queue's
+        # .empty() lies across the IPC boundary), so episode 0 sometimes ran
+        # 300+ requests -- the pinned trace plus pre-reseed strays, wrecking
+        # its pairing. begin_episode_arrivals() starts the generator with the
+        # episode's pinned trace; nothing needs arrivals before that.
 
         self.response_collector_running = mp.Value("b", True)
         self.total_completed = mp.Value("i", 0)
@@ -1924,11 +1931,17 @@ class EnhancedRouterEnvironment:
                 break
 
     def clean_prompt_queue(self):
-        while not self.prompt_queue.empty():
+        # manager.Queue().empty() is advisory across the IPC boundary: items
+        # still in the feeder pipe are invisible to it, so an empty()-guarded
+        # loop exits early and leaves strays behind. Draining with a short
+        # blocking get until it times out twice in a row is reliable.
+        misses = 0
+        while misses < 2:
             try:
-                self.prompt_queue.get_nowait()
+                self.prompt_queue.get(timeout=0.05)
+                misses = 0
             except Empty:
-                break
+                misses += 1
 
     def pause_all_servers(self):
         print("Pausing all servers...")

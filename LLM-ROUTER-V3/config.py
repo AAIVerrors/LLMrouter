@@ -399,7 +399,7 @@ class Config:
     # gradient at all. Re-set from the realised latency histogram of a run
     # (slo/violation_rate_{10,20,40} bracket it), not from either argument
     # alone, and re-check whenever rho changes.
-    MAX_LAT = 20
+    MAX_LAT = 30
     # SLO latency thresholds (seconds). Logged as violation rate =
     # fraction of completed requests with end-to-end latency > T.
     # Report a few (tight/moderate/loose); keep all below MAX_LAT.
@@ -422,7 +422,7 @@ class Config:
     VALUE_COEF = 1        # Value loss weight
     # Anti-collapse brake: 0 collapses onto few servers; 0.02 only delayed
     # the slide to ~ep20; 0.03 is the current setting.
-    ENTROPY_COEF = 0.03
+    ENTROPY_COEF = 0.01
     # 1e-4, lowered from 3e-4 alongside raising ACTOR_DUAL_NORM_TARGET_SPREAD to
     # 0.3. The two multiply: running-norm divides each tower by its measured rms
     # (~0.145) and rescales to tau, so the logits -- and every gradient flowing
@@ -572,7 +572,7 @@ class Config:
     # its first gradient step, and goes back to being what it was meant to be:
     # free while KL is small, and the only thing that caps how far one update
     # moves the policy when it is not.
-    USE_TARGET_KL_STOP = True
+    USE_TARGET_KL_STOP = False
 
     # Full-batch Path A over all intervals: every stability number above
     # (LR / KL / entropy) was measured on this path; minibatching the tiny
@@ -1230,13 +1230,13 @@ class Config:
     # FAIR-off ablation: set FAIR_DUAL_ENABLE=False with FAIR_MU_INIT=0
     # (mu stays pinned at 0; do NOT pass delta=inf).
     # Fixed-weight ablation: FAIR_DUAL_ENABLE=False, FAIR_MU_INIT=<weight>.
-    FAIR_DELTA = 0.5          # constraint level: E[v] <= 1 + delta
+    FAIR_DELTA = 0          # constraint level: E[v] <= 1 + delta
     FAIR_DUAL_ENABLE = True   # False => mu_lag frozen at FAIR_MU_INIT
     FAIR_MU_INIT = 0.0
     FAIR_DUAL_LR = 0.05       # eta (two-timescale: slower than the policy)
     FAIR_DUAL_EMA = 0.1       # alpha for the vbar EMA
     FAIR_MU_MAX = 5.0
-    WF_TILT_BETA = -4.0       # softmin tilt over request rewards
+    WF_TILT_BETA = -2.0       # softmin tilt over request rewards
     WF_EPS_DBAR = 1e-6        # T_fair guard: exclude intervals with Dbar below
     QUOTA_TIEBREAK = "lex"    # deterministic quota tie-break ("closest" = legacy)
     # gamma for INTERVAL returns/GAE. 1.0 aligns the actor objective with the
@@ -1264,6 +1264,14 @@ class Config:
     # KL 0.51 reproduced). 1.5 reaches any realistic spread within ~6
     # episodes while keeping each transition the size of a normal update.
     ACTOR_DUAL_RMS_COMMIT_RATIO = 1.5
+    # Seed the rms divisors (live + frozen) from the FIRST training forward's
+    # measured spread instead of 1.0. Measured on the current architecture:
+    # untrained quality spread 0.06-0.09, queue 0.007-0.042 (6x across seeds),
+    # so no constant seed can be right and 1.0 was 7-15x off -- ep0 started
+    # hyper-uniform and the commit ramp then amplified logits 1.5x/episode for
+    # ~5 episodes, a fragile window observed to double one server's share by
+    # ep2. Self-seeding starts ep0 exactly on the tau calibration.
+    ACTOR_DUAL_RMS_SELF_SEED = True
 
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL

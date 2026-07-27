@@ -428,6 +428,17 @@ class RouterNetwork(nn.Module):
                 # effect from the next episode (two-timescale, like nu).
                 self.register_buffer("rms_quality_frozen", torch.ones(()))
                 self.register_buffer("rms_queue_frozen", torch.ones(()))
+                # 0 until the first training forward SELF-SEEDS all four
+                # buffers from the measured spread. A constant seed cannot be
+                # right: the untrained queue spread varies 6x across random
+                # inits (measured 0.007-0.042), and the tau calibration table
+                # assumes the divisor starts at the TRUE spread. Seeding at 1.0
+                # made ep0 hyper-uniform (logits 7-15x below calibration) and
+                # then the rate-limited commits amplified them 1.5x/episode
+                # for ~5 episodes -- a window where any consistent tower bias
+                # grows geometrically outside optimizer control (observed:
+                # share doubling onto one server at ep2).
+                self.register_buffer("rms_seeded", torch.zeros((), dtype=torch.bool))
             self._dual_rms_q = None
             self._dual_rms_k = None
 
@@ -1052,6 +1063,22 @@ class RouterNetwork(nn.Module):
                     # The divisor is detached and cross-batch, so it caps drift
                     # without forcing per-sample opinions.
                     _eps = 1e-4
+                    if (self.training
+                            and bool(getattr(Config, "ACTOR_DUAL_RMS_SELF_SEED", True))
+                            and hasattr(self, "rms_seeded")
+                            and not bool(self.rms_seeded.item())):
+                        # Self-calibrating seed: episode 0 then starts exactly
+                        # on the tau calibration (entropy ~98% ln M) with no
+                        # warmup ramp. Floor 0.01 guards a freak single-prompt
+                        # estimate; the rate-limited commits correct the rest.
+                        with torch.no_grad():
+                            sq = quality_score.std(dim=-1).mean().clamp_min(0.01)
+                            sk = queue_score.std(dim=-1).mean().clamp_min(0.01)
+                            self.rms_quality.copy_(sq)
+                            self.rms_queue.copy_(sk)
+                            self.rms_quality_frozen.copy_(sq)
+                            self.rms_queue_frozen.copy_(sk)
+                            self.rms_seeded.fill_(True)
                     if self.training:
                         with torch.no_grad():
                             a = float(getattr(
