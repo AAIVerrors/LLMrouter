@@ -4,7 +4,7 @@ class Config:
     # ================================================================
     # Fleet: 6 endpoints, non-reasoning (or reasoning verified OFF).
     # Three specialist clusters: math -> Ministrals, MCQ -> 5.4-nano/small,
-    # qa -> 70B/small. math-vs-mmlu rank corr -0.60, oracle headroom +0.089.
+    # qa -> large/small. math-vs-mmlu rank corr +0.03, oracle headroom +0.051.
     # Router action = list index: keep MODEL_NAMES / PRICE / SERVICE_RATE in
     # the same order. Dropped models stay commented in place.
     # New-endpoint reasoning screen: empty content? billed reasoning_tokens>0?
@@ -15,9 +15,10 @@ class Config:
         "ministral-8b-2512",                                   # 1 cheap, math 0.917
         "gpt-4.1-nano-2025-04-14",                             # 2 fast all-rounder
         "mistral-small-2506",                                  # 3 value king (qa+mmlu)
-        "together/meta-llama/Llama-3.3-70B-Instruct-Turbo",    # 4 flagship 0.944/0.667/0.926, scarce (mu .25)
+        "mistral-large-2512",                                  # 4 flagship 0.95/0.67/0.82 (wins all tasks; mmlu ~tie w/ small), mu .33
         "gpt-5.4-nano",                                        # 5 MCQ specialist; reasoning_effort="none", verified reasoning_tokens=0
         # ---- dropped, kept for the record ----
+        # "together/meta-llama/Llama-3.3-70B-Instruct-Turbo",  # best quality/price flagship, but Together serverless degrades badly under concurrent runs
         # "gpt-4.1-mini",                            # dominated by small (0.669 @ $349 vs 0.764 @ $131)
         # "codestral-2508",                          # wins nothing, 3rd most expensive
         # "gpt-4o-mini",                             # dominated by small, slowest (mu .39)
@@ -32,9 +33,10 @@ class Config:
         (0.00000015, 0.00000015),   # 1 8b        $0.15/$0.15
         (0.00000010, 0.00000040),   # 2 4.1-nano  $0.10/$0.40
         (0.00000015, 0.00000060),   # 3 small     $0.15/$0.60
-        (0.00000104, 0.00000104),   # 4 70B       $1.04/$1.04
+        (0.00000050, 0.00000150),   # 4 large     $0.50/$1.50 (Large 3 2512; confirmed 2026-07-28)
         (0.00000020, 0.00000125),   # 5 5.4-nano  $0.20/$1.25 (confirmed 2026-07-28)
         # ---- dropped ----
+        # (0.00000104, 0.00000104), # Llama-3.3-70B-Turbo
         # (0.00000040, 0.00000160), # gpt-4.1-mini
         # (0.00000030, 0.00000090), # codestral
         # (0.00000015, 0.00000060), # gpt-4o-mini
@@ -46,14 +48,14 @@ class Config:
     # is 25-50%: re-measure (bench_fleet_service_rate.py, n=30, one batch)
     # whenever the fleet, prompts or token cap change.
     SERVICE_RATE = [
-        0.8507, # 0 3b        (2026-07-28 batch)
-        0.5405, # 1 8b
-        0.8049, # 2 4.1-nano
-        0.5691, # 3 small
-        0.2500, # 4 70B       !! probe n=25 -- re-measure with the fleet batch
-        0.6625, # 5 5.4-nano
-        # 0.4456 gpt-4.1-mini | 0.6399 codestral | 0.3929 4o-mini | 0.6093 qwen (dropped)
-    ]   # total 3.727 req/s
+        0.8320, # 0 3b        (2026-07-28 evening batch, n=30)
+        0.2845, # 1 8b        (halved vs prior batch -- long math CoT sample)
+        0.4748, # 2 4.1-nano
+        0.5876, # 3 small
+        0.3302, # 4 large
+        0.4664, # 5 5.4-nano
+        # 0.2500 70B (probe) | 0.4456 gpt-4.1-mini | 0.6399 codestral | 0.3929 4o-mini (dropped)
+    ]   # total 2.976 req/s -> POISSON_ARRIVAL_RATE=2.5 gives rho=0.84
 
     SERVER_CAPACITIES = [50] * len(MODEL_NAMES)
 
@@ -416,7 +418,7 @@ class Config:
 
     # Drain cap: episode proceeds with what completed; shortfall shows up as
     # outcome/incomplete_rate instead of hanging the run.
-    EPISODE_COMPLETION_TIMEOUT = 180
+    EPISODE_COMPLETION_TIMEOUT = 360
 
     SERVICE_RATE_EMA_ALPHA = 0.1
     SERVICE_RATE_MIN_SAMPLES = 1
@@ -518,7 +520,7 @@ class Config:
     # cap / mix change. Targets: overall rho ~0.5-0.7 (queues alive, not
     # drowning) AND rho_cheap = lambda/mu(cheapest-4) ~0.7-0.8 so cost-
     # seeking CAN concentrate (the FAIR-off ablation needs that room).
-    POISSON_ARRIVAL_RATE = 2.5
+    POISSON_ARRIVAL_RATE = 2
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
     EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
 
@@ -588,11 +590,11 @@ class Config:
     # shortest raw queue using interval-boundary state).
     JSQ = False
 
-    P2C = True
+    P2C = False
 
     # Capacity-weighted JSQ: route to the shortest EXPECTED DRAIN TIME
     # (queue / mu), accounting for heterogeneous service rates.
-    CAP_WEIGHTED_JSQ = False
+    CAP_WEIGHTED_JSQ = True
 
     # Power-of-d-choices: sample d admissible servers, route to the shortest
     # (P2C is d=2). POWER_OF_D_WEIGHTED ranks by queue/mu instead of queue.
@@ -638,10 +640,10 @@ class Config:
     # Set 1 to disable.
     GREEDY_TOPK = 1
 
-    T = -1
+    T = -2
     # FAIR = 1  # 0..1, it will control how fair you want, 1 max, 0 min
-    T_QUEUE = -1
-    T_REWARD = -1
+    T_QUEUE = -2
+    T_REWARD = -2
     FAIR_WARMUP_EPISODES = 0
     FAIRNESS_MODE = "wf_dual"   # "wf_dual" | "quota" (legacy per-server ReLU) | "legacy"
     # Quota fairness normalizer:
@@ -802,6 +804,13 @@ class Config:
     # Floor on the divisors: tau/rms multiplies logits AND gradients, so this
     # caps amplification at 6x (0.01 floor meant 30x -> one-update collapse).
     ACTOR_DUAL_RMS_FLOOR = 0.05
+    # Cap on the divisors, symmetric to the floor: under sustained nu pressure
+    # the raw queue-tower spread grows without bound, rms chases it (x1.5/ep
+    # compounding) and the gradient shrinks by tau/rms -- observed rms_q 0.17
+    # -> 12 over 70 eps, KL -> 1e-5, policy frozen while nu maxed out. The cap
+    # bounds attenuation; past it the tower's signal sharpens the policy
+    # instead of being eaten by the divisor.
+    ACTOR_DUAL_RMS_CAP = 1.0
 
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL

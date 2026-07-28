@@ -596,7 +596,7 @@ class RouterNetwork(nn.Module):
         actor_out, critic_out = self._get_output_layers()
 
         if actor_out is not None:
-            nn.init.orthogonal_(actor_out.weight, gain=0.5)
+            nn.init.orthogonal_(actor_out.weight, gain=1)
             if actor_out.bias is not None:
                 nn.init.zeros_(actor_out.bias)
 
@@ -607,7 +607,7 @@ class RouterNetwork(nn.Module):
         
         if hasattr(self, "queue_head"):
             queue_out = self.queue_head[-1]
-            nn.init.orthogonal_(queue_out.weight, gain=0.5)
+            nn.init.orthogonal_(queue_out.weight, gain=1)
             if queue_out.bias is not None:
                 nn.init.zeros_(queue_out.bias)
 
@@ -2153,13 +2153,23 @@ class PPOAgent:
                 # rms_k seeded at the old 0.01 floor meant 30x, and one update
                 # moved the policy KL 0.14 and collapsed it onto one server.
                 _fl = float(getattr(Config, "ACTOR_DUAL_RMS_FLOOR", 0.05))
+                # Ceiling, symmetric to the floor: without it, sustained
+                # one-directional advantage pressure (large nu) inflates the
+                # raw spread and the divisor ratchets up x1.5/ep unbounded --
+                # tau/rms then decays the effective LR to nothing (observed:
+                # rms_q 0.17 -> 12, KL -> 1e-5, policy frozen, nu pinned at
+                # nu_max). Past the cap the tower's discrimination sharpens
+                # the policy instead of being absorbed by the divisor.
+                _cap = float(getattr(Config, "ACTOR_DUAL_RMS_CAP", 1.0))
                 for frozen, live in (
                     (net.rms_quality_frozen, net.rms_quality),
                     (net.rms_queue_frozen, net.rms_queue),
                 ):
                     lo = frozen / r
                     hi = frozen * r
-                    frozen.copy_(torch.clamp(live, min=lo, max=hi).clamp_min(_fl))
+                    frozen.copy_(
+                        torch.clamp(live, min=lo, max=hi).clamp_(_fl, _cap)
+                    )
 
     def _mu_value_offset(self):
         """Additive critic correction for the current dual variable.
