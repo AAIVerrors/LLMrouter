@@ -615,14 +615,8 @@ class EnhancedLLMRouterTrainer:
             time.sleep(1)
         
         episode_record = self.env.get_episode_data()
-        
-        time.sleep(1)
-        
         self.env.pause_all_servers()
-        time.sleep(1)
-        
         self.env.clean_all_queues()
-        time.sleep(1)
         
         # Update buffer rewards with actual episode rewards
         for i, req in enumerate(episode_record):
@@ -1375,7 +1369,6 @@ class EnhancedLLMRouterTrainer:
                 
             # --- Resume servers after training ---
             self.env.resume_all_servers()
-            time.sleep(2)
         
         print(f"\nTraining completed!")
         

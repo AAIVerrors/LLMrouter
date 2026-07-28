@@ -139,13 +139,27 @@ class Endpoint:
                 # uses: measured mu drops ~40% and every quality score reads 0.
                 kw["reasoning"] = {"enabled": False}
                 kw["top_p"] = Config.GEN_TOP_P
-            r = client.chat.completions.create(
-                model=name,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=max_tokens,
-                temperature=Config.GEN_TEMPERATURE,
-                **kw,
-            )
+            if self.provider == "openai" and name.startswith("gpt-5"):
+                # GPT-5 family: max_completion_tokens instead of max_tokens,
+                # default temperature only, and reasoning off so the budget is
+                # spent on visible output (mirrors environment.py's gpt-5.4
+                # handling; billed reasoning tokens would otherwise inflate
+                # both latency and cost invisibly).
+                kw["reasoning_effort"] = "none"
+                r = client.chat.completions.create(
+                    model=name,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_completion_tokens=max_tokens,
+                    **kw,
+                )
+            else:
+                r = client.chat.completions.create(
+                    model=name,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=max_tokens,
+                    temperature=Config.GEN_TEMPERATURE,
+                    **kw,
+                )
         latency = time.time() - t0
         text = (r.choices[0].message.content or "")
         usage = getattr(r, "usage", None)
