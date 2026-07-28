@@ -2134,6 +2134,30 @@ class PPOAgent:
         net = self.network
         if (getattr(net, "use_dual_running_norm", False)
                 and hasattr(net, "rms_quality_frozen")):
+            if bool(getattr(Config, "ACTOR_DUAL_RMS_RESCALE", False)):
+                # Rescale-reset (forced weight normalization, EDM2-style).
+                # score_norm = raw/rms*tau is invariant under (raw/c, rms=1)
+                # when c = live rms, so the policy does not move -- but the
+                # backprop multiplier tau/rms is pinned at tau forever (no
+                # effective-LR decay) and the raw spread returns to ~1 every
+                # episode (no unbounded sharpening). Both observed collapse
+                # modes die here; sharpening is left to the learnable scales.
+                with torch.no_grad():
+                    for tower, live, frozen in (
+                        (net.actor_head, net.rms_quality,
+                         net.rms_quality_frozen),
+                        (net.queue_head, net.rms_queue,
+                         net.rms_queue_frozen),
+                    ):
+                        c = float(live.clamp(0.05, 20.0))
+                        lin = (tower[-1] if isinstance(tower, nn.Sequential)
+                               else tower)
+                        lin.weight.div_(c)
+                        if lin.bias is not None:
+                            lin.bias.div_(c)
+                        live.fill_(1.0)
+                        frozen.fill_(1.0)
+                return
             with torch.no_grad():
                 # Rate-limited commit. The frozen divisor initializes at 1.0
                 # while the raw spread is ~0.1, so an unclamped first commit

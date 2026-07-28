@@ -804,13 +804,17 @@ class Config:
     # Floor on the divisors: tau/rms multiplies logits AND gradients, so this
     # caps amplification at 6x (0.01 floor meant 30x -> one-update collapse).
     ACTOR_DUAL_RMS_FLOOR = 0.05
-    # Cap on the divisors, symmetric to the floor: under sustained nu pressure
-    # the raw queue-tower spread grows without bound, rms chases it (x1.5/ep
-    # compounding) and the gradient shrinks by tau/rms -- observed rms_q 0.17
-    # -> 12 over 70 eps, KL -> 1e-5, policy frozen while nu maxed out. The cap
-    # bounds attenuation; past it the tower's signal sharpens the policy
-    # instead of being eaten by the divisor.
+    # Cap on the divisors, symmetric to the floor. With RESCALE below, floor
+    # and cap are dormant fuses (frozen rms is pinned at 1.0).
     ACTOR_DUAL_RMS_CAP = 1.0
+    # Rescale-reset at commit (forced weight normalization, EDM2-style):
+    # divide each tower's output Linear by its live rms, reset rms to 1.
+    # Policy-invariant (no KL kick). Kills both observed failure modes:
+    # rms chasing spread growth decays effective LR (0.17->12, KL 1e-5,
+    # frozen policy); capping rms lets normalized spread grow unbounded
+    # (max_share 0.88 collapse onto 3b). Sharpening now only through the
+    # learnable tower scales.
+    ACTOR_DUAL_RMS_RESCALE = True
 
     # =================================================================
     # VISUALIZATION AND LOGGING CONTROL
