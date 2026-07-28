@@ -719,6 +719,24 @@ class EnhancedLLMRouterTrainer:
             for i, c in enumerate(service_rate_info["service_rate_counts"]):
                 log_dict[f"service_rate/count_server_{i}"] = c
 
+            # Weighted Jain over z = counts/mu (frozen). 1.0 = capacity-
+            # proportional; plain Jain's optimum (equal counts) scores BELOW
+            # 1 here whenever mu is heterogeneous. episode = this episode's
+            # counts (noisy); cumulative = run-to-date totals (paper metric).
+            _mu = np.asarray(Config.SERVICE_RATE, dtype=float)
+            _cts = np.asarray(service_rate_info["service_rate_counts"], dtype=float)
+            if not hasattr(self, "_wjain_cum_counts"):
+                self._wjain_cum_counts = np.zeros_like(_cts)
+            self._wjain_cum_counts = self._wjain_cum_counts + _cts
+
+            def _wjain(c):
+                z = c / np.maximum(_mu, 1e-9)
+                s2 = float(np.square(z).sum())
+                return float(z.sum() ** 2 / (len(z) * s2)) if s2 > 0 else 1.0
+
+            log_dict["fairness/wjain_episode"] = _wjain(_cts)
+            log_dict["fairness/wjain_cumulative"] = _wjain(self._wjain_cum_counts)
+
             # Log WITHOUT an explicit step, matching every other wandb.log
             # call in this file. Mixing explicit step=episode here with the
             # step-less (auto-incrementing) calls elsewhere made wandb drop

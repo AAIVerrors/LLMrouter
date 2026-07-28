@@ -298,8 +298,13 @@ class PoissonPromptGenerator:
 
     @staticmethod
     def _mmlu_choices(sample: Dict[str, Any]) -> List[Any]:
-        # MMLU uses "choices"; MMLU-Pro uses "options" (up to 10, A-J).
+        # MMLU uses "choices"; MMLU-Pro uses "options" (up to 10, A-J);
+        # ARC uses a dict {"text": [...], "label": [...]}.
         c = sample.get("choices")
+        if isinstance(c, dict):
+            t = c.get("text")
+            if isinstance(t, (list, tuple)):
+                return list(t)
         if not isinstance(c, (list, tuple)):
             c = sample.get("options")
         return list(c) if isinstance(c, (list, tuple)) else []
@@ -316,6 +321,21 @@ class PoissonPromptGenerator:
         ans = sample.get("answer")
         if ans is None:
             ans = sample.get("answer_index")
+        if ans is None and sample.get("answerKey") is not None:
+            # ARC: answerKey names an entry of choices["label"] (usually
+            # "A"-"D", sometimes 1-based "1"-"4"); map it through the label
+            # list so the gold letter matches OUR rendered A-D ordering.
+            s = str(sample.get("answerKey")).strip()
+            c = sample.get("choices")
+            labels = ([str(x).strip() for x in c.get("label")]
+                      if isinstance(c, dict) and isinstance(c.get("label"), (list, tuple))
+                      else None)
+            if labels and s in labels:
+                return self._choice_label(labels.index(s))
+            if len(s) == 1 and s.upper() in self._CHOICE_LETTERS:
+                return s.upper()
+            if s.isdigit():
+                return self._choice_label(int(s) - 1)  # 1-based numeric key
         if isinstance(ans, (int, np.integer)):
             return self._choice_label(int(ans))
         if isinstance(ans, str):
@@ -523,6 +543,12 @@ class PoissonPromptGenerator:
                 aliases = a.get("aliases") or a.get("alias") or []
                 if isinstance(aliases, list):
                     answers.extend([str(x).strip() for x in aliases if str(x).strip()])
+        # DROP: answers_spans = {"spans": [...], "types": [...]}
+        aspans = sample.get("answers_spans")
+        if isinstance(aspans, dict):
+            spans = aspans.get("spans")
+            if isinstance(spans, (list, tuple)):
+                answers.extend([str(x).strip() for x in spans if str(x).strip()])
         if sample.get("answers") is not None:
             a = sample.get("answers")
             if isinstance(a, dict):

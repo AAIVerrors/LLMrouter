@@ -56,6 +56,16 @@ class Config:
         0.4664, # 5 5.4-nano
         # 0.2500 70B (probe) | 0.4456 gpt-4.1-mini | 0.6399 codestral | 0.3929 4o-mini (dropped)
     ]   # total 2.976 req/s -> POISSON_ARRIVAL_RATE=2.5 gives rho=0.84
+    # ---- v2 mix (drop/arc/competition_math), 2026-07-29 batch, n=30 ----
+    # faster workload: short ARC/DROP answers, MATH capped by brief prompt.
+    # SERVICE_RATE = [
+    #     0.8590, # 0 3b
+    #     0.6881, # 1 8b
+    #     0.6646, # 2 4.1-nano
+    #     0.6732, # 3 small
+    #     0.3786, # 4 large   (still the scarce one)
+    #     0.6871, # 5 5.4-nano
+    # ]   # total 3.951 req/s -> lambda 2.65 matches v1's rho=0.67; 3.36 gives rho=0.85
 
     SERVER_CAPACITIES = [50] * len(MODEL_NAMES)
 
@@ -150,6 +160,29 @@ class Config:
             "weight": 1/3,
             "metric": "number",
             "task_type": "math",
+        },
+        # [v2 mix] Discrete reasoning over paragraphs (counting/arithmetic
+        # on text), token F1 over answer spans (answers_spans.spans).
+        # v2 recipe = drop 1/3 + arc 1/3 + competition_math 1/3, v1 trio -> 0.
+        {
+            "name": "ucinlp/drop",
+            "config": None,
+            "split": "train",
+            "weight": 0,
+            "metric": "f1",
+            "task_type": "drop",
+            "max_samples": 20000,
+        },
+        # [v2 mix] Science-reasoning MCQ; reuses the mmlu metric/prompt via
+        # the choices-dict + answerKey loader support.
+        {
+            "name": "allenai/ai2_arc",
+            "config": "ARC-Challenge",
+            "split": "train",
+            "weight": 0,
+            "metric": "mmlu",
+            "task_type": "arc",
+            "max_samples": 20000,
         },
         # Competition math (MATH, full 12.5k train set, all five levels),
         # \boxed answers scored by math-verify symbolic equivalence with
@@ -521,6 +554,7 @@ class Config:
     # drowning) AND rho_cheap = lambda/mu(cheapest-4) ~0.7-0.8 so cost-
     # seeking CAN concentrate (the FAIR-off ablation needs that room).
     POISSON_ARRIVAL_RATE = 2
+    # POISSON_ARRIVAL_RATE = 2.65  # v2 mix: matches v1's rho=0.67 (total mu 3.951)
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
     EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
 
@@ -594,7 +628,7 @@ class Config:
 
     # Capacity-weighted JSQ: route to the shortest EXPECTED DRAIN TIME
     # (queue / mu), accounting for heterogeneous service rates.
-    CAP_WEIGHTED_JSQ = True
+    CAP_WEIGHTED_JSQ = False
 
     # Power-of-d-choices: sample d admissible servers, route to the shortest
     # (P2C is d=2). POWER_OF_D_WEIGHTED ranks by queue/mu instead of queue.
@@ -775,7 +809,7 @@ class Config:
     FAIR_DUAL_LR = 0.05       # eta (two-timescale: slower than the policy)
     FAIR_DUAL_EMA = 0.1       # alpha for the vbar EMA
     FAIR_MU_MAX = 5.0
-    WF_TILT_BETA = -1.0       # softmin tilt over request rewards
+    WF_TILT_BETA = -2.0       # softmin tilt over request rewards
     WF_EPS_DBAR = 1e-6        # T_fair guard: exclude intervals with Dbar below
     QUOTA_TIEBREAK = "lex"    # deterministic quota tie-break ("closest" = legacy)
     # gamma for INTERVAL returns/GAE. 1.0 aligns the actor objective with the
