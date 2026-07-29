@@ -329,6 +329,15 @@ class Config:
     REWARD_COMBINER = "linear"
     REWARD_GATED_BETA = 1.0
     REWARD_GATED_GAMMA = 1.0
+    REWARD_GATED_LAT_TAIL = 0.1   # linear latency tail on ALL requests (q=0 too)
+    REWARD_GATED_PRICE_TAIL = 0.1 # linear price tail: wrong answers still cost money
+
+    # Robustness patches (2026-07-30), safe for every combiner/arm:
+    # init rescale kills the episode-0 seed seizure (ep0 entropy 0.37 /
+    # max_share 0.91 / v=175); h clip is dual anti-windup so one seizure
+    # episode cannot pin nu at the cap for ~30 episodes.
+    ACTOR_DUAL_INIT_RESCALE = True
+    FAIR_DUAL_H_CLIP = 10.0
 
     # If True, only completed requests are used to compute min/max.
     ROUND_MINMAX_ONLY_COMPLETED = True

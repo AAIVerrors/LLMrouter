@@ -755,9 +755,18 @@ class EnhancedLLMRouterTrainer:
                     # gradient noise.
                     _gb = float(getattr(Config, "REWARD_GATED_BETA", 1.0))
                     _gg = float(getattr(Config, "REWARD_GATED_GAMMA", 1.0))
+                    # Small linear tails apply to EVERY request, including q=0:
+                    # without them wrong answers are congestion-free (herding
+                    # brake goes soft -- observed repeated seizures) and
+                    # cost-free (dollars leak: hopeless prompts could ride the
+                    # most expensive server for nothing).
+                    _lt = float(getattr(Config, "REWARD_GATED_LAT_TAIL", 0.1))
+                    _pt = float(getattr(Config, "REWARD_GATED_PRICE_TAIL", 0.1))
                     reward = (q
                               * max(1.0 - _gb * _ln, 0.0)
-                              * max(1.0 - _gg * _pn, 0.0))
+                              * max(1.0 - _gg * _pn, 0.0)
+                              - _lt * _ln
+                              - _pt * _pn)
                 else:
                     reward = (float(getattr(Config, "ALPHA", 1.0)) * q
                               - float(getattr(Config, "BETA", 0.0)) * _ln

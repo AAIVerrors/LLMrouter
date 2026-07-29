@@ -1874,6 +1874,37 @@ class PPOAgent:
         self._utility_counts = np.zeros(M, dtype=np.int64)
         self._util_obs_counts = np.zeros(M, dtype=np.int64)
 
+        # ---- Init rescale: kill the episode-0 seed seizure at the source ----
+        # The self-seed fires on the first TRAINING forward and can land on the
+        # rms floor (untrained queue spread ~0.007 < 0.05), amplifying logits
+        # 6x for the whole of episode 0 (observed: ep0 entropy 0.37, max_share
+        # 0.91, v_obs 175 poisoning the dual EMA). Doing one dummy forward
+        # here, then a rescale commit, moves that whole episode-0 transient
+        # into __init__: episode 0 starts from rms=1 like every later episode.
+        if (bool(getattr(Config, "ACTOR_DUAL_INIT_RESCALE", True))
+                and getattr(self.network, "use_dual_running_norm", False)
+                and str(getattr(Config, "ROUND_MINMAX_WINDOW_MODE", "")) is not None):
+            try:
+                _F = 6
+                _st = np.zeros((4, M * _F), dtype=np.float32)
+                for _i in range(M):
+                    _st[:, _i * _F + 2] = float(Config.SERVICE_RATE[_i])
+                    _st[:, _i * _F + 3] = float(Config.PRICE[_i][0]) * 1e6
+                    _st[:, _i * _F + 4] = float(Config.PRICE[_i][1]) * 1e6
+                    _st[:, _i * _F + 5] = 1.0
+                _prompts = [f"init calibration prompt {_i}" for _i in range(4)]
+                _was_training = self.network.training
+                self.network.train()
+                with torch.no_grad():
+                    self.network(torch.as_tensor(_st, device=Config.DEVICE), _prompts)
+                if not _was_training:
+                    self.network.eval()
+                self.commit_rms()
+                print("[init-rescale] episode 0 starts from rms=1 "
+                      "(seed measured and rescaled at init)")
+            except Exception as _e:
+                print(f"[init-rescale] skipped: {type(_e).__name__}: {_e}")
+
     def _q_bin_key(self, q: float) -> int:
         try:
             qv = float(q)
@@ -3743,6 +3774,13 @@ class PPOAgent:
             _T_fix = max(int(getattr(Config, "EPISODE_TIME_INTERVAL", 1)), 1)
             _target = 1.0 + float(getattr(Config, "FAIR_DELTA", 0.5))
             _res = wf_h if len(wf_h) > 0 else [v - _target for v in wf_v_obs]
+            # Anti-windup: winsorize per-interval residuals so a single
+            # catastrophic episode (seizure with v ~100+) cannot poison the
+            # h EMA for the next ~30 episodes (observed: ep0 v=175 pinned nu
+            # at nu_max for 14+ eps while actual v was back at 2-4).
+            _hc = float(getattr(Config, "FAIR_DUAL_H_CLIP", 10.0))
+            if _hc > 0:
+                _res = [min(max(float(x), -_hc), _hc) for x in _res]
             if len(_res) > 0:
                 h_ep = float(np.sum(_res)) / _T_fix
                 a = float(getattr(Config, "FAIR_DUAL_EMA", 0.1))
