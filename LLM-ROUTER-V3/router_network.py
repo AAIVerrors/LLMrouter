@@ -1125,6 +1125,19 @@ class RouterNetwork(nn.Module):
                 if getattr(self, "use_actor_queue_skip", False):
                     logits = logits + self.queue_head(queue_desc).squeeze(-1)
 
+            # Per-state logit spread cap: hard upper bound on policy
+            # sharpness, applied at the very end of logit assembly. The rms
+            # machinery bounds AVERAGE spread; single OOD states can still
+            # emit arbitrarily sharp logits (observed: whole-episode
+            # seizures, entropy 0.1, one server at 97%). Scaling down any
+            # state whose spread exceeds the cap makes near-deterministic
+            # collapse structurally impossible while leaving in-range states
+            # untouched (cap 0.9 = 3x tau -> max_share ~0.6).
+            _sp_cap = float(getattr(Config, "ACTOR_LOGIT_SPREAD_CAP", 0.9))
+            if _sp_cap > 0 and logits.shape[-1] > 1:
+                _sp = logits.std(dim=-1, keepdim=True, unbiased=False)
+                logits = logits * torch.clamp(_sp_cap / (_sp + 1e-6), max=1.0)
+
             # temp = torch.exp(self.actor_log_temp).clamp(min=0.1, max=10.0)
             # logits = logits / temp
 

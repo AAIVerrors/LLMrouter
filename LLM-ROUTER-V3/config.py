@@ -338,6 +338,9 @@ class Config:
     # episode cannot pin nu at the cap for ~30 episodes.
     ACTOR_DUAL_INIT_RESCALE = True
     FAIR_DUAL_H_CLIP = 10.0
+    # Hard per-state cap on logit spread (last line of defense against
+    # OOD-state seizures; 0 disables). 0.9 = 3x tau -> max_share ~0.6.
+    ACTOR_LOGIT_SPREAD_CAP = 0.9
 
     # If True, only completed requests are used to compute min/max.
     ROUND_MINMAX_ONLY_COMPLETED = True
