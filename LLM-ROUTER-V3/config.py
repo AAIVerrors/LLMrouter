@@ -288,13 +288,18 @@ class Config:
     # =========================================================
     # Per-round (episode) min-max normalization for latency/price
     # =========================================================
-    # If enabled, trainer will recompute rewards each episode using
-    # min-max normalized latency/price over that episode.
-    ROUND_MINMAX_NORM_ENABLE = False
-    ROUND_MINMAX_NORM_LATENCY = True
+    # If enabled, trainer recomputes rewards each episode. Price uses
+    # Router-R1's sliding-window percentile normalization (sqrt preprocess,
+    # rolling buffer across episodes, 5/95th-percentile bounds), fed with
+    # true dollar_cost. Latency stays on absolute /MAX_LAT semantics
+    # (NORM_LATENCY=False) so SLO anchoring is preserved.
+    ROUND_MINMAX_NORM_ENABLE = True
+    ROUND_MINMAX_NORM_LATENCY = False
     ROUND_MINMAX_NORM_PRICE = True
     ROUND_MINMAX_NORM_EPS = 1e-8
     ROUND_MINMAX_CLIP_01 = True
+    ROUND_MINMAX_WINDOW = 1000          # rolling buffer size (Router-R1)
+    ROUND_MINMAX_PERCENTILES = (5, 95)  # robust min/max bounds (Router-R1)
 
     # If True, only completed requests are used to compute min/max.
     ROUND_MINMAX_ONLY_COMPLETED = True
@@ -316,7 +321,7 @@ class Config:
     # Latency normalizer AND slope: penalty = BETA*min(lat,MAX_LAT)/MAX_LAT.
     # Too high -> cross-server differences compressed; too low -> bulk clips
     # to 1 and the gradient dies. Re-check whenever rho changes.
-    MAX_LAT = 30
+    MAX_LAT = 15
     # SLO latency thresholds (seconds). Logged as violation rate =
     # fraction of completed requests with end-to-end latency > T.
     # Report a few (tight/moderate/loose); keep all below MAX_LAT.
@@ -817,7 +822,7 @@ class Config:
     # delta floor: stochastic policies pay v_sampling ~1.02, so delta=0 is
     # infeasible while exploring (measured: nu saturates); 0.25 = strict.
     FAIR_DELTA = 0.25          # constraint level: E[v] <= 1 + delta
-    FAIR_DUAL_ENABLE = False   # False => mu_lag frozen at FAIR_MU_INIT
+    FAIR_DUAL_ENABLE = True   # False => mu_lag frozen at FAIR_MU_INIT
     FAIR_MU_INIT = 0.0
     FAIR_DUAL_LR = 0.05       # eta (two-timescale: slower than the policy)
     FAIR_DUAL_EMA = 0.1       # alpha for the vbar EMA

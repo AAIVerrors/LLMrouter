@@ -645,10 +645,12 @@ class EnhancedLLMRouterTrainer:
                 if lat is None or (not np.isfinite(lat)):
                     continue
 
-                # Prefer unscaled price if provided by the environment.
-                if use_price_raw and ("price_raw" in req) and (req.get("price_raw") is not None):
-                    pr = req.get("price_raw", 0.0)
-                else:
+                # True dollars for the rolling-window scheme; fall back to
+                # the env's normalized price only if dollar_cost is missing.
+                pr = req.get("dollar_cost")
+                if pr is None and use_price_raw:
+                    pr = req.get("price_raw")
+                if pr is None:
                     pr = req.get("price", 0.0)
                 if pr is None or (not np.isfinite(pr)):
                     pr = 0.0
@@ -674,7 +676,37 @@ class EnhancedLLMRouterTrainer:
                 return out.tolist()
 
             lat_norms = _minmax(lats) if norm_lat else [0.0] * len(lats)
-            price_norms = _minmax(prices) if norm_price else [0.0] * len(prices)
+
+            # Price: Router-R1's sliding-window percentile normalization --
+            # sqrt preprocess, rolling buffer persisting across episodes,
+            # 5/95th-percentile bounds. Pre-seeded with per-server reference
+            # costs (short & long answers) so the scale is correct from
+            # request #1; the seed is deterministic, preserving parity.
+            if norm_price:
+                import math as _math
+                if not hasattr(self, "_price_window"):
+                    from collections import deque
+                    _W = int(getattr(Config, "ROUND_MINMAX_WINDOW", 1000))
+                    self._price_window = deque(maxlen=_W)
+                    for _pin, _pout in Config.PRICE:
+                        for _tin, _tout in ((350, 60), (350, 300)):
+                            self._price_window.append(
+                                _math.sqrt(max(_pin * _tin + _pout * _tout, 0.0)))
+                _q_lo, _q_hi = getattr(Config, "ROUND_MINMAX_PERCENTILES", (5, 95))
+                _sq = [_math.sqrt(max(float(p), 0.0)) for p in prices]
+                self._price_window.extend(_sq)
+                _arr = np.asarray(self._price_window, dtype=np.float64)
+                _lo = float(np.percentile(_arr, _q_lo))
+                _hi = float(np.percentile(_arr, _q_hi))
+                if (_hi - _lo) < eps:
+                    price_norms = [0.5] * len(_sq)
+                else:
+                    price_norms = [
+                        float(np.clip((s - _lo) / (_hi - _lo), 0.0, 1.0))
+                        for s in _sq
+                    ]
+            else:
+                price_norms = [0.0] * len(prices)
 
             for k, i in enumerate(idxs):
                 req = episode_record[i]
@@ -684,6 +716,13 @@ class EnhancedLLMRouterTrainer:
                 if norm_lat:
                     req["processing_latency_norm"] = float(lat_norms[k])
                     reward -= float(getattr(Config, "BETA", 0.0)) * float(lat_norms[k])
+                else:
+                    # env deferred the latency term together with price;
+                    # re-apply the absolute min(lat, MAX_LAT)/MAX_LAT here.
+                    _ml = max(float(getattr(Config, "MAX_LAT", 30.0)), 1e-6)
+                    _ln = min(float(lats[k]), _ml) / _ml
+                    req["processing_latency_norm"] = float(_ln)
+                    reward -= float(getattr(Config, "BETA", 0.0)) * float(_ln)
 
                 if norm_price:
                     req["price_norm"] = float(price_norms[k])
