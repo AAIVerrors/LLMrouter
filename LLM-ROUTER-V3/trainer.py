@@ -730,25 +730,38 @@ class EnhancedLLMRouterTrainer:
             else:
                 price_norms = [0.0] * len(prices)
 
+            _combiner = str(getattr(Config, "REWARD_COMBINER", "linear")).lower()
             for k, i in enumerate(idxs):
                 req = episode_record[i]
                 q = float(req.get("quality_score", 0.0) or 0.0)
-                reward = float(getattr(Config, "ALPHA", 1.0)) * q
 
                 if norm_lat:
-                    req["processing_latency_norm"] = float(lat_norms[k])
-                    reward -= float(getattr(Config, "BETA", 0.0)) * float(lat_norms[k])
+                    _ln = float(lat_norms[k])
                 else:
                     # env deferred the latency term together with price;
-                    # re-apply the absolute min(lat, MAX_LAT)/MAX_LAT here.
+                    # absolute min(lat, MAX_LAT)/MAX_LAT semantics.
                     _ml = max(float(getattr(Config, "MAX_LAT", 30.0)), 1e-6)
                     _ln = min(float(lats[k]), _ml) / _ml
-                    req["processing_latency_norm"] = float(_ln)
-                    reward -= float(getattr(Config, "BETA", 0.0)) * float(_ln)
-
+                req["processing_latency_norm"] = float(_ln)
+                _pn = float(price_norms[k]) if norm_price else 0.0
                 if norm_price:
-                    req["price_norm"] = float(price_norms[k])
-                    reward -= float(getattr(Config, "REWARD_GAMMA", 0.0)) * float(price_norms[k])
+                    req["price_norm"] = _pn
+
+                if _combiner == "gated":
+                    # Quality-gated multiplicative reward (xRouter-style):
+                    # earned quality, discounted by operational cost. q=0
+                    # zeroes the request -- cheap wrong answers are worthless,
+                    # and universally-failed prompts stop injecting lat/price
+                    # gradient noise.
+                    _gb = float(getattr(Config, "REWARD_GATED_BETA", 1.0))
+                    _gg = float(getattr(Config, "REWARD_GATED_GAMMA", 1.0))
+                    reward = (q
+                              * max(1.0 - _gb * _ln, 0.0)
+                              * max(1.0 - _gg * _pn, 0.0))
+                else:
+                    reward = (float(getattr(Config, "ALPHA", 1.0)) * q
+                              - float(getattr(Config, "BETA", 0.0)) * _ln
+                              - float(getattr(Config, "REWARD_GAMMA", 0.0)) * _pn)
 
                 clip = getattr(Config, "REWARD_CLIP", None)
                 if clip is not None and clip > 0:

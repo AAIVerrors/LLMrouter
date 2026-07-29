@@ -318,6 +318,18 @@ class Config:
     ROUND_MINMAX_WINDOW_MODE = "frozen"
     ROUND_MINMAX_WINDOW_FILE = "price_window_v2p.json"
 
+    # Reward combiner (applies in the trainer recompute, needs minmax on):
+    #   "linear" = ALPHA*q - BETA*lat_norm - REWARD_GAMMA*price_norm (sealed main)
+    #   "gated"  = q * (1 - GATED_BETA*lat_norm) * (1 - GATED_GAMMA*price_norm)
+    # gated: earned quality discounted by operational cost; q=0 zeroes the
+    # request (cheap wrong answers worth nothing; difficulty noise muted).
+    # NOTE gated rewards run ~3-4x larger than linear -- for FLAIR arms raise
+    # FAIR_MU_MAX (~15) so the fairness dual keeps authority, and do NOT
+    # compare reward values across combiners (component metrics stay valid).
+    REWARD_COMBINER = "linear"
+    REWARD_GATED_BETA = 1.0
+    REWARD_GATED_GAMMA = 1.0
+
     # If True, only completed requests are used to compute min/max.
     ROUND_MINMAX_ONLY_COMPLETED = True
 
