@@ -47,25 +47,27 @@ class Config:
     # Also the frozen fairness reference (QUOTA_USE_FROZEN_MU). Batch variance
     # is 25-50%: re-measure (bench_fleet_service_rate.py, n=30, one batch)
     # whenever the fleet, prompts or token cap change.
-    SERVICE_RATE = [
-        0.8320, # 0 3b        (2026-07-28 evening batch, n=30)
-        0.2845, # 1 8b        (halved vs prior batch -- long math CoT sample)
-        0.4748, # 2 4.1-nano
-        0.5876, # 3 small
-        0.3302, # 4 large
-        0.4664, # 5 5.4-nano
-        # 0.2500 70B (probe) | 0.4456 gpt-4.1-mini | 0.6399 codestral | 0.3929 4o-mini (dropped)
-    ]   # total 2.976 req/s -> POISSON_ARRIVAL_RATE=2.5 gives rho=0.84
-    # ---- v2 mix (drop/arc/competition_math), 2026-07-29 batch, n=30 ----
-    # faster workload: short ARC/DROP answers, MATH capped by brief prompt.
     # SERVICE_RATE = [
-    #     0.8590, # 0 3b
-    #     0.6881, # 1 8b
-    #     0.6646, # 2 4.1-nano
-    #     0.6732, # 3 small
-    #     0.3786, # 4 large   (still the scarce one)
-    #     0.6871, # 5 5.4-nano
-    # ]   # total 3.951 req/s -> lambda 2.65 matches v1's rho=0.67; 3.36 gives rho=0.85
+    #     0.8320, # 0 3b        (2026-07-28 evening batch, n=30)
+    #     0.2845, # 1 8b        (halved vs prior batch -- long math CoT sample)
+    #     0.4748, # 2 4.1-nano
+    #     0.5876, # 3 small
+    #     0.3302, # 4 large
+    #     0.4664, # 5 5.4-nano
+    #     # 0.2500 70B (probe) | 0.4456 gpt-4.1-mini | 0.6399 codestral | 0.3929 4o-mini (dropped)
+    # ]   # total 2.976 req/s -> POISSON_ARRIVAL_RATE=2.5 gives rho=0.84
+    # ---- v2-easy pilot (drop/arc/math), superseded by v2' below ----
+    # SERVICE_RATE = [0.8590, 0.6881, 0.6646, 0.6732, 0.3786, 0.6871]  # total 3.951
+    # ---- v2' mix (drop/logiqa/math L1-5), 2026-07-29 batch, n=30 ----
+    # harder mix -> longer outputs -> mu down across the board.
+    SERVICE_RATE = [
+        0.7251, # 0 3b
+        0.2952, # 1 8b
+        0.5639, # 2 4.1-nano
+        0.4935, # 3 small
+        0.2322, # 4 large   (still the scarce one)
+        0.5484, # 5 5.4-nano
+    ]   # total 2.858 req/s -> lambda 2.0 gives rho=0.70 (~v1's 0.67); 2.43 gives rho=0.85
 
     SERVER_CAPACITIES = [50] * len(MODEL_NAMES)
 
@@ -117,7 +119,7 @@ class Config:
             "name": "mandarjoshi/trivia_qa",
             "config": "rc.nocontext",
             "split": "train[:20000]",
-            "weight": 1/3,
+            "weight": 0,
             "metric": "f1",
             "task_type": "qa",
         },
@@ -147,7 +149,7 @@ class Config:
             "name": "TIGER-Lab/MMLU-Pro",
             "config": None,
             "split": "test",
-            "weight": 1/3,
+            "weight": 0,
             "metric": "mmlu",
             "task_type": "mmlu_pro",
             "max_samples": 20000,
@@ -157,7 +159,7 @@ class Config:
             "name": "openai/gsm8k",
             "config": "main",
             "split": "train[:20000]",
-            "weight": 1/3,
+            "weight": 0,
             "metric": "number",
             "task_type": "math",
         },
@@ -168,7 +170,7 @@ class Config:
             "name": "ucinlp/drop",
             "config": None,
             "split": "train",
-            "weight": 0,
+            "weight": 1/3,
             "metric": "f1",
             "task_type": "drop",
             "max_samples": 20000,
@@ -179,9 +181,20 @@ class Config:
             "name": "allenai/ai2_arc",
             "config": "ARC-Challenge",
             "split": "train",
-            "weight": 0,
+            "weight": 0,    # DROPPED for v2: fleet ceilinged it (5/6 endpoints ~1.0)
             "metric": "mmlu",
             "task_type": "arc",
+            "max_samples": 20000,
+        },
+        # [v2 mix] Logical-reasoning MCQ (passage + query + 4 options),
+        # replaces ARC; loader maps query/context/correct_option.
+        {
+            "name": "lucasmccabe/logiqa",
+            "config": None,
+            "split": "train",
+            "weight": 1/3,
+            "metric": "mmlu",
+            "task_type": "logiqa",
             "max_samples": 20000,
         },
         # Competition math (MATH, full 12.5k train set, all five levels),
@@ -192,11 +205,11 @@ class Config:
             "name": "qwedsacf/competition_math",
             "config": None,
             "split": "train",
-            "weight": 0,
+            "weight": 1/3,
             "metric": "math_verify",
             "task_type": "math_hard",
             "filter": "boxed",
-            "levels": ["Level 1","Level 2","Level 3"],
+            "levels": ["Level 1","Level 2","Level 3","Level 4", "Level 5"],
             "max_samples": 20000,
         },
     ]
@@ -553,8 +566,8 @@ class Config:
     # cap / mix change. Targets: overall rho ~0.5-0.7 (queues alive, not
     # drowning) AND rho_cheap = lambda/mu(cheapest-4) ~0.7-0.8 so cost-
     # seeking CAN concentrate (the FAIR-off ablation needs that room).
-    POISSON_ARRIVAL_RATE = 2
-    # POISSON_ARRIVAL_RATE = 2.65  # v2 mix: matches v1's rho=0.67 (total mu 3.951)
+    POISSON_ARRIVAL_RATE = 2     # v2' mix: rho=0.70 (total mu 2.858)
+    # POISSON_ARRIVAL_RATE = 2.65  # v2-easy pilot value (mu 3.951)
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
     EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
 

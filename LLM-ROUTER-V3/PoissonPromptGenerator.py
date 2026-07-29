@@ -321,6 +321,8 @@ class PoissonPromptGenerator:
         ans = sample.get("answer")
         if ans is None:
             ans = sample.get("answer_index")
+        if ans is None:
+            ans = sample.get("correct_option")  # LogiQA (0-based int)
         if ans is None and sample.get("answerKey") is not None:
             # ARC: answerKey names an entry of choices["label"] (usually
             # "A"-"D", sometimes 1-based "1"-"4"); map it through the label
@@ -348,6 +350,11 @@ class PoissonPromptGenerator:
 
     def _build_mmlu_prompt(self, sample: Dict[str, Any]) -> str:
         question = str(sample.get("question", "")).strip()
+        if not question:
+            # LogiQA: passage in "context", question in "query"
+            q = str(sample.get("query", "")).strip()
+            ctx = str(sample.get("context", "")).strip()
+            question = f"{ctx}\n{q}".strip() if ctx else q
         choices = self._mmlu_choices(sample)
         subject = str(sample.get("subject") or sample.get("category") or "").replace("_", " ").strip()
         choice_lines = [f"{self._choice_label(i)}. {str(c).strip()}" for i, c in enumerate(choices)]
