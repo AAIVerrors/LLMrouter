@@ -300,6 +300,12 @@ class Config:
     ROUND_MINMAX_CLIP_01 = True
     ROUND_MINMAX_WINDOW = 1000          # rolling buffer size (Router-R1)
     ROUND_MINMAX_PERCENTILES = (5, 95)  # robust min/max bounds (Router-R1)
+    # frozen = bounds from the uniform-routing calibration file, shared by
+    # every arm (rewards commensurable across methods); rolling = Router-R1's
+    # adaptive buffer. Regenerate the file when fleet/mix/token cap change
+    # (scratchpad calib_window.py, 1000 uniform calls).
+    ROUND_MINMAX_WINDOW_MODE = "frozen"
+    ROUND_MINMAX_WINDOW_FILE = "price_window_v2p.json"
 
     # If True, only completed requests are used to compute min/max.
     ROUND_MINMAX_ONLY_COMPLETED = True
@@ -321,7 +327,7 @@ class Config:
     # Latency normalizer AND slope: penalty = BETA*min(lat,MAX_LAT)/MAX_LAT.
     # Too high -> cross-server differences compressed; too low -> bulk clips
     # to 1 and the gradient dies. Re-check whenever rho changes.
-    MAX_LAT = 15
+    MAX_LAT = 30
     # SLO latency thresholds (seconds). Logged as violation rate =
     # fraction of completed requests with end-to-end latency > T.
     # Report a few (tight/moderate/loose); keep all below MAX_LAT.

@@ -677,27 +677,49 @@ class EnhancedLLMRouterTrainer:
 
             lat_norms = _minmax(lats) if norm_lat else [0.0] * len(lats)
 
-            # Price: Router-R1's sliding-window percentile normalization --
-            # sqrt preprocess, rolling buffer persisting across episodes,
-            # 5/95th-percentile bounds. Pre-seeded with per-server reference
-            # costs (short & long answers) so the scale is correct from
-            # request #1; the seed is deterministic, preserving parity.
+            # Price: percentile normalization in sqrt space (Router-R1's
+            # scheme). Two window modes:
+            #   frozen  -- bounds computed ONCE from a uniform-routing
+            #              calibration file and shared by every arm/episode:
+            #              price_norm is the same function of dollars
+            #              everywhere, so rewards stay commensurable across
+            #              methods (a per-run rolling window drifts with the
+            #              run's own policy).
+            #   rolling -- Router-R1's original adaptive buffer (kept as the
+            #              fallback / ablation path).
             if norm_price:
                 import math as _math
-                if not hasattr(self, "_price_window"):
-                    from collections import deque
-                    _W = int(getattr(Config, "ROUND_MINMAX_WINDOW", 1000))
-                    self._price_window = deque(maxlen=_W)
-                    for _pin, _pout in Config.PRICE:
-                        for _tin, _tout in ((350, 60), (350, 300)):
-                            self._price_window.append(
-                                _math.sqrt(max(_pin * _tin + _pout * _tout, 0.0)))
                 _q_lo, _q_hi = getattr(Config, "ROUND_MINMAX_PERCENTILES", (5, 95))
                 _sq = [_math.sqrt(max(float(p), 0.0)) for p in prices]
-                self._price_window.extend(_sq)
-                _arr = np.asarray(self._price_window, dtype=np.float64)
-                _lo = float(np.percentile(_arr, _q_lo))
-                _hi = float(np.percentile(_arr, _q_hi))
+                _mode = str(getattr(Config, "ROUND_MINMAX_WINDOW_MODE", "rolling")).lower()
+                if _mode == "frozen":
+                    if not hasattr(self, "_price_frozen_bounds"):
+                        import json as _json
+                        _fp = str(getattr(Config, "ROUND_MINMAX_WINDOW_FILE",
+                                          "price_window_v2p.json"))
+                        _costs = _json.load(open(_fp))["costs"]
+                        _sqc = np.sqrt(np.maximum(
+                            np.asarray(_costs, dtype=np.float64), 0.0))
+                        self._price_frozen_bounds = (
+                            float(np.percentile(_sqc, _q_lo)),
+                            float(np.percentile(_sqc, _q_hi)),
+                        )
+                        print(f"[price-norm] frozen window {_fp}: n={len(_costs)}, "
+                              f"sqrt-bounds={self._price_frozen_bounds}")
+                    _lo, _hi = self._price_frozen_bounds
+                else:
+                    if not hasattr(self, "_price_window"):
+                        from collections import deque
+                        _W = int(getattr(Config, "ROUND_MINMAX_WINDOW", 1000))
+                        self._price_window = deque(maxlen=_W)
+                        for _pin, _pout in Config.PRICE:
+                            for _tin, _tout in ((350, 60), (350, 300)):
+                                self._price_window.append(
+                                    _math.sqrt(max(_pin * _tin + _pout * _tout, 0.0)))
+                    self._price_window.extend(_sq)
+                    _arr = np.asarray(self._price_window, dtype=np.float64)
+                    _lo = float(np.percentile(_arr, _q_lo))
+                    _hi = float(np.percentile(_arr, _q_hi))
                 if (_hi - _lo) < eps:
                     price_norms = [0.5] * len(_sq)
                 else:
