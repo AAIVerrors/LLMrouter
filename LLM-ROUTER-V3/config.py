@@ -10,14 +10,20 @@ class Config:
     # New-endpoint reasoning screen: empty content? billed reasoning_tokens>0?
     # inline <think>? out_tok pinned at the cap?
     # ================================================================
+    # 8-fleet (2026-07-30): cheap five + mid trap + premium pair.
+    # Roles on v2' (drop/logiqa/math): mini = quality king (drop 0.75, math
+    # 0.83); large = logiqa co-crown; codestral = DELIBERATE trap (wins
+    # nothing, drop 0.25) -- quality-blind baselines feed it its ~14% quota
+    # share, quality-aware methods route around it within the delta slack.
     MODEL_NAMES = [
         "ministral-3b-2512",                                   # 0 cheap/fast floor
         "ministral-8b-2512",                                   # 1 cheap, math 0.917
         "gpt-4.1-nano-2025-04-14",                             # 2 fast all-rounder
         "mistral-small-2506",                                  # 3 value king (qa+mmlu)
         "gpt-5.4-nano",                                        # 4 MCQ/logiqa specialist; reasoning_effort="none", verified reasoning_tokens=0
-        # "mistral-large-2512",  # DROPPED (5-fleet): only crown in v2' (logiqa
-        #                        # 0.61) is tied by 5.4n at 1/3 the price
+        "codestral-2508",                                      # 5 trap: mid price, wins nothing on v2'
+        "mistral-large-2512",                                  # 6 premium: logiqa co-crown
+        "gpt-4.1-mini",                                        # 7 premium king: drop 0.75 / math 0.83
         # ---- dropped, kept for the record ----
         # "together/meta-llama/Llama-3.3-70B-Instruct-Turbo",  # best quality/price flagship, but Together serverless degrades badly under concurrent runs
         # "gpt-4.1-mini",                            # dominated by small (0.669 @ $349 vs 0.764 @ $131)
@@ -35,7 +41,9 @@ class Config:
         (0.00000010, 0.00000040),   # 2 4.1-nano  $0.10/$0.40
         (0.00000015, 0.00000060),   # 3 small     $0.15/$0.60
         (0.00000020, 0.00000125),   # 4 5.4-nano  $0.20/$1.25 (confirmed 2026-07-28)
-        # (0.00000050, 0.00000150), # large (dropped w/ 5-fleet)
+        (0.00000030, 0.00000090),   # 5 codestral $0.30/$0.90
+        (0.00000050, 0.00000150),   # 6 large     $0.50/$1.50 (confirmed 2026-07-28)
+        (0.00000040, 0.00000160),   # 7 4.1-mini  $0.40/$1.60
         # ---- dropped ----
         # (0.00000104, 0.00000104), # Llama-3.3-70B-Turbo
         # (0.00000040, 0.00000160), # gpt-4.1-mini
@@ -62,13 +70,15 @@ class Config:
     # ---- v2' mix (drop/logiqa/math L1-5), 2026-07-29 batch, n=30 ----
     # harder mix -> longer outputs -> mu down across the board.
     SERVICE_RATE = [
-        0.7251, # 0 3b
-        0.2952, # 1 8b     (the scarce one now: quota 0.11 vs uniform 0.20)
+        0.7251, # 0 3b        (v2' batch)
+        0.2952, # 1 8b
         0.5639, # 2 4.1-nano
         0.4935, # 3 small
         0.5484, # 4 5.4-nano
-        # 0.2322 large (dropped w/ 5-fleet)
-    ]   # total 2.626 req/s -> lambda 1.84 gives rho=0.70
+        0.4928, # 5 codestral (v2' probe n=25)
+        0.2322, # 6 large     (v2' batch)
+        0.2650, # 7 4.1-mini  (v2' probe n=25)
+    ]   # total 3.616 req/s -> lambda 2.53 gives rho=0.70
 
     SERVER_CAPACITIES = [50] * len(MODEL_NAMES)
 
@@ -578,7 +588,7 @@ class Config:
     # cap / mix change. Targets: overall rho ~0.5-0.7 (queues alive, not
     # drowning) AND rho_cheap = lambda/mu(cheapest-4) ~0.7-0.8 so cost-
     # seeking CAN concentrate (the FAIR-off ablation needs that room).
-    POISSON_ARRIVAL_RATE = 1.84  # 5-fleet v2' mix: rho=0.70 (total mu 2.626)
+    POISSON_ARRIVAL_RATE = 2.5   # 8-fleet v2 mix: rho=0.69 (total mu 3.616)
     # POISSON_ARRIVAL_RATE = 2.65  # v2-easy pilot value (mu 3.951)
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
     EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
