@@ -458,9 +458,15 @@ class EnhancedLLMRouterTrainer:
                     mu, price_in[i], price_out[i],   # stat (3)
                 ]
                 if use_alloc:
-                    # frozen fleet-normalized alloc count, appended AFTER stat
+                    # frozen fleet-normalized alloc count, appended AFTER stat.
+                    # Clamped to [0,3]: the fairness-relevant range is
+                    # 0.5-2.5 (under/at/over quota); values beyond 3 only
+                    # occur mid-herd and are OOD for the network -- unclamped
+                    # they lock a whole episode into extrapolation-driven
+                    # concentration (observed: entropy 0.4, share 0.9+, and
+                    # the cumulative ratio keeps the state OOD until reset).
                     ar = 1.0 if alloc_ratio is None else float(alloc_ratio[i])
-                    row.append(ar)
+                    row.append(min(ar, 3.0))
                 feats_flat.extend(row)
 
             if len(feats_flat) != M * F:
@@ -995,7 +1001,19 @@ class EnhancedLLMRouterTrainer:
         print(f"Max Episodes: {Config.MAX_EPISODES}")
         print(f"Wandb Available: {self.wandb_available}")
         print("=" * 60)
-        
+
+        # Re-run the init rescale on REAL prompts from the actual mix, so the
+        # episode-0 rms calibration matches real traffic (placeholder prompts
+        # under-estimate the quality tower's spread). Trace-safe: pool indices
+        # and the mix RNG are re-seeded per episode by begin_episode_arrivals.
+        try:
+            if hasattr(self.agent, "init_rescale"):
+                _cal = [self.env.prompt_generator.get_next_prompt()["prompt"]
+                        for _ in range(8)]
+                self.agent.init_rescale(_cal)
+        except Exception as _e:
+            print(f"[init-rescale] real-prompt calibration skipped: {_e}")
+
         for episode in range(Config.MAX_EPISODES):
             
             if str(getattr(Config, "FAIRNESS_MODE", "legacy")).lower() != "wf_dual":

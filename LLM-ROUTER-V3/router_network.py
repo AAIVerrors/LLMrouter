@@ -1874,36 +1874,51 @@ class PPOAgent:
         self._utility_counts = np.zeros(M, dtype=np.int64)
         self._util_obs_counts = np.zeros(M, dtype=np.int64)
 
-        # ---- Init rescale: kill the episode-0 seed seizure at the source ----
-        # The self-seed fires on the first TRAINING forward and can land on the
-        # rms floor (untrained queue spread ~0.007 < 0.05), amplifying logits
-        # 6x for the whole of episode 0 (observed: ep0 entropy 0.37, max_share
-        # 0.91, v_obs 175 poisoning the dual EMA). Doing one dummy forward
-        # here, then a rescale commit, moves that whole episode-0 transient
-        # into __init__: episode 0 starts from rms=1 like every later episode.
-        if (bool(getattr(Config, "ACTOR_DUAL_INIT_RESCALE", True))
-                and getattr(self.network, "use_dual_running_norm", False)
-                and str(getattr(Config, "ROUND_MINMAX_WINDOW_MODE", "")) is not None):
-            try:
-                _F = 6
-                _st = np.zeros((4, M * _F), dtype=np.float32)
-                for _i in range(M):
-                    _st[:, _i * _F + 2] = float(Config.SERVICE_RATE[_i])
-                    _st[:, _i * _F + 3] = float(Config.PRICE[_i][0]) * 1e6
-                    _st[:, _i * _F + 4] = float(Config.PRICE[_i][1]) * 1e6
-                    _st[:, _i * _F + 5] = 1.0
-                _prompts = [f"init calibration prompt {_i}" for _i in range(4)]
-                _was_training = self.network.training
-                self.network.train()
-                with torch.no_grad():
-                    self.network(torch.as_tensor(_st, device=Config.DEVICE), _prompts)
-                if not _was_training:
-                    self.network.eval()
-                self.commit_rms()
-                print("[init-rescale] episode 0 starts from rms=1 "
-                      "(seed measured and rescaled at init)")
-            except Exception as _e:
-                print(f"[init-rescale] skipped: {type(_e).__name__}: {_e}")
+        # Fallback calibration on placeholder prompts; the trainer re-runs
+        # init_rescale with REAL prompts before episode 0 (placeholder spread
+        # under-estimates the quality tower's spread on real traffic, which
+        # left episode 0 sharp -- observed entropy 0.37 despite this call).
+        self.init_rescale()
+
+    def init_rescale(self, prompts=None):
+        """Measure tower spreads (re-seeding the rms buffers) on the given
+        prompts, then rescale-commit so training starts from rms=1.
+
+        Policy-invariant by the same argument as commit_rms's rescale path.
+        Called once with placeholders at construction and once more by the
+        trainer with real prompts drawn from the actual mix -- the second
+        call overwrites the first (seed flag is reset), so episode 0 rolls
+        out with a calibration that matches real traffic.
+        """
+        net = self.network
+        if not (bool(getattr(Config, "ACTOR_DUAL_INIT_RESCALE", True))
+                and getattr(net, "use_dual_running_norm", False)):
+            return
+        try:
+            M = self.action_dim
+            _F = 6
+            if prompts is None:
+                prompts = [f"init calibration prompt {i}" for i in range(4)]
+            prompts = list(prompts)
+            _st = np.zeros((len(prompts), M * _F), dtype=np.float32)
+            for _i in range(M):
+                _st[:, _i * _F + 2] = float(Config.SERVICE_RATE[_i])
+                _st[:, _i * _F + 3] = float(Config.PRICE[_i][0]) * 1e6
+                _st[:, _i * _F + 4] = float(Config.PRICE[_i][1]) * 1e6
+                _st[:, _i * _F + 5] = 1.0
+            _was_training = net.training
+            net.train()
+            with torch.no_grad():
+                if hasattr(net, "rms_seeded"):
+                    net.rms_seeded.fill_(False)   # re-seed on THESE prompts
+                net(torch.as_tensor(_st, device=Config.DEVICE), prompts)
+            if not _was_training:
+                net.eval()
+            self.commit_rms()
+            print(f"[init-rescale] calibrated on {len(prompts)} prompts; "
+                  "episode 0 starts from rms=1")
+        except Exception as _e:
+            print(f"[init-rescale] skipped: {type(_e).__name__}: {_e}")
 
     def _q_bin_key(self, q: float) -> int:
         try:
