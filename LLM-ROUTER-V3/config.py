@@ -326,7 +326,7 @@ class Config:
     # NOTE gated rewards run ~3-4x larger than linear -- for FLAIR arms raise
     # FAIR_MU_MAX (~15) so the fairness dual keeps authority, and do NOT
     # compare reward values across combiners (component metrics stay valid).
-    REWARD_COMBINER = "linear"
+    REWARD_COMBINER = "gated"
     REWARD_GATED_BETA = 1.0
     REWARD_GATED_GAMMA = 1.0
     REWARD_GATED_LAT_TAIL = 0.1   # linear latency tail on ALL requests (q=0 too)

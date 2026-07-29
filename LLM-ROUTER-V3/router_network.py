@@ -1913,12 +1913,23 @@ class PPOAgent:
             if prompts is None:
                 prompts = [f"init calibration prompt {i}" for i in range(4)]
             prompts = list(prompts)
+            # Calibration states need QUEUE DIVERSITY: on an all-empty state
+            # the queue tower emits a near-constant (spread ~0, floor kicks
+            # in) and its calibration is degenerate -- mid-episode-0 real
+            # queues appear and the tower's spread blows past the calibrated
+            # value (observed: ep0 pinned at the spread cap, share 0.68,
+            # Jain 0.26, healing only at the ep0-end commit). Synthetic
+            # states drawn over the REAL operating ranges of util/resid/
+            # alloc, with a fixed seed so runs stay reproducible.
+            _rng = np.random.default_rng(20260730)
             _st = np.zeros((len(prompts), M * _F), dtype=np.float32)
             for _i in range(M):
+                _st[:, _i * _F + 0] = _rng.uniform(0.0, 0.4, len(prompts))  # util
+                _st[:, _i * _F + 1] = _rng.uniform(0.0, 0.3, len(prompts))  # resid
                 _st[:, _i * _F + 2] = float(Config.SERVICE_RATE[_i])
                 _st[:, _i * _F + 3] = float(Config.PRICE[_i][0]) * 1e6
                 _st[:, _i * _F + 4] = float(Config.PRICE[_i][1]) * 1e6
-                _st[:, _i * _F + 5] = 1.0
+                _st[:, _i * _F + 5] = _rng.uniform(0.6, 1.8, len(prompts))  # alloc
             _was_training = net.training
             net.train()
             with torch.no_grad():
