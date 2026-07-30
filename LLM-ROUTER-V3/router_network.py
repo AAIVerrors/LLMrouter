@@ -416,6 +416,23 @@ class RouterNetwork(nn.Module):
                 self.tower_fuse = nn.Sequential(
                     nn.Linear(2, _fh), nn.GELU(), nn.Linear(_fh, 1),
                 )
+            # 方案B calibration head: maps the quality tower's (normalized)
+            # per-server score to a predicted request quality. Trained with a
+            # supervised BCE aux loss on realized (prompt, chosen server, q)
+            # triples, which back-propagates per-server ORDERING signal into
+            # the quality tower -- the routing signal the interval-shared
+            # policy gradient dilutes away. Name must avoid "value"/"critic"
+            # so the params land in the actor optimizer group.
+            # The stored weight is a RAW slope: the aux loss applies
+            # softplus(weight), so the effective slope is positive by
+            # construction -- a negative slope would let the BCE teach the
+            # tower an inverted (good server -> LOW score) mapping while the
+            # policy head keeps reading raw scores as logits, i.e. aux and
+            # PPO pulling the same tower in opposite directions (observed:
+            # ep25 checkpoint slope -1.405, i.e. orthogonal init's -sqrt(2)).
+            # Values are set in _init_weights -- the orthogonal_ sweep there
+            # would clobber anything assigned here.
+            self.quality_calib = nn.Linear(1, 1)
 
             # Detached running spread per tower. Registered as buffers so they
             # persist in the checkpoint and are frozen at eval time.
@@ -625,6 +642,14 @@ class RouterNetwork(nn.Module):
             nn.init.zeros_(fuse_out.weight)
             if fuse_out.bias is not None:
                 nn.init.zeros_(fuse_out.bias)
+
+        # 方案B calibrator: the sweep above just orthogonal_-ed this 1x1 to
+        # +/-sqrt(2) with a RANDOM sign. Overwrite with the intended raw
+        # slope softplus^{-1}(0.5) = -0.4328, so the effective slope
+        # SLOPE_MIN + softplus(w) starts at exactly 0.5 + 0.5 = 1.0, bias 0.
+        if hasattr(self, "quality_calib"):
+            nn.init.constant_(self.quality_calib.weight, -0.4327521296)
+            nn.init.zeros_(self.quality_calib.bias)
 
     def _get_output_layers(self):
         def last_linear(module):
@@ -1113,6 +1138,8 @@ class RouterNetwork(nn.Module):
                     queue_score = queue_score / _rk.clamp_min(_eps) * _tau
                     self._dual_rms_q = float(_rq.detach().cpu().item())
                     self._dual_rms_k = float(_rk.detach().cpu().item())
+                # Kept WITH grad for the 方案B aux loss in the update loop.
+                self._last_quality_score_t = quality_score
 
                 if getattr(self, "use_fuse_only", False):
                     # Pure learned combiner: logits come from the fuse MLP
@@ -1721,6 +1748,7 @@ class PPOAgent:
         critic_params = []
         actor_params = []
         scale_params = []
+        calib_params = []
         vtask_params = []
 
         for name, param in self.network.named_parameters():
@@ -1742,6 +1770,14 @@ class PPOAgent:
                 # ~0.02), so at the actor LR it barely moves. Give it its own
                 # much higher LR so it can actually adapt the tower balance.
                 scale_params.append(param)
+            elif "quality_calib" in name:
+                # 方案B calibrator (slope+bias). Policy-decoupled -- softmax
+                # never reads it -- and a convex logistic fit given the tower
+                # scores, so a large LR cannot destabilize the policy. It is
+                # also the ONLY confidence channel: rms pins the tower spread
+                # to tau, and at the actor LR the slope moves ~1e-5/episode,
+                # capping the visible BCE descent near chance level. Own LR.
+                calib_params.append(param)
             # Critic/value-specific modules
             elif (
                 "critic" in name
@@ -1780,13 +1816,18 @@ class PPOAgent:
             critic_params = critic_params + list(self.critic_mu_head.parameters())
 
         # actor_params includes scale_params for grad clipping.
-        self.actor_params  = actor_params + scale_params
+        self.actor_params  = actor_params + scale_params + calib_params
         self.critic_params = critic_params
 
         scale_lr = float(getattr(Config, "ACTOR_DUAL_SCALE_LR", actor_lr * 30.0))
         actor_groups = [{"params": actor_params, "lr": actor_lr}]
         if scale_params:
             actor_groups.append({"params": scale_params, "lr": scale_lr})
+        if calib_params:
+            actor_groups.append({
+                "params": calib_params,
+                "lr": float(getattr(Config, "QUALITY_CALIB_LR", 1e-2)),
+            })
             print(f"[dual-tower] tower_log_scale on separate LR={scale_lr:.1e} "
                   f"(actor LR={actor_lr:.1e})")
         self.actor_optimizer  = torch.optim.Adam(actor_groups, eps=1e-5)
@@ -2684,6 +2725,18 @@ class PPOAgent:
         values_np = np.array([t["value"] for t in trajectories], dtype=np.float32)
 
         prompts = [t["prompt"] for t in trajectories]
+        # 方案B targets: realized quality per request (None-safe mask).
+        _q_raw = [t.get("quality") for t in trajectories]
+        if any(x is not None for x in _q_raw):
+            _q_targets = torch.as_tensor(
+                [float(x) if x is not None else 0.0 for x in _q_raw],
+                device=Config.DEVICE, dtype=torch.float32)
+            _q_valid = torch.as_tensor(
+                [1.0 if x is not None else 0.0 for x in _q_raw],
+                device=Config.DEVICE, dtype=torch.float32)
+        else:
+            _q_targets, _q_valid = None, None
+        _aux_accum, _aux_count = 0.0, 0
         service_rate = [t["service_rate"] for t in trajectories]
         time_slots_np = np.array([t["time_slot"] for t in trajectories], dtype=np.int64)
 
@@ -3526,6 +3579,57 @@ class PPOAgent:
                 # after this loop in _train_vtask(), off the PPO schedule.
                 actor_loss  = (float(getattr(Config, "POLICY_COEF", 1.0)) * policy_loss
                             + float(getattr(Config, "ENTROPY_COEF", 0.0)) * entropy_loss)
+
+                # ---- 方案B: supervised quality-tower aux loss ----
+                # BCE( sigmoid(calib(CENTERED score(prompt, CHOSEN server))),
+                # realized q ). Per-(prompt, server) supervision the interval-
+                # shared policy gradient cannot deliver; teaches "who is good
+                # at THIS prompt" directly. Only the chosen arm is labeled per
+                # request (bandit feedback); exploration covers all arms.
+                if (bool(getattr(Config, "QUALITY_AUX_ENABLE", False))
+                        and _q_targets is not None
+                        and hasattr(self.network, "quality_calib")
+                        and getattr(self.network, "_last_quality_score_t", None) is not None):
+                    _qs = self.network._last_quality_score_t
+                    if _qs.shape[0] == actions.shape[0]:
+                        # Center per state before reading. softmax is shift-
+                        # invariant, so the tower's absolute level is a free
+                        # direction: PPO exerts no net resistance there and rms
+                        # pins only the spread, letting BCE pressure ratchet
+                        # the level until sigmoid saturates confident-wrong.
+                        # The centered score (chosen minus state mean) is the
+                        # tower's actual routing statement and is invariant to
+                        # that drift, closing the aux into a bounded
+                        # supervised problem.
+                        _qs = _qs - _qs.mean(dim=1, keepdim=True)
+                        _chosen = _qs.gather(1, actions.view(-1, 1)).squeeze(1)
+                        # Additive floor, not clamp: the aux->tower gradient
+                        # is proportional to the slope, so a calibrator that
+                        # rationally zeroes its slope on an uninformative
+                        # tower also cuts off the very supervision that would
+                        # make the tower informative (observed: BCE 0.65 in
+                        # ep0-9 regressing to the 0.688 base-rate plateau as
+                        # the slope collapsed). The floor keeps the channel
+                        # open; softplus keeps growth unbounded and its
+                        # gradient alive even at the floor (clamp would not).
+                        _slope = (
+                            float(getattr(Config, "QUALITY_CALIB_SLOPE_MIN", 0.5))
+                            + torch.nn.functional.softplus(
+                                self.network.quality_calib.weight.squeeze()))
+                        _qhat = torch.sigmoid(
+                            _slope * _chosen
+                            + self.network.quality_calib.bias.squeeze())
+                        _bce = torch.nn.functional.binary_cross_entropy(
+                            _qhat.clamp(1e-6, 1.0 - 1e-6),
+                            _q_targets.clamp(0.0, 1.0),
+                            reduction="none",
+                        )
+                        _aux = (_bce * _q_valid).sum() / _q_valid.sum().clamp_min(1.0)
+                        actor_loss = actor_loss + float(
+                            getattr(Config, "QUALITY_AUX_WEIGHT", 0.5)) * _aux
+                        _aux_accum += float(_aux.detach().cpu().item())
+                        _aux_count += 1
+
                 critic_loss = float(getattr(Config, "VALUE_COEF", 0.5)) * value_loss
 
                 self.actor_optimizer.zero_grad(set_to_none=True)
@@ -3898,6 +4002,7 @@ class PPOAgent:
             "route distribution": route_dist,
             "entropy of route distribution": ent_usage,
             "approx_kl": float(approx_kl.detach().cpu().item()),
+            "quality_aux_loss": (_aux_accum / _aux_count) if _aux_count else None,
             "raw_adv_std": _raw_adv_std,
             "raw_adv_absmean": _raw_adv_absmean,
             "explained_variance": _explained_var,

@@ -29,7 +29,12 @@ class NumpyEncoder(json.JSONEncoder):
 
 class EnhancedLLMRouterTrainer:
     def __init__(self):
-        self.trajectory_dir = f"trajectories/run-{Config.T}-{Config.EPISODE_TIME_INTERVAL}-{Config.MAX_EPISODES}-{Config.USE_AVG}-{datetime.now().strftime('%Y%m%d_%H%M%S')}-{Config.INTERVAL_LENGTH}-{Config.POISSON_ARRIVAL_RATE}-{Config.EPISODE_TIME_INTERVAL}"
+        # One tag per trainer instance, shared by the wandb run name and the
+        # checkpoint filenames so checkpoints stay attributable when several
+        # runs share this tree (fixed ep_{N}.pt names silently clobbered
+        # each other across 4 concurrent runs on 2026-07-30).
+        self.run_tag = datetime.now().strftime('%Y%m%d_%H%M%S')
+        self.trajectory_dir = f"trajectories/run-{Config.T}-{Config.EPISODE_TIME_INTERVAL}-{Config.MAX_EPISODES}-{Config.USE_AVG}-{self.run_tag}-{Config.INTERVAL_LENGTH}-{Config.POISSON_ARRIVAL_RATE}-{Config.EPISODE_TIME_INTERVAL}"
         os.makedirs(self.trajectory_dir, exist_ok=True)
         
         # Initialize components
@@ -262,7 +267,7 @@ class EnhancedLLMRouterTrainer:
                 project=Config.WANDB_PROJECT,
                 entity=Config.WANDB_ENTITY,
                 config=config_dict,
-                name=f"enhanced_llm_router_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                name=f"enhanced_llm_router_{self.run_tag}",
                 reinit=True
             )
 
@@ -792,6 +797,8 @@ class EnhancedLLMRouterTrainer:
                 req["reward"] = float(reward)
                 if i < len(self.buffer.current_episode):
                     self.buffer.current_episode[i]["reward"] = float(reward)
+                    # realized quality rides along for the 方案B aux loss
+                    self.buffer.current_episode[i]["quality"] = float(q)
 
         # Update greedy utility history (EMA latency/cost, optional queue-conditioned stats).
         # Safe no-op if the agent does not implement update_server_stats.
@@ -884,7 +891,7 @@ class EnhancedLLMRouterTrainer:
     def save_checkpoint(self, episode):
         """Save model checkpoint"""
         os.makedirs('checkpoints', exist_ok=True)
-        checkpoint_path = f'checkpoints/enhanced_router_model_ep_{episode}.pt'
+        checkpoint_path = f'checkpoints/enhanced_router_model_{self.run_tag}_ep_{episode}.pt'
         self.agent.save(checkpoint_path)
         print(f"Saved checkpoint: {checkpoint_path}")
 
@@ -1204,6 +1211,10 @@ class EnhancedLLMRouterTrainer:
                         "raw_adv_absmean": training_metrics.get('raw_adv_absmean') if training_metrics else None,
                         "explained_variance": training_metrics.get('explained_variance') if training_metrics else None,
                         "policy_entropy": training_metrics.get('policy_entropy') if training_metrics else None,
+                        # 方案B: BCE of calibrated chosen-server quality score
+                        # vs realized quality. ~0.69 at init; falling = the
+                        # quality tower is learning per-(prompt,server) order.
+                        "train/quality_aux_loss": training_metrics.get('quality_aux_loss') if training_metrics else None,
                         # Dual-tower actor: per-server spread of each score.
                         # quality_spread>0 => quality tower differentiates servers;
                         # queue_spread>0 => queue tower fires on load.

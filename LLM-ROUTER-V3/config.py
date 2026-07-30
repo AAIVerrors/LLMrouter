@@ -130,7 +130,7 @@ class Config:
             "name": "mandarjoshi/trivia_qa",
             "config": "rc.nocontext",
             "split": "train[:20000]",
-            "weight": 0,
+            "weight": 1/3,
             "metric": "f1",
             "task_type": "qa",
         },
@@ -160,7 +160,7 @@ class Config:
             "name": "TIGER-Lab/MMLU-Pro",
             "config": None,
             "split": "test",
-            "weight": 0,
+            "weight": 1/3,
             "metric": "mmlu",
             "task_type": "mmlu_pro",
             "max_samples": 20000,
@@ -170,7 +170,7 @@ class Config:
             "name": "openai/gsm8k",
             "config": "main",
             "split": "train[:20000]",
-            "weight": 0,
+            "weight": 1/3,
             "metric": "number",
             "task_type": "math",
         },
@@ -181,7 +181,7 @@ class Config:
             "name": "ucinlp/drop",
             "config": None,
             "split": "train",
-            "weight": 1/3,
+            "weight": 0,
             "metric": "f1",
             "task_type": "drop",
             "max_samples": 20000,
@@ -203,7 +203,7 @@ class Config:
             "name": "lucasmccabe/logiqa",
             "config": None,
             "split": "train",
-            "weight": 1/3,
+            "weight": 0,
             "metric": "mmlu",
             "task_type": "logiqa",
             "max_samples": 20000,
@@ -216,7 +216,7 @@ class Config:
             "name": "qwedsacf/competition_math",
             "config": None,
             "split": "train",
-            "weight": 1/3,
+            "weight": 0,
             "metric": "math_verify",
             "task_type": "math_hard",
             "filter": "boxed",
@@ -335,8 +335,27 @@ class Config:
     #   reward = q(1-b'L)(1-g'C) - (1-q)*TAIL_Q*(L+C)
     # -- hopeless prompts billed almost purely by cost ("cut your losses"),
     # making prompt-difficulty awareness directly profitable.
-    REWARD_GATED_TAIL_MODE = "const"
+    REWARD_GATED_TAIL_MODE = "quality_weighted"
     REWARD_GATED_TAIL_Q = 0.3
+
+    # 方案B: supervised quality-tower aux loss. BCE between the calibrated
+    # chosen-server quality score and the realized request quality --
+    # injects per-(prompt, server) routing signal the interval-shared
+    # advantage dilutes away. Success gauges: route/specialization_js
+    # leaving the ~0.08 null floor, quality_scores separating from
+    # prompt-blind baselines.
+    QUALITY_AUX_ENABLE = False
+    QUALITY_AUX_WEIGHT = 2
+    # Calibrator (slope+bias) LR, own optimizer group. Policy-decoupled and
+    # convex, so high is safe; at the actor LR the slope crawls ~1e-5/ep and
+    # the BCE stays pinned near chance no matter what the tower learns.
+    QUALITY_CALIB_LR = 1e-2
+    # Floor on the effective slope (slope = MIN + softplus(w), init 1.0).
+    # The aux->tower gradient is proportional to the slope, so a calibrator
+    # that zeroes its slope on a not-yet-informative tower also shuts off
+    # the supervision that would make it informative -- a deadlock. The
+    # floor keeps that channel open no matter what the calibrator thinks.
+    QUALITY_CALIB_SLOPE_MIN = 0.5
 
     # Robustness patches (2026-07-30), safe for every combiner/arm:
     # init rescale kills the episode-0 seed seizure (ep0 entropy 0.37 /
@@ -692,11 +711,11 @@ class Config:
     # shortest raw queue using interval-boundary state).
     JSQ = False
 
-    P2C = False
+    P2C = True
 
     # Capacity-weighted JSQ: route to the shortest EXPECTED DRAIN TIME
     # (queue / mu), accounting for heterogeneous service rates.
-    CAP_WEIGHTED_JSQ = True
+    CAP_WEIGHTED_JSQ = False
 
     # Power-of-d-choices: sample d admissible servers, route to the shortest
     # (P2C is d=2). POWER_OF_D_WEIGHTED ranks by queue/mu instead of queue.
@@ -871,7 +890,7 @@ class Config:
     # when slack. FAIR-off ablation: FAIR_DUAL_ENABLE=False, FAIR_MU_INIT=0.
     # delta floor: stochastic policies pay v_sampling ~1.02, so delta=0 is
     # infeasible while exploring (measured: nu saturates); 0.25 = strict.
-    FAIR_DELTA = 0.25          # constraint level: E[v] <= 1 + delta
+    FAIR_DELTA = 0.75          # constraint level: E[v] <= 1 + delta
     FAIR_DUAL_ENABLE = True    # False => mu_lag frozen at FAIR_MU_INIT
     FAIR_MU_INIT = 0.0   # warm start (gated); FAIR-off arms set back to 0
     FAIR_DUAL_LR = 0.05       # eta (two-timescale: slower than the policy)
