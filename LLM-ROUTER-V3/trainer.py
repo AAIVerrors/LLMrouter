@@ -761,18 +761,25 @@ class EnhancedLLMRouterTrainer:
                     # gradient noise.
                     _gb = float(getattr(Config, "REWARD_GATED_BETA", 1.0))
                     _gg = float(getattr(Config, "REWARD_GATED_GAMMA", 1.0))
-                    # Small linear tails apply to EVERY request, including q=0:
-                    # without them wrong answers are congestion-free (herding
-                    # brake goes soft -- observed repeated seizures) and
-                    # cost-free (dollars leak: hopeless prompts could ride the
-                    # most expensive server for nothing).
-                    _lt = float(getattr(Config, "REWARD_GATED_LAT_TAIL", 0.1))
-                    _pt = float(getattr(Config, "REWARD_GATED_PRICE_TAIL", 0.1))
-                    reward = (q
+                    # Tails give q~0 requests cost/congestion accountability.
+                    #  const:            fixed 0.1 tails on every request.
+                    #  quality_weighted: tail weight scales with (1-q) --
+                    #    "cut your losses": a hopeless prompt is billed almost
+                    #    purely by cost, so routing predicted-hard prompts to
+                    #    cheap servers becomes directly profitable (the first
+                    #    reward-native incentive for prompt-difficulty
+                    #    awareness; watch route/specialization_js).
+                    _tmode = str(getattr(Config, "REWARD_GATED_TAIL_MODE", "const")).lower()
+                    _gmain = (q
                               * max(1.0 - _gb * _ln, 0.0)
-                              * max(1.0 - _gg * _pn, 0.0)
-                              - _lt * _ln
-                              - _pt * _pn)
+                              * max(1.0 - _gg * _pn, 0.0))
+                    if _tmode == "quality_weighted":
+                        _t = float(getattr(Config, "REWARD_GATED_TAIL_Q", 0.3))
+                        reward = _gmain - (1.0 - min(q, 1.0)) * _t * (_ln + _pn)
+                    else:
+                        _lt = float(getattr(Config, "REWARD_GATED_LAT_TAIL", 0.1))
+                        _pt = float(getattr(Config, "REWARD_GATED_PRICE_TAIL", 0.1))
+                        reward = _gmain - _lt * _ln - _pt * _pn
                 else:
                     reward = (float(getattr(Config, "ALPHA", 1.0)) * q
                               - float(getattr(Config, "BETA", 0.0)) * _ln

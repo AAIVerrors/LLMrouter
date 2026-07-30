@@ -331,6 +331,12 @@ class Config:
     REWARD_GATED_GAMMA = 1.0
     REWARD_GATED_LAT_TAIL = 0.1   # linear latency tail on ALL requests (q=0 too)
     REWARD_GATED_PRICE_TAIL = 0.1 # linear price tail: wrong answers still cost money
+    # Tail mode: "const" (above) or "quality_weighted":
+    #   reward = q(1-b'L)(1-g'C) - (1-q)*TAIL_Q*(L+C)
+    # -- hopeless prompts billed almost purely by cost ("cut your losses"),
+    # making prompt-difficulty awareness directly profitable.
+    REWARD_GATED_TAIL_MODE = "const"
+    REWARD_GATED_TAIL_Q = 0.3
 
     # Robustness patches (2026-07-30), safe for every combiner/arm:
     # init rescale kills the episode-0 seed seizure (ep0 entropy 0.37 /
@@ -690,7 +696,7 @@ class Config:
 
     # Capacity-weighted JSQ: route to the shortest EXPECTED DRAIN TIME
     # (queue / mu), accounting for heterogeneous service rates.
-    CAP_WEIGHTED_JSQ = False
+    CAP_WEIGHTED_JSQ = True
 
     # Power-of-d-choices: sample d admissible servers, route to the shortest
     # (P2C is d=2). POWER_OF_D_WEIGHTED ranks by queue/mu instead of queue.
@@ -870,7 +876,7 @@ class Config:
     FAIR_MU_INIT = 0.0   # warm start (gated); FAIR-off arms set back to 0
     FAIR_DUAL_LR = 0.05       # eta (two-timescale: slower than the policy)
     FAIR_DUAL_EMA = 0.1       # alpha for the vbar EMA
-    FAIR_MU_MAX = 5.0   # gated reward runs ~3-4x linear; 5 leaves the dual toothless
+    FAIR_MU_MAX = 15.0   # gated reward runs ~3-4x linear; 5 leaves the dual toothless
     WF_TILT_BETA = -1.0       # softmin tilt over request rewards
     WF_EPS_DBAR = 1e-6        # T_fair guard: exclude intervals with Dbar below
     QUOTA_TIEBREAK = "lex"    # deterministic quota tie-break ("closest" = legacy)
