@@ -10,20 +10,21 @@ class Config:
     # New-endpoint reasoning screen: empty content? billed reasoning_tokens>0?
     # inline <think>? out_tok pinned at the cap?
     # ================================================================
-    # 8-fleet (2026-07-30): cheap five + mid trap + premium pair.
-    # Roles on v2' (drop/logiqa/math): mini = quality king (drop 0.75, math
-    # 0.83); large = logiqa co-crown; codestral = DELIBERATE trap (wins
-    # nothing, drop 0.25) -- quality-blind baselines feed it its ~14% quota
-    # share, quality-aware methods route around it within the delta slack.
+    # 6-fleet (reverted 2026-07-30 from the 8-fleet experiment: two fragile
+    # premiums + trap made congestion roulette dominate training; the extra
+    # price rungs weren't worth the variance). Roles on v2' (drop/logiqa/
+    # math): small = drop+math crown, large = logiqa co-crown w/ 5.4n.
     MODEL_NAMES = [
         "ministral-3b-2512",                                   # 0 cheap/fast floor
         "ministral-8b-2512",                                   # 1 cheap, math 0.917
         "gpt-4.1-nano-2025-04-14",                             # 2 fast all-rounder
-        "mistral-small-2506",                                  # 3 value king (qa+mmlu)
+        "mistral-small-2506",                                  # 3 value king (drop+math)
         "gpt-5.4-nano",                                        # 4 MCQ/logiqa specialist; reasoning_effort="none", verified reasoning_tokens=0
-        "codestral-2508",                                      # 5 trap: mid price, wins nothing on v2'
-        "mistral-large-2512",                                  # 6 premium: logiqa co-crown
-        "gpt-4.1-mini",                                        # 7 premium king: drop 0.75 / math 0.83
+        "mistral-large-2512",                                  # 5 premium: logiqa co-crown
+        # ---- 8-fleet experiment, retired ----
+        # "codestral-2508",    # trap: wins nothing on v2', drop 0.25
+        # "gpt-4.1-mini",      # premium king (drop 0.75/math 0.83) but mu .27
+        #                      # -- second fragile premium fueled congestion roulette
         # ---- dropped, kept for the record ----
         # "together/meta-llama/Llama-3.3-70B-Instruct-Turbo",  # best quality/price flagship, but Together serverless degrades badly under concurrent runs
         # "gpt-4.1-mini",                            # dominated by small (0.669 @ $349 vs 0.764 @ $131)
@@ -41,9 +42,9 @@ class Config:
         (0.00000010, 0.00000040),   # 2 4.1-nano  $0.10/$0.40
         (0.00000015, 0.00000060),   # 3 small     $0.15/$0.60
         (0.00000020, 0.00000125),   # 4 5.4-nano  $0.20/$1.25 (confirmed 2026-07-28)
-        (0.00000030, 0.00000090),   # 5 codestral $0.30/$0.90
-        (0.00000050, 0.00000150),   # 6 large     $0.50/$1.50 (confirmed 2026-07-28)
-        (0.00000040, 0.00000160),   # 7 4.1-mini  $0.40/$1.60
+        (0.00000050, 0.00000150),   # 5 large     $0.50/$1.50 (confirmed 2026-07-28)
+        # (0.00000030, 0.00000090), # codestral (8-fleet, retired)
+        # (0.00000040, 0.00000160), # 4.1-mini  (8-fleet, retired)
         # ---- dropped ----
         # (0.00000104, 0.00000104), # Llama-3.3-70B-Turbo
         # (0.00000040, 0.00000160), # gpt-4.1-mini
@@ -75,10 +76,9 @@ class Config:
         0.5639, # 2 4.1-nano
         0.4935, # 3 small
         0.5484, # 4 5.4-nano
-        0.4928, # 5 codestral (v2' probe n=25)
-        0.2322, # 6 large     (v2' batch)
-        0.2650, # 7 4.1-mini  (v2' probe n=25)
-    ]   # total 3.616 req/s -> lambda 2.53 gives rho=0.70
+        0.2322, # 5 large     (v2' batch; the scarce one)
+        # 0.4928 codestral | 0.2650 4.1-mini (8-fleet, retired)
+    ]   # total 2.858 req/s -> lambda 2.0 gives rho=0.70
 
     SERVER_CAPACITIES = [50] * len(MODEL_NAMES)
 
@@ -341,6 +341,9 @@ class Config:
     # Hard per-state cap on logit spread (last line of defense against
     # OOD-state seizures; 0 disables). 0.9 = 3x tau -> max_share ~0.6.
     ACTOR_LOGIT_SPREAD_CAP = 0.9
+    # Experiment arm: the fuse MLP is the WHOLE combiner (no additive base,
+    # no learned scales). Needs ACTOR_DUAL_FUSE=True as well.
+    ACTOR_DUAL_FUSE_ONLY = False
 
     # If True, only completed requests are used to compute min/max.
     ROUND_MINMAX_ONLY_COMPLETED = True
@@ -612,7 +615,7 @@ class Config:
     # cap / mix change. Targets: overall rho ~0.5-0.7 (queues alive, not
     # drowning) AND rho_cheap = lambda/mu(cheapest-4) ~0.7-0.8 so cost-
     # seeking CAN concentrate (the FAIR-off ablation needs that room).
-    POISSON_ARRIVAL_RATE = 2.5   # 8-fleet v2 mix: rho=0.69 (total mu 3.616)
+    POISSON_ARRIVAL_RATE = 2.0   # 6-fleet v2 mix: rho=0.70 (total mu 2.858)
     # POISSON_ARRIVAL_RATE = 2.65  # v2-easy pilot value (mu 3.951)
     MAX_PROMPT_QUEUE_SIZE = 10000  # Maximum size of the prompt queue
     EPISODE_TIME_INTERVAL = 8 # How many intervals in current episode
@@ -733,10 +736,10 @@ class Config:
     # Set 1 to disable.
     GREEDY_TOPK = 1
 
-    T = -2
+    T = -1
     # FAIR = 1  # 0..1, it will control how fair you want, 1 max, 0 min
-    T_QUEUE = -2
-    T_REWARD = -2
+    T_QUEUE = -1
+    T_REWARD = -1
     FAIR_WARMUP_EPISODES = 0
     FAIRNESS_MODE = "wf_dual"   # "wf_dual" | "quota" (legacy per-server ReLU) | "legacy"
     # Quota fairness normalizer:
@@ -863,12 +866,12 @@ class Config:
     # delta floor: stochastic policies pay v_sampling ~1.02, so delta=0 is
     # infeasible while exploring (measured: nu saturates); 0.25 = strict.
     FAIR_DELTA = 0.25          # constraint level: E[v] <= 1 + delta
-    FAIR_DUAL_ENABLE = True   # False => mu_lag frozen at FAIR_MU_INIT
-    FAIR_MU_INIT = 0.0
+    FAIR_DUAL_ENABLE = True    # False => mu_lag frozen at FAIR_MU_INIT
+    FAIR_MU_INIT = 0.0   # warm start (gated); FAIR-off arms set back to 0
     FAIR_DUAL_LR = 0.05       # eta (two-timescale: slower than the policy)
     FAIR_DUAL_EMA = 0.1       # alpha for the vbar EMA
-    FAIR_MU_MAX = 5.0
-    WF_TILT_BETA = -2.0       # softmin tilt over request rewards
+    FAIR_MU_MAX = 5.0   # gated reward runs ~3-4x linear; 5 leaves the dual toothless
+    WF_TILT_BETA = -1.0       # softmin tilt over request rewards
     WF_EPS_DBAR = 1e-6        # T_fair guard: exclude intervals with Dbar below
     QUOTA_TIEBREAK = "lex"    # deterministic quota tie-break ("closest" = legacy)
     # gamma for INTERVAL returns/GAE. 1.0 aligns the actor objective with the

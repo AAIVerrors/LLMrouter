@@ -404,6 +404,13 @@ class RouterNetwork(nn.Module):
             self.use_tower_fuse = self.use_actor_dual_tower and bool(
                 getattr(Config, "ACTOR_DUAL_FUSE", False)
             )
+            # fuse-only: the MLP IS the combiner (no additive base, no
+            # learned scales). Zero-init makes episode 0 exactly uniform;
+            # the net must then learn even the monotone basics, so this is
+            # an EXPERIMENT arm, not the default.
+            self.use_fuse_only = self.use_tower_fuse and bool(
+                getattr(Config, "ACTOR_DUAL_FUSE_ONLY", False)
+            )
             if self.use_tower_fuse:
                 _fh = int(getattr(Config, "ACTOR_DUAL_FUSE_HIDDEN", 16))
                 self.tower_fuse = nn.Sequential(
@@ -1107,17 +1114,25 @@ class RouterNetwork(nn.Module):
                     self._dual_rms_q = float(_rq.detach().cpu().item())
                     self._dual_rms_k = float(_rk.detach().cpu().item())
 
-                if getattr(self, "use_dual_learn_scale", False):
+                if getattr(self, "use_fuse_only", False):
+                    # Pure learned combiner: logits come from the fuse MLP
+                    # alone (zero-init -> exactly uniform at episode 0).
+                    fuse_in = torch.stack([quality_score, queue_score], dim=-1)
+                    logits = self.tower_fuse(fuse_in).squeeze(-1)
+                elif getattr(self, "use_dual_learn_scale", False):
                     scales = torch.exp(self.tower_log_scale)
                     logits = scales[0] * quality_score + scales[1] * queue_score
                     self._dual_scale_q = float(scales[0].detach().cpu().item())
                     self._dual_scale_k = float(scales[1].detach().cpu().item())
+                    if getattr(self, "use_tower_fuse", False):
+                        fuse_in = torch.stack([quality_score, queue_score], dim=-1)
+                        logits = logits + self.tower_fuse(fuse_in).squeeze(-1)
                 else:
                     logits = quality_score + queue_score
-                if getattr(self, "use_tower_fuse", False):
-                    # zero-init correction: starts at 0, learns a nonlinear fusion
-                    fuse_in = torch.stack([quality_score, queue_score], dim=-1)
-                    logits = logits + self.tower_fuse(fuse_in).squeeze(-1)
+                    if getattr(self, "use_tower_fuse", False):
+                        # zero-init correction on top of the additive base
+                        fuse_in = torch.stack([quality_score, queue_score], dim=-1)
+                        logits = logits + self.tower_fuse(fuse_in).squeeze(-1)
             else:
                 actor_in = torch.cat([server_h, route_expand], dim=-1)
                 logits = self.actor_head(actor_in).squeeze(-1)
